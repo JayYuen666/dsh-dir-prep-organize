@@ -1,0 +1,30 @@
+# dir-prep-organize（整理 + 模板；内容源为内置角色库）。
+# 功能一「整理」：输入框右上角分段按钮。主键点击 → 按当前目录结构 + 当前 session
+# 模型整理优化草稿（成功直接替换，失败保持原值）；▾ → 「以 XX 视角整理」（角色菜单，
+# 角色上下文 = 模板正文提炼，随 organize POST 注入 system，走同一 LLM 流）。
+# 功能二「模板」：输入框旁「模板」下拉，默认展示精选角色集（由 scripts/gen-defaults.mjs
+# 从插件 agents/ 目录生成，src/default-templates.generated.ts 单源），按 group 分组
+# 渲染（emoji + 名称 + description 悬停）；点选插入草稿（空整段填入 / 非空末尾追加）。
+# 列表存 settings（0.1.7 隐式注册：命名空间 = 本条目 id，可编辑字段 = host.ts 导出的
+# Config 上标了 .volatile() 的 templates/importAllowRoots；生成集不再是 register 的 base，
+# 而是 client 半的回落），设置页卡逐条增删改（name/emoji/
+# group/description/text）+ 两步确认恢复默认 + 角色导入（POST import：留空 = 一键导入
+# 内置 agents/ 全部；填路径 = 导入本地 .md 或目录）。client 直读本条目的配置表单
+# （ctx.configForms.get(条目 id)；0.1.7 已移除 settingsScope）。
+#
+# 架构（全量源码复核后定为 webServer + fetch；harness.handle/
+# host.call 是动态插件闭包 RPC，loader 行插件的 Client 半没有该通道）：
+#   Host 半（host.ts）注册四个 webServer 路由（session-rescue 同款已验证模式）：
+#     GET  /_dsh/dir-prep/context   目录上下文（会话 cwd，文件名+大小+关键摘要）
+#     GET  /_dsh/dir-prep/model      当前默认模型（agentDefaultModel.currentSelection）
+#     POST /_dsh/dir-prep/organize   LLM 整理（llm.stream，cwd + 目录摘要 + 可选角色）
+#     POST /_dsh/dir-prep/import     角色导入（只读；空路径=内置 agents/ 全部）
+#   Client 半（src/client-entry.ts → client.js）注册 conversation.input.right
+#   list 槽（整理 id=dir-prep-organize order 99 / 模板 id=…-templates order 100）
+#   与 plugins.bundle.config 设置卡（keyed；0.1.6 起 settings.plugin.item 已随旧设置页
+#   删除）；整理 fetch 上述端点，写回走
+#   inputActions.setDraft；模板读写配置表单 ctx.configForms.get(条目 id)（数组 set=字段级整体替换，
+#   已按 dsh-settings applyPathOp/cloneJsonShaped 源码取证）。
+- insert:
+    - id: dir-prep-organize
+      name: "@jayyuen666/dsh-dir-prep-organize"

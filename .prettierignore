@@ -1,0 +1,2 @@
+# 生成产物（npm run gen:defaults 重新生成），不参与格式检查
+src/default-templates.generated.ts
