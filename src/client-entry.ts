@@ -11,11 +11,11 @@ import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/c
 import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
-import { isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
-import { errorText } from "@jayyuen666/dsh-plugin-shared/lib/errors";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
 const NS: LocaleNs = "dir-prep-organize";
-const BUNDLE_PKG = "@jayyuen666/dsh-dir-prep-organize";
+const BUNDLE_PKG = "@jayyuen66/dsh-dir-prep-organize";
 const CONTEXT_URL = "/_dsh/dir-prep/context";
 const MODEL_URL = "/_dsh/dir-prep/model";
 const ORGANIZE_URL = "/_dsh/dir-prep/organize";

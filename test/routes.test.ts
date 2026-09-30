@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen666/dsh-plugin-shared/lib/locale";
+import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 import { apply, createRouteHandlers as createRouteHandlersWithDict } from "../host.ts";
 import type {
   Config,

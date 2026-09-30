@@ -22,7 +22,7 @@
 /** 一条提示引导词/角色模板（settings 持久化形状：全 string 字段的普通对象，
  *  满足 dsh-settings cloneJsonShaped 的 JSON 白名单）。description/group/emoji
  *  为必填（空串表示未设置），保证下拉与设置卡无缺字段分支。 */
-import { isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { AGENT_DIR_GROUP_LABELS as GENERATED_GROUP_LABELS } from "./group-labels.generated.ts";
 
 export interface TemplateEntry {

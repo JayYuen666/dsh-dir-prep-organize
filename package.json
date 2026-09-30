@@ -1,5 +1,5 @@
 {
-  "name": "@jayyuen666/dsh-dir-prep-organize",
+  "name": "@jayyuen66/dsh-dir-prep-organize",
   "version": "1.2.2",
   "description": "dsh 插件：对话输入框「整理」按钮（主键直接整理/▾ 以角色视角整理，结合当前目录 + session 模型整理优化草稿）+「模板」下拉（内置精选角色集生成自插件 agents/ 角色库，可按部门分组；设置卡可增删改/一键导入内置全部/导入本地角色 .md）",
   "license": "MIT",
@@ -31,7 +31,7 @@
       "./package.json": "./package.json"
     },
     "access": "public",
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
@@ -48,7 +48,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-brand": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "3.18.4",
-    "@jayyuen666/dsh-plugin-shared": "^0.6.3"
+    "@jayyuen66/dsh-plugin-shared": "^0.6.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",

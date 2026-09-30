@@ -1,4 +1,4 @@
-# @jayyuen666/dsh-dir-prep-organize
+# @jayyuen66/dsh-dir-prep-organize
 
 [中文](#中文) · [English](#english)
 
@@ -18,27 +18,25 @@
 
 ### 安装
 
-GitHub Packages 连读公开发布的包也要凭据，前两条一次配置即可：
+包发布在公共 npm（`registry.npmjs.org`），安装不需要凭据：
 
 ```sh
-npm config --global @jayyuen666:registry=https://npm.pkg.github.com
-printf '//npm.pkg.github.com/:_authToken=<PAT:read:packages>\n' >> ~/.npmrc
-dsh plugin --profile web add @jayyuen666/dsh-dir-prep-organize
+dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 ```
 
 - 宿主版本 `>= 0.2.0-rc.2`：写在 `peerDependencies`（0.1.7-rc 起宿主装插件时校验它，alpha.1 无此门）与 `engines.dsh`（同值、无人读）；client 半 `dsh.client.platform = web`、`immediately`。
 - 发布形态为按包单仓，`repository.url` 为 git+https://github.com/JayYuen666/dsh-dir-prep-organize.git
 - 发布产物只有 `host.js`、`client.js`、`cordis.patch.yml`、`agents/`（package.json 的 `files`）。
-- 运行期依赖三枚，全在 `dependencies`：`@jayyuen666/dsh-plugin-shared`、`@deepseek-ai/schemastery`（宿主 fork，0.1.7 的 `.volatile()` 活引用只有它解析得出来）与 `@deepseek-ai/dsh-brand`（`0.2.0-rc.2`）。
+- 运行期依赖三枚，全在 `dependencies`：`@jayyuen66/dsh-plugin-shared`、`@deepseek-ai/schemastery`（宿主 fork，0.1.7 的 `.volatile()` 活引用只有它解析得出来）与 `@deepseek-ai/dsh-brand`（`0.2.0-rc.2`）。
   - 第三枚不是笔误：`host.ts` 的 `brandString` 是**值导入**，必须落 `dependencies`——`build-host.mjs` 的外部化名单只读 `dependencies`∪`peerDependencies`，放 `devDependencies` 就会被 rolldown 把官方函数体内联进 `host.js`（`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」）。
 
 ### 在 dsh 里启用
 
 - 装包即由包内 bundle patch（`dsh.bundle.patch` 指向 `./cordis.patch.yml`）注入 `- id: dir-prep-organize`（`name` 为包名）。
-- 卸载用 `dsh plugin --profile web remove @jayyuen666/dsh-dir-prep-organize`。
+- 卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`。
 - host 半硬依赖 webServer 与 settings：缺 settings 时设置卡停用并 warn，「模板」下拉回落内置精选集，五个端点不受影响。
 - client 半注册槽 `conversation.input.right`（整理 id `dir-prep-organize` order 99、模板 id `dir-prep-organize-templates` order 100），另注册设置卡槽 `plugins.bundle.config`。
-  - 卡槽 key = bundle 包名 `@jayyuen666/dsh-dir-prep-organize`：该槽按 bundle 包名 keyed（宿主派发 `entryKey: pkg.name`，真源是 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）；写成裸条目 id 就不命中，卡片整张不渲染。
+  - 卡槽 key = bundle 包名 `@jayyuen66/dsh-dir-prep-organize`：该槽按 bundle 包名 keyed（宿主派发 `entryKey: pkg.name`，真源是 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`）；写成裸条目 id 就不命中，卡片整张不渲染。
   - settings 命名空间与 `configForms.get()` 仍是裸条目 id `dir-prep-organize`，与上面的 slot key 不是一回事。
 
 ### 提供给模型的工具
@@ -125,27 +123,25 @@ dsh plugin --profile web add @jayyuen666/dsh-dir-prep-organize
 
 ### Install
 
-GitHub Packages demands credentials even to read a publicly published package; the first two lines are one-time setup:
+The packages are published to the public npm registry (`registry.npmjs.org`), so installation needs no credentials:
 
 ```sh
-npm config --global @jayyuen666:registry=https://npm.pkg.github.com
-printf '//npm.pkg.github.com/:_authToken=<PAT:read:packages>\n' >> ~/.npmrc
-dsh plugin --profile web add @jayyuen666/dsh-dir-prep-organize
+dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 ```
 
 - Host version `engines.dsh >= 0.2.0-rc.2`; the client half is `dsh.client.platform = web` with `immediately`.
 - The publishing form is one repository per package, `repository.url` is git+https://github.com/JayYuen666/dsh-dir-prep-organize.git
 - The published artifact ships only `host.js`, `client.js`, `cordis.patch.yml` and `agents/` (package.json `files`).
-- Runtime dependencies are three, all under `dependencies`: `@jayyuen666/dsh-plugin-shared`, `@deepseek-ai/schemastery` (the host's fork — only it resolves 0.1.7 `.volatile()` fields into live references) and `@deepseek-ai/dsh-brand` (`0.2.0-rc.2`).
+- Runtime dependencies are three, all under `dependencies`: `@jayyuen66/dsh-plugin-shared`, `@deepseek-ai/schemastery` (the host's fork — only it resolves 0.1.7 `.volatile()` fields into live references) and `@deepseek-ai/dsh-brand` (`0.2.0-rc.2`).
   - The third one is no typo: `brandString` in `host.ts` is a **value import**, and per ruling A it must sit in `dependencies` — the externalization list in `build-host.mjs` only reads `dependencies` ∪ `peerDependencies`, so a `devDependencies` entry lets rolldown inline the official function body into `host.js` (`test/build-host.test.ts` pins both "specifier present" and "function body absent").
 
 ### Enabling it in dsh
 
 - Installing the package contributes the bundle patch layer (`dsh.bundle.patch` points at `./cordis.patch.yml`), which inserts `- id: dir-prep-organize` with `name` set to the package name.
-- Removal goes through `dsh plugin --profile web remove @jayyuen666/dsh-dir-prep-organize`.
+- Removal goes through `dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`.
 - The host half hard-injects webServer and settings: without settings the card is disabled with a warning, the "Template" dropdown falls back to the built-in curated set, and the five endpoints keep working.
 - The client half registers slot `conversation.input.right` (organize id `dir-prep-organize` order 99, templates id `dir-prep-organize-templates` order 100) and the settings card slot `plugins.bundle.config`.
-  - The card slot key = the bundle package name `@jayyuen666/dsh-dir-prep-organize`: the host dispatches `entryKey: pkg.name` (source of truth: `dsh.profile.bundles` in `~/.dsh/profiles/web/package.json`), so a bare entry id never matches and the card renders nowhere.
+  - The card slot key = the bundle package name `@jayyuen66/dsh-dir-prep-organize`: the host dispatches `entryKey: pkg.name` (source of truth: `dsh.profile.bundles` in `~/.dsh/profiles/web/package.json`), so a bare entry id never matches and the card renders nowhere.
   - The settings namespace and `configForms.get()` stay the bare entry id `dir-prep-organize` - not the same identifier as that slot key.
 
 ### Tools exposed to the model

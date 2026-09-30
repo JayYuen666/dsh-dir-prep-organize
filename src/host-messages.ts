@@ -17,7 +17,7 @@
 //   - 用户自填的模板/prompt 正文，以及 src/default-templates.generated.ts 与 agents/
 //     角色库数据——数据不做机翻；
 //   - `cross-origin request rejected` 等本就是英文的协议性文本。
-import type { MessagesCatalog } from "@jayyuen666/dsh-plugin-shared/lib/locale";
+import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 本包 host 侧产出的全部人读文案（整理 system prompt + 端点/导入回执）。 */
 export interface HostMessages {

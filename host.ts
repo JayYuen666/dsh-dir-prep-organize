@@ -83,16 +83,16 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import type { SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-import { guardBody, queryParam, sendJson } from "@jayyuen666/dsh-plugin-shared/lib/http";
+import { guardBody, queryParam, sendJson } from "@jayyuen66/dsh-plugin-shared/lib/http";
 // 信任闸门：四条路由 handler 的第一条语句。
-import { guardTrust } from "@jayyuen666/dsh-plugin-shared/lib/trust";
+import { guardTrust } from "@jayyuen66/dsh-plugin-shared/lib/trust";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 字典本身在 src/host-messages.ts（纯数据），本文件只负责取表与注入。
 import {
   LOCALE_SETTINGS_NAMESPACE,
   messagesFor,
   resolveLocalePreference,
-} from "@jayyuen666/dsh-plugin-shared/lib/locale";
+} from "@jayyuen66/dsh-plugin-shared/lib/locale";
 import { HOST_MESSAGES } from "./src/host-messages.ts";
 import type { HostMessages } from "./src/host-messages.ts";
 import {
@@ -102,8 +102,8 @@ import {
   parseAgentFrontmatter,
 } from "./src/templates.ts";
 import type { AgentFileInfo, TemplateEntry } from "./src/templates.ts";
-import { isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
-import { errorText } from "@jayyuen666/dsh-plugin-shared/lib/errors";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
 /** 本包送进 `llm.stream({ messages })` 的整理请求帧是 **request-only 输入**：它从不落
  *  任何持久消息位（`runOrganize` 只回 `{ content }`，路由也不把帧身份回投给卡片），所以

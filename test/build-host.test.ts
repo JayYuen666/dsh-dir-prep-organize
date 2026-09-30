@@ -41,7 +41,7 @@ describe("dir-prep-organize host 构建", () => {
     // 看不见 lib/record 哪天被内联（该批评见 zvec-grep/test/build-host.test.ts:36 的注释）。
     for (const subpath of ["lib/http", "lib/locale", "lib/record", "lib/errors"]) {
       assert.ok(
-        text.includes(`from "@jayyuen666/dsh-plugin-shared/${subpath}"`),
+        text.includes(`from "@jayyuen66/dsh-plugin-shared/${subpath}"`),
         `shared/${subpath} 必须留在产物里（内联 = shared 单例被复制）`,
       );
     }
@@ -98,7 +98,7 @@ describe("闸门的外部化面（shared/lib/trust）", () => {
     // external 的字符串项是精确匹配，子路径一旦漏掉就把整份判据复制进本包产物（判据分叉的起点）。
     const out = await buildHost();
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/trust"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/trust"'),
       "shared/trust 必须外部化",
     );
     assert.ok(!/^function guardTrust\(/mu.test(out), "产物不得内联 guardTrust 的函数体");

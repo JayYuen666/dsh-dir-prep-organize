@@ -27,4 +27,4 @@
 #   已按 dsh-settings applyPathOp/cloneJsonShaped 源码取证）。
 - insert:
     - id: dir-prep-organize
-      name: "@jayyuen666/dsh-dir-prep-organize"
+      name: "@jayyuen66/dsh-dir-prep-organize"
