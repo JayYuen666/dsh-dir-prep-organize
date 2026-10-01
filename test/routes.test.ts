@@ -378,10 +378,11 @@ function configOf(value: ConfigValue): Config {
   return {
     templates: { get: () => value.templates },
     importAllowRoots: { get: () => value.importAllowRoots },
-    // organizeTimeoutMs 是 volatile（引用形态），另两位是非 volatile 普通值。
+    // organizeTimeoutMs 是 volatile（引用形态），另三位是非 volatile 普通值。
     organizeTimeoutMs: { get: () => 120_000 },
     maxSnippetBytes: 256 * 1024,
     readConcurrency: 8,
+    importBodyMaxBytes: 8 * 1024 * 1024,
   };
 }
 
@@ -1000,7 +1001,11 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     const env = harness();
     const { disposers } = env;
     applyTo(env);
-    assert.deepEqual(env.injected, [["settings"]], "只经 inject(['settings']) 登记页面策略");
+    assert.deepEqual(
+      env.injected,
+      [["settings"], ["webServer"]],
+      "页面策略经 inject(['settings'])，四条路由经 inject(['webServer']) 子 fiber",
+    );
     assert.equal(env.configureCalls.length, 1, "configure 恰好一次（重复登记会被宿主抛）");
     assert.deepEqual(env.configureCalls.at(0)?.presentation, { auto: false });
     assert.equal(

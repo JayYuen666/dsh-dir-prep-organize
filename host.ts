@@ -172,9 +172,10 @@ const SECRET_MARKERS = [
 /** LLM 整理超时。 */
 /** schema .default() 的单源（host 消费走 config 字段，不再直读常量）。 */
 const ORGANIZE_TIMEOUT_MS = 120_000;
-/** POST body 物理上限（内存防爆纵深防御，非功能截断：正常整理/导入载荷远小于
- *  此水位；超大输入产物由模型 context 报错反馈用户自行处理）。 */
-const MAX_BODY_BYTES = 64 * 1024 * 1024;
+/** organize/import POST body 物理上限的 schema .default()（内存防爆纵深防御，非功能
+ *  截断：两条路由提交的都是整理草稿与模板产物，不是大文件本体；超大输入产物由模型
+ *  context 报错反馈用户自行处理）。部署间需要更宽的走 `importBodyMaxBytes` 配置字段。 */
+const DEFAULT_IMPORT_BODY_MAX_BYTES = 8 * 1024 * 1024;
 /** 单个关键文件的摘要字节上限。harness 的 readWholeText 无上限，超限文件整份
  *  跳过（不截半份——半份摘要会以"全量"的名义喂给模型，比没有更误导），
  *  并计入 skipped.tooLarge 回报。 */
@@ -522,6 +523,7 @@ const DEFAULT_LIMITS = {
   organizeTimeoutMs: ORGANIZE_TIMEOUT_MS,
   maxSnippetBytes: MAX_SNIPPET_BYTES,
   readConcurrency: READ_CONCURRENCY,
+  importBodyMaxBytes: DEFAULT_IMPORT_BODY_MAX_BYTES,
 };
 
 export async function collectDirContext(
@@ -1254,6 +1256,7 @@ const configSchema = Schema.object({
   organizeTimeoutMs: Schema.natural().default(ORGANIZE_TIMEOUT_MS).volatile(),
   maxSnippetBytes: Schema.natural().default(MAX_SNIPPET_BYTES),
   readConcurrency: Schema.natural().default(READ_CONCURRENCY),
+  importBodyMaxBytes: Schema.natural().default(DEFAULT_IMPORT_BODY_MAX_BYTES),
 });
 
 /** cordis 校验过 configSchema 后交进 apply 的那份配置：volatile 字段以 Volatile 引用
@@ -1270,6 +1273,8 @@ export interface Config {
   maxSnippetBytes: number;
   /** 目录扫描/读取的有界并发度。 */
   readConcurrency: number;
+  /** organize/import POST body 的物理字节上限（内存防爆纵深防御）。 */
+  importBodyMaxBytes: number;
 }
 
 export { configSchema as Config };
@@ -1297,7 +1302,7 @@ export function importAllowRootsOf(raw: unknown): string[] {
  *  跨命名空间读（describe）」的载体；设置页只派发「host 已 serve 的命名空间 ∩
  *  settings.plugin.item 卡」（dsh-client-ui-settings-plugins 源码语义），configure 必须
  *  发生在 apply 期，故仍硬注入。sessions/fs/llm/agentDefaultModel 仍可选读。 */
-export const inject = ["webServer", "settings"];
+export const inject = ["settings"];
 
 /** 路由处理器的可测提取：apply 用 ctx.get 的惰性 getter 调用（服务可能在
  *  路由注册后才就绪），测试直接注入静态假服务 + 假 req/res 驱动。
@@ -1311,7 +1316,7 @@ export interface RouteDeps {
   importAllowRoots?: () => readonly string[];
   /** 部署值（Config 化）：整理超时 / 摘要字节上限 / 读取并发。
    *  缺省回落原模块常量（与 schema .default 同值）——测试与旧调用方不必逐一改。 */
-  limits?: () => DirScanLimits & { organizeTimeoutMs: number };
+  limits?: () => DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number };
 }
 
 /** 路由 handler 形状（本包自己的路由表投影）。官方 `WebRoute["handler"]` 的返回是
@@ -1421,7 +1426,10 @@ interface RouteScope {
   readonly deps: RouteDeps;
   readonly csrf: string;
   readonly messagesOf: MessagesOf;
-  readonly limitsOf: () => DirScanLimits & { organizeTimeoutMs: number };
+  readonly limitsOf: () => DirScanLimits & {
+    organizeTimeoutMs: number;
+    importBodyMaxBytes: number;
+  };
 }
 
 /** GET context 的正文（信任闸门之后）：缺 fs / 缺 cwd / 扫描报错各回一句，成功才下发条目表。 */
@@ -1658,7 +1666,7 @@ export function createRouteHandlers(
   importAgent: AsyncRouteHandler;
 } {
   // 每次请求现读（与 importAllowRoots 同一口径）：cordis 行 config 改了无须重启。
-  const limitsOf = (): DirScanLimits & { organizeTimeoutMs: number } =>
+  const limitsOf = (): DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number } =>
     deps.limits?.() ?? DEFAULT_LIMITS;
   const scope: RouteScope = { deps, csrf, messagesOf, limitsOf };
 
@@ -1703,7 +1711,7 @@ export function createRouteHandlers(
       }
       // 跨域 → CSRF → 读 body（413 超限 / 400 坏流由 guardBody 直接回执）
       const raw = await guardBody(req, res, {
-        maxBytes: MAX_BODY_BYTES,
+        maxBytes: scope.limitsOf().importBodyMaxBytes,
         csrf: { token: csrf, headerName: CSRF_HEADER },
       });
       if (raw === null) {
@@ -1731,7 +1739,7 @@ export function createRouteHandlers(
       // 只读端点（不调 LLM、不写盘、响应不可跨域读取）：同源 + 路径策略即最终防线，
       // 不经 CSRF token——设置卡无会话上下文，无法像 organize 那样先拉 token
       // （设计取舍：导入不产生副作用，跨站伪造无法读回结果，风险面为零）。
-      const raw = await guardBody(req, res, { maxBytes: MAX_BODY_BYTES });
+      const raw = await guardBody(req, res, { maxBytes: scope.limitsOf().importBodyMaxBytes });
       if (raw === null) {
         return;
       }
@@ -1809,83 +1817,89 @@ export function apply(ctx: Context, config: Config): void {
       return settings.configure({ auto: false }, ctx.fiber);
     }, "dir-prep-organize: settings presentation");
   });
-  ctx.effect(() => {
-    const rawWebServer = getService("webServer");
-    const webServer = isWebServerService(rawWebServer) ? rawWebServer : undefined;
-    if (webServer === undefined) {
-      return noopDisposer;
-    }
-    // per-apply 写操作令牌；context/model GET 下发，organize POST 回填校验
-    const csrf = randomUUID();
-    // host 不在这条形状守卫的检查面里（它查的是 register / registerFallback 两枚函数），
-    // 故按 unknown 逐位读；缺位就当"只绑回环"，那是保守档。
-    const servingNonLoopback = isRecord(rawWebServer) && rawWebServer["host"] === "0.0.0.0";
-    // 惰性 getter：服务可能在路由注册之后才就绪（inject 只声明 webServer 硬依赖）
-    // 各服务经形状守卫投影（替代 `svc.get(...) as X` 断言）。
-    const deps: RouteDeps = {
-      sessions: () => {
-        const service = getService("sessions");
-        return isSessionsService(service) ? service : undefined;
-      },
-      fs: () => {
-        const service = getService("fs");
-        return isFsService(service) ? service : undefined;
-      },
-      llm: () => {
-        const service = getService("llm");
-        return isLlmService(service) ? service : undefined;
-      },
-      agentDefaultModel: () => {
-        const service = getService("agentDefaultModel");
-        return isAgentDefaultModel(service) ? service : undefined;
-      },
-      // 导入允许根：每次请求现读 volatile 引用（改设置不必重启插件）。引用背后仍可能
-      // 是存量脏配置，故过 importAllowRootsOf 收成字符串表——读不到就是空表，绝不因为
-      // 缺配置就放开绝对路径（只剩「会话 cwd + 内置角色库」两个根）。
-      importAllowRoots: () => importAllowRootsOf(config.importAllowRoots.get()),
-      // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
-      limits: () => ({
-        organizeTimeoutMs: config.organizeTimeoutMs.get(),
-        maxSnippetBytes: config.maxSnippetBytes,
-        readConcurrency: config.readConcurrency,
-      }),
-    };
-    const handlers = createRouteHandlers(deps, csrf, localeMessages, servingNonLoopback);
-    const disposeDefaults = webServer.register({
-      kind: "exact",
-      path: DEFAULTS_PATH,
-      handler: (req, res) => {
-        handlers.defaults(req, res);
-      },
-    });
-    const disposeContext = webServer.register({
-      kind: "exact",
-      path: CONTEXT_PATH,
-      handler: (req, res) => handlers.context(req, res),
-    });
-    const disposeModel = webServer.register({
-      kind: "exact",
-      path: MODEL_PATH,
-      handler: (req, res) => {
-        handlers.model(req, res);
-      },
-    });
-    const disposeOrganize = webServer.register({
-      kind: "exact",
-      path: ORGANIZE_PATH,
-      handler: (req, res) => handlers.organize(req, res),
-    });
-    const disposeImport = webServer.register({
-      kind: "exact",
-      path: IMPORT_PATH,
-      handler: (req, res) => handlers.importAgent(req, res),
-    });
-    return () => {
-      disposeDefaults();
-      disposeContext();
-      disposeModel();
-      disposeOrganize();
-      disposeImport();
-    };
-  }, "dir-prep-organize: webServer routes");
+  // webServer 走子 fiber（inject 依赖），不写进插件级 inject：没有 webServer 的宿主
+  // （TUI、纯 SDK 嵌入）不该让整包失活——模板整理、目录整理、沉淀这些能力只需要
+  // settings 与 fs。依赖换实例时 cordis 先卸后装，disposer 随子 fiber 回收。
+  ctx.inject(["webServer"], (child) => {
+    child.effect(() => {
+      const rawWebServer = getService("webServer");
+      const webServer = isWebServerService(rawWebServer) ? rawWebServer : undefined;
+      if (webServer === undefined) {
+        return noopDisposer;
+      }
+      // per-apply 写操作令牌；context/model GET 下发，organize POST 回填校验
+      const csrf = randomUUID();
+      // host 不在这条形状守卫的检查面里（它查的是 register / registerFallback 两枚函数），
+      // 故按 unknown 逐位读；缺位就当"只绑回环"，那是保守档。
+      const servingNonLoopback = isRecord(rawWebServer) && rawWebServer["host"] === "0.0.0.0";
+      // 惰性 getter：服务可能在路由注册之后才就绪（inject 只声明 webServer 硬依赖）
+      // 各服务经形状守卫投影（替代 `svc.get(...) as X` 断言）。
+      const deps: RouteDeps = {
+        sessions: () => {
+          const service = getService("sessions");
+          return isSessionsService(service) ? service : undefined;
+        },
+        fs: () => {
+          const service = getService("fs");
+          return isFsService(service) ? service : undefined;
+        },
+        llm: () => {
+          const service = getService("llm");
+          return isLlmService(service) ? service : undefined;
+        },
+        agentDefaultModel: () => {
+          const service = getService("agentDefaultModel");
+          return isAgentDefaultModel(service) ? service : undefined;
+        },
+        // 导入允许根：每次请求现读 volatile 引用（改设置不必重启插件）。引用背后仍可能
+        // 是存量脏配置，故过 importAllowRootsOf 收成字符串表——读不到就是空表，绝不因为
+        // 缺配置就放开绝对路径（只剩「会话 cwd + 内置角色库」两个根）。
+        importAllowRoots: () => importAllowRootsOf(config.importAllowRoots.get()),
+        // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
+        limits: () => ({
+          organizeTimeoutMs: config.organizeTimeoutMs.get(),
+          maxSnippetBytes: config.maxSnippetBytes,
+          readConcurrency: config.readConcurrency,
+          importBodyMaxBytes: config.importBodyMaxBytes,
+        }),
+      };
+      const handlers = createRouteHandlers(deps, csrf, localeMessages, servingNonLoopback);
+      const disposeDefaults = webServer.register({
+        kind: "exact",
+        path: DEFAULTS_PATH,
+        handler: (req, res) => {
+          handlers.defaults(req, res);
+        },
+      });
+      const disposeContext = webServer.register({
+        kind: "exact",
+        path: CONTEXT_PATH,
+        handler: (req, res) => handlers.context(req, res),
+      });
+      const disposeModel = webServer.register({
+        kind: "exact",
+        path: MODEL_PATH,
+        handler: (req, res) => {
+          handlers.model(req, res);
+        },
+      });
+      const disposeOrganize = webServer.register({
+        kind: "exact",
+        path: ORGANIZE_PATH,
+        handler: (req, res) => handlers.organize(req, res),
+      });
+      const disposeImport = webServer.register({
+        kind: "exact",
+        path: IMPORT_PATH,
+        handler: (req, res) => handlers.importAgent(req, res),
+      });
+      return () => {
+        disposeDefaults();
+        disposeContext();
+        disposeModel();
+        disposeOrganize();
+        disposeImport();
+      };
+    }, "dir-prep-organize: webServer routes");
+  });
 }

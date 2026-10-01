@@ -9,6 +9,7 @@
     "url": "git+https://github.com/JayYuen666/dsh-dir-prep-organize.git"
   },
   "files": [
+    "icon.svg",
     "host.js",
     "client.js",
     "cordis.patch.yml",
@@ -80,7 +81,6 @@
     "@types/react-dom": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "eslint-plugin-sonarjs": "catalog:",
-    "fallow": "catalog:",
     "happy-dom": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
@@ -100,6 +100,7 @@
       "optional": true
     }
   },
+  "icon": "icon.svg",
   "engines": {
     "dsh": ">=0.2.0-rc.2"
   },

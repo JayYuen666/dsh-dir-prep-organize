@@ -730,7 +730,7 @@ describe("0.1.7 隐式注册验收", () => {
   /** 设置卡该能编辑的字段：模板列表 + 导入允许根，一个都不该漏。 */
   // organizeTimeoutMs volatile 上卡（客户端 fetch 超时同源位）；另两位部署值非 volatile。
   const EDITABLE = ["importAllowRoots", "organizeTimeoutMs", "templates"];
-  const NON_VOLATILE = ["maxSnippetBytes", "readConcurrency"];
+  const NON_VOLATILE = ["importBodyMaxBytes", "maxSnippetBytes", "readConcurrency"];
 
   it("volatileForm(Config) 的字段集恰为三项可编辑字段（含 organizeTimeoutMs）", () => {
     const schema = Config as unknown as SchemaNode;
@@ -740,7 +740,7 @@ describe("0.1.7 隐式注册验收", () => {
     assert.deepEqual(
       Object.keys(schema.dict ?? {}).toSorted(),
       [...EDITABLE, ...NON_VOLATILE].toSorted(),
-      "schema 字段全集 = 投影可编辑集 + 非 volatile 部署值（maxSnippetBytes/readConcurrency）。" +
+      "schema 字段全集 = 投影可编辑集 + 非 volatile 部署值（importBodyMaxBytes/maxSnippetBytes/readConcurrency）。" +
         "漏标 .volatile() 会让那一项从设置卡上静默消失，新增字段要同步这两张清单",
     );
   });
