@@ -95,12 +95,7 @@ import {
 } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 import { HOST_MESSAGES } from "./src/host-messages.ts";
 import type { HostMessages } from "./src/host-messages.ts";
-import {
-  DEFAULT_TEMPLATES,
-  condenseRoleBody,
-  groupLabelOf,
-  parseAgentFrontmatter,
-} from "./src/templates.ts";
+import { condenseRoleBody, groupLabelOf, parseAgentFrontmatter } from "./src/templates.ts";
 import type { AgentFileInfo, TemplateEntry } from "./src/templates.ts";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
@@ -117,10 +112,10 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
  *     kind（installed `dsh-llm/lib/types/message.d.ts:101-133`），本包的
  *     `plugin:dir-prep-organize` 不在其中——旧代码同时带上 `id` 与该 kind，造的正是宿主
  *     没有的第三种形状；
- *  3. 决策记录 dsh 仓 `.agents/notes/implemented/architecture/`
- *     `2026-09-17-persistence-attribution-policy.md`："Request-only prompts need no
+ *  3. 宿主的持久化归属策略是「request-only 输入不需要持久身份」：把一次性提示构造成
+ *     Session 消息只会给 source 联合类型平白增加分支（"Request-only prompts need no
  *     durable identity, but constructing them as Session messages adds unnecessary source
- *     alternatives to that union."
+ *     alternatives to that union."）。
  *  故旧的 `ORGANIZE_SOURCE_KIND` 常量（连同只被它和帧 id 用到的 `PLUGIN_NAME`）一并撤下。
  *  本包没有读回侧需要它：`extractRecentTurns` 只认真人 `kind === 'user'` 与模型
  *  `kind === 'model'`，从不按本包 kind 去重或断链，所以删除它不牵动任何 dedupe 配对。
@@ -132,6 +127,73 @@ const IMPORT_PATH = "/_dsh/dir-prep/import";
 const DEFAULTS_PATH = "/_dsh/dir-prep/default-templates";
 /** 插件自带角色库目录（agency-agents-zh 部门目录移入）。导入路径留空 = 全量导入此目录。 */
 const AGENTS_DIR = path.join(import.meta.dirname, "agents");
+
+/**
+ * 内置精选模板表的数据产物入口（templates.data.mjs，由 build-host.mjs 单独产出）。
+ *
+ * 用 `import.meta.url` 相对定位，与上面 AGENTS_DIR 同一套理由：产物落**包根**，所以运行时
+ * 落点必须跟着产物走，而不是跟着构建时的 cwd 或源码目录走。
+ *
+ * 说明符走变量而不是字符串字面量，是刻意的：rolldown 见到字面量会去解析它，而这个名字在
+ * 源码树里并不存在（它是上一次构建的产物）。变量形态让打包器原样留下，由 Node 在运行期解析。
+ */
+const DEFAULT_TEMPLATES_URL = new URL("templates.data.mjs", import.meta.url);
+
+/**
+ * 首次读取时才 import 模板表，之后复用同一个 promise（失败也不重试——同一个坏包反复 import
+ * 只会重复报同一个错，缓存住失败反而让症状稳定）。
+ */
+let defaultTemplatesPromise: Promise<readonly TemplateEntry[]> | undefined;
+
+/**
+ * 产物导出值的守卫：只认「是数组」这一条。
+ *
+ * 元素级校验刻意不在这一层做——端点把这张表原样 JSON 序列化下发，渲染侧的兜底在 client
+ * 半；在这里逐条断言字段只会让守卫和生成脚本的字段集耦在一起，改一个字段要动两处。
+ * `Array.isArray` 本身会把 unknown 收窄成 `any[]`，经类型谓词再收一次，返回值才不是
+ * 不安全返回（no-unsafe-return）。
+ */
+function isTemplateEntryList(value: unknown): value is readonly TemplateEntry[] {
+  return Array.isArray(value);
+}
+
+/**
+ * 从 import 到的模块命名空间里取出内置精选模板表；形状不对就抛。
+ *
+ * 说明符是变量 ⇒ import() 的返回类型退化成 any，所以这一步必须自己验形状：产物发错、发旧、
+ * 或被别的构建覆盖，症状都会是「模板下拉空着」，而带原因的报错比一张空列表好定位得多。
+ * 提成纯函数是为了能脱离磁盘与模块缓存单测它——产物 URL 一旦被加载过就进了 Node 的 ESM
+ * 缓存，改磁盘上的内容对后续 import 是无效的。
+ *
+ * @param raw - import 得到的模块命名空间
+ * @returns 内置精选模板表
+ */
+export function defaultTemplatesFrom(raw: unknown): readonly TemplateEntry[] {
+  const value = isRecord(raw) ? raw["DEFAULT_TEMPLATES"] : undefined;
+  if (!isTemplateEntryList(value)) {
+    throw new Error("templates.data.mjs 的导出形状不对：期望具名的 DEFAULT_TEMPLATES 数组");
+  }
+  return value;
+}
+
+/** 真正去 import 产物的那一步；单独立一个函数，缓存就只认「进行中/已完成」这一个 promise。 */
+async function importDefaultTemplates(): Promise<readonly TemplateEntry[]> {
+  const raw: unknown = await import(DEFAULT_TEMPLATES_URL.href);
+  return defaultTemplatesFrom(raw);
+}
+
+/**
+ * 内置精选模板表（85 条）：按需载入，永不静态导入。
+ *
+ * 静态导入会让这 85 条模板随宿主载入插件一起进内存，而它们只有一个消费者——default-templates
+ * 端点，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一口径。
+ *
+ * @returns 内置精选模板表
+ */
+export async function loadDefaultTemplates(): Promise<readonly TemplateEntry[]> {
+  defaultTemplatesPromise ??= importDefaultTemplates();
+  return defaultTemplatesPromise;
+}
 
 /** 关键文本扩展名（这些文件取首段摘要）。仅代码/文档/结构配置面；
  *  yaml/env 等敏感配置不取摘要（凭据泄露风险，实测 .credentials.yaml 被带出）。 */
@@ -157,18 +219,17 @@ const KEY_EXT = new Set([
   ".scss",
   ".less",
 ]);
-/** 文件名命中即跳过摘要的模式（凭据/密钥类，大小写不敏感）。 */
-const SECRET_MARKERS = [
-  "credential",
-  "secret",
-  "id_rsa",
-  ".pem",
-  ".p12",
-  ".pfx",
-  "keystore",
-  ".env",
-  ".key",
-];
+/** 文件名命中即跳过摘要的模式（凭据/密钥类，大小写不敏感）。
+ *
+ * 为什么不是朴素子串表：子串匹配把两类错误混在一起，而它们的代价完全不对等。漏匹配
+ * （`api-keys.json`、`token.json`、`auth.json`）= 凭据全文进 system prompt 发给第三方
+ * 模型；过度匹配（`monkey.js`、`AUTHORS.md`）= 一份正常文档凭空消失。前者是安全事故，
+ * 后者是使用摩擦——但过度匹配会让排查变得莫名其妙，所以这里按**分隔符边界**收：
+ * 命中词的前后必须是串首串尾或非字母数字字符，于是 `api-keys.json`/`api_key.json`/
+ * `db-password.json` 命中，而 `monkey.js`（key 前是 n）、`AUTHORS.md`（auth 后是 o）不命中。
+ * 复数形式一并收进来：`tokens.json`、`accounts.json` 是真实存在的凭据文件名。 */
+const SECRET_PATTERN =
+  /(?:^|[^a-z0-9])(?:credentials?|secrets?|id_rsa|pem|p12|pfx|keystore|env|keys?|tokens?|auth|passwd|password|accounts?)(?:[^a-z0-9]|$)/u;
 /** LLM 整理超时。 */
 /** schema .default() 的单源（host 消费走 config 字段，不再直读常量）。 */
 const ORGANIZE_TIMEOUT_MS = 120_000;
@@ -180,9 +241,45 @@ const DEFAULT_IMPORT_BODY_MAX_BYTES = 8 * 1024 * 1024;
  *  跳过（不截半份——半份摘要会以"全量"的名义喂给模型，比没有更误导），
  *  并计入 skipped.tooLarge 回报。 */
 const MAX_SNIPPET_BYTES = 256 * 1024;
+/** 单次整理带进模型的全部摘要的**总量**上限。
+ *
+ *  为什么需要总量而单文件上限不够：`maxSnippetBytes` 只管每个文件，而条目数不设上界
+ *  （用户拍板）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，那条
+ *  POST 的 body 上限是 8 MiB——实测 80 个 200 KiB 的文件就能造出 15.6 MiB，结果是
+ *  context 端点成功、UI 正常列出文件树，用户点「整理」才撞 413，且错误是英文
+ *  `request body too large`。这里给总量封顶，让「context 成功」不再意味着
+ *  「organize 必然失败」。留足余量：JSON 转义与 client 侧的拼接还会再放大一截。 */
+const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
 /** 文件读取并发上限：Promise.all 一次铺开会在导入内置库（266 个文件）时打满
  *  fd，EMFILE 抛错被单文件 catch 吞掉 → 条目静默丢失而仍报 ok:true。 */
 const READ_CONCURRENCY = 8;
+/** `readConcurrency` 的上界。再往上只是更快撞上 fd 上限——而那正是这个字段存在的
+ *  理由；schema 的 `natural()` 无上界，所以上界只能在这里补。 */
+const MAX_READ_CONCURRENCY = 64;
+/** Node `setTimeout` 的延时上限（2^31-1 ms）。** 超过它 V8 会打一条
+ *  TimeoutOverflowWarning 然后把延时静默夹成 1 ms**——于是「把超时调大」这个配置意图
+ *  被反转成「立刻失败」，且只在 stderr 留一行警告。`Schema.natural()` 不挡这个值。 */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * 把一个部署来的数夹进 `[min, max]`，非有限值回落到 `fallback`。
+ *
+ * 为什么单独要一个函数：`Math.min(Math.max(NaN, 1), MAX)` 的结果是 `NaN`——两个 clamp
+ * 都会把 NaN 原样放过去，于是「看起来夹过了」的代码对最危险的那个输入恰好无效。
+ *
+ * @param value - 待夹的数（可能非有限）
+ * @param min - 下界（含）
+ * @param max - 上界（含）
+ * @param fallback - `value` 非有限时用的默认值
+ * @returns `[min, max]` 区间内的整数
+ */
+export function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.trunc(value), min), max);
+}
+
 /** organize 回填的 CSRF 头名（与 client-entry 侧一致）。 */
 const CSRF_HEADER = "x-dir-prep-csrf";
 
@@ -206,7 +303,7 @@ export type { FsDirEntry, FsTarget } from "@deepseek-ai/dsh-fs";
  * 旧镜像漏抄了官方那三位的可选 `signal?: AbortSignal` 形参（抄本里没有的形参在 TS 里
  * 是"少收一个参数"，调用点不会报错，但真实宿主多一档取消语义）；投影之后它回到官方形状。
  */
-export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText">;
+export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "contains">;
 
 /**
  * 本包从会话消息史的读取面 = **官方 `Message` 的键名投影**（installed
@@ -392,7 +489,13 @@ function fillTemplate(template: string, tokens: readonly (readonly [string, stri
  *  进程 fd 打满，EMFILE 抛错被单文件 catch 吞掉 → 条目静默丢失而仍报 ok:true。
  *  分片用**递归**而非 for+await：批间等待是并发上限的实现手段，而 await-in-loop
  *  在本包严格档里是 error（不用 disable 注释换取绿灯）。
- *  worker 自己负责错误降级（不抛），否则一个失败会让整批 reject、把已完成结果全丢掉。 */
+ *  worker 自己负责错误降级（不抛），否则一个失败会让整批 reject、把已完成结果全丢掉。
+ *
+ *  ⚠ limit 必须在这里自守，不能指望上游都夹过：`limit<=0` 时 `slice(0, limit)` 恒为
+ *  空数组而 `slice(limit)` 恒为**原数组**，于是递归参数原地不动 = 无限自递归。它不是
+ *  栈溢出——`async` 递归不涨调用栈——而是每轮 `Promise.all([])` 累积一个微任务，
+ *  内存单调增长直到 V8 上限，进程被 OOM killer 直接带走（实测 exit 134）。宿主里
+ *  其他插件和当前会话跟着一起没，而触发它只需要一个配置值。 */
 async function mapBounded<TItem, TResult>(
   items: readonly TItem[],
   limit: number,
@@ -401,23 +504,28 @@ async function mapBounded<TItem, TResult>(
   if (items.length === 0) {
     return [];
   }
-  const batch = await Promise.all(items.slice(0, limit).map((item) => worker(item)));
-  return [...batch, ...(await mapBounded(items.slice(limit), limit, worker))];
+  const batchSize = clampInt(limit, 1, MAX_READ_CONCURRENCY, READ_CONCURRENCY);
+  const batch = await Promise.all(items.slice(0, batchSize).map((item) => worker(item)));
+  if (items.length <= batchSize) {
+    return batch;
+  }
+  return [...batch, ...(await mapBounded(items.slice(batchSize), batchSize, worker))];
 }
 
 function isKeyFile(name: string): boolean {
   const lower = name.toLowerCase();
   // 敏感面排除优先：命中凭据/密钥模式的文件永不取摘要
-  for (const marker of SECRET_MARKERS) {
-    if (lower.includes(marker)) {
-      return false;
-    }
+  if (SECRET_PATTERN.test(lower)) {
+    return false;
   }
   const dot = name.lastIndexOf(".");
   if (dot <= 0) {
     return false;
   }
-  return KEY_EXT.has(name.slice(dot));
+  // 扩展名比对着 lower 取，不对着的后果是**静默丢数据**：`README.MD`/`config.JSON`
+  // 既拿不到摘要，又不计入任何 skip 计数——LLM 收到一份「该文件没有内容」的目录表，
+  // UI 上也看不出少了东西。密钥面早就用的是 lower，只有这一面漏了。
+  return KEY_EXT.has(lower.slice(dot));
 }
 
 /** 关键文件摘要：全量正文（用户拍板不截断——上下文完整性优先，
@@ -425,6 +533,43 @@ function isKeyFile(name: string): boolean {
 function makeSnippet(content: string): string {
   const trimmed = content.trim();
   return trimmed.length === 0 ? "" : trimmed;
+}
+
+/** 单个关键文件摘要的取舍结果：留不留、留多大。 */
+interface ReadDecision {
+  /** 留则给正文，丢则 undefined。 */
+  readonly snippet: string | undefined;
+  /** 留则计入累计字节。 */
+  readonly keptBytes: number;
+  /** 该不该记进 skipped.tooLarge（单份太大，或累计预算装不下）。 */
+  readonly countTooLarge: boolean;
+}
+
+/**
+ * 一次读取的取舍：单文件上限之外再加一道**总量**上限。
+ *
+ * 抽成独立函数而不是塞在循环里，是因为这段有三类互斥的判定（单份过大 / 读失败 /
+ * 累计超预算），内联进 collectDirContext 会把那个函数的认知复杂度顶穿。
+ *
+ * @param read - 单文件读取结果
+ * @param usedBytes - 本次收集已累计的字节
+ * @param maxTotalBytes - 总量上限
+ * @returns 取舍结果
+ */
+function classifyRead(
+  read: { tooLarge?: boolean; unreadable?: boolean; snippet: string | undefined },
+  usedBytes: number,
+  maxTotalBytes: number,
+): ReadDecision {
+  const bytes = read.snippet === undefined ? 0 : Buffer.byteLength(read.snippet, "utf8");
+  if (read.tooLarge === true || read.unreadable === true || read.snippet === undefined) {
+    // unreadable 的计数由调用方单独记（两类计数口径不同，不能合并）
+    return { snippet: undefined, keptBytes: 0, countTooLarge: read.tooLarge === true };
+  }
+  if (usedBytes + bytes > maxTotalBytes) {
+    return { snippet: undefined, keptBytes: 0, countTooLarge: true };
+  }
+  return { snippet: read.snippet, keptBytes: bytes, countTooLarge: false };
 }
 
 /** cwd 提取：sessions.get(id).header.cwd，非字符串视为缺。 */
@@ -516,6 +661,8 @@ export interface DirScanLimits {
   maxSnippetBytes: number;
   /** 有界并发读取度。 */
   readConcurrency: number;
+  /** 单次收集的全部摘要的字节总量上限。 */
+  maxTotalBytes?: number;
 }
 
 /** 缺省部署值（schema .default 的同源常量）；limitsOf()/collect* 的回落单源。 */
@@ -526,6 +673,38 @@ const DEFAULT_LIMITS = {
   importBodyMaxBytes: DEFAULT_IMPORT_BODY_MAX_BYTES,
 };
 
+/** 路由层实际用的 limits 全集。 */
+type RouteLimits = DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number };
+
+/**
+ * 部署值的唯一收口：把会致命的几个数夹进安全区间，再交给路由。
+ *
+ * 为什么放在这里而不是各消费点：`limitsOf()` 是全部五个路由读 limits 的**唯一入口**
+ * （context/organize/importAgent 都经它），一处收口就不会漏掉将来新增的路由；而散在
+ * 各消费点夹，哪天新增一个调用点就等于新增一个漏洞。
+ *
+ * 夹哪两个、为什么：
+ * - `readConcurrency` → `[1, 64]`。**下界 0 是致命的**：`mapBounded` 拿到 0 会无限
+ *   自递归直到 OOM，**整个 DSH 宿主进程被带走**，而不只是这一次请求失败（见 mapBounded
+ *   的注释）。schema 的 `natural()` 下界恰好是 0 且无上界，两个方向都得夹。
+ * - `organizeTimeoutMs` → `[1, 2^31-1]`。上界超了会被 `setTimeout` 静默夹成 1 ms，
+ *   「调大超时」变成「立刻失败」。
+ *
+ * 另外两个（`maxSnippetBytes`/`importBodyMaxBytes`）**故意不夹**：schema 已经挡住
+ *   NaN/±Infinity/负数/小数，唯一还能配出来的越界值 `0` 各自有确定且已记账的行为
+ *   （前者「全跳过且计 tooLarge」，后者「413」），那是用户的显式意图，不该被悄悄改写。
+ *
+ * @param limits - 未经夹位的部署值
+ * @returns 两项关键值已夹位、其余原样透传的新对象
+ */
+export function sanitizeLimits(limits: RouteLimits): RouteLimits {
+  return {
+    ...limits,
+    readConcurrency: clampInt(limits.readConcurrency, 1, MAX_READ_CONCURRENCY, READ_CONCURRENCY),
+    organizeTimeoutMs: clampInt(limits.organizeTimeoutMs, 1, MAX_TIMER_MS, ORGANIZE_TIMEOUT_MS),
+  };
+}
+
 export async function collectDirContext(
   fs: Pick<FsService, "resolve" | "listDir" | "readText">,
   cwd: string | undefined,
@@ -533,6 +712,7 @@ export async function collectDirContext(
   limits?: DirScanLimits,
 ): Promise<CollectResult> {
   const scan = limits ?? { maxSnippetBytes: MAX_SNIPPET_BYTES, readConcurrency: READ_CONCURRENCY };
+  const maxTotalBytes = limits?.maxTotalBytes ?? MAX_CONTEXT_TOTAL_BYTES;
   if (cwd === undefined || cwd.length === 0) {
     return {
       cwd: "",
@@ -553,13 +733,19 @@ export async function collectDirContext(
       ...(await readSnippetBounded(fs, item, scan.maxSnippetBytes)),
     }));
     const snippetByTarget = new Map<string, string | undefined>();
+    let totalBytes = 0;
     for (const read of reads) {
-      if (read.tooLarge) {
+      const decision = classifyRead(read, totalBytes, maxTotalBytes);
+      if (decision.countTooLarge) {
         skipped.tooLarge += 1;
-      } else if (read.unreadable) {
+      }
+      if (read.unreadable) {
         skipped.unreadable += 1;
       }
-      snippetByTarget.set(read.targetKey, read.snippet);
+      if (decision.keptBytes > 0) {
+        totalBytes += decision.keptBytes;
+      }
+      snippetByTarget.set(read.targetKey, decision.snippet);
     }
     const entries: DirEntry[] = raw.map((item) => ({
       name: item.name,
@@ -786,16 +972,32 @@ function isVisibleMdFile(child: FsDirEntry): boolean {
 }
 
 /** 一层目录内容 → 顶层 .md 候选（跳过隐藏项，按名排序保确定性）。 */
-function mdCandidates(children: FsDirEntry[], dirName: string): ImportCandidate[] {
-  return children
-    .filter((child) => isVisibleMdFile(child))
-    .map((child) => ({
-      name: child.name,
-      dirName,
-      target: child.target,
-      size: child.size,
-    }))
-    .toSorted((left, right) => left.name.localeCompare(right.name));
+function mdCandidates(
+  fs: Pick<FsService, "contains">,
+  parent: FsTarget,
+  children: FsDirEntry[],
+  dirName: string,
+): ImportCandidate[] {
+  return (
+    children
+      // contains 是后端**用它自己的世界**判包含关系的那道门，不是我们自己拿 targetKey
+      // 当路径比——targetKey 按官方契约是 opaque 的，在沙箱后端上它根本不是宿主路径。
+      //
+      // 为什么必须有：`importPathError` 只对 `path.resolve()` 出来的**字符串**做段比较，
+      // 而随后的 `readText(entry.target)` 会跟随符号链接。于是 cwd 里一个
+      // `roles/secret.md -> /Users/me/.aws/credentials.md` 能通过策略（路径看着在 cwd 内），
+      // 读出来的却是允许根之外的文件。策略判的是字符串形状、读取走的是真实对象，
+      // 两者之间必须由后端自己复判一次。
+      .filter((child) => fs.contains(parent, child.target))
+      .filter((child) => isVisibleMdFile(child))
+      .map((child) => ({
+        name: child.name,
+        dirName,
+        target: child.target,
+        size: child.size,
+      }))
+      .toSorted((left, right) => left.name.localeCompare(right.name))
+  );
 }
 
 /** 候选 → 解析结果：字节超限整份跳过（单条模板 = 一整个角色正文，超限就放弃该
@@ -907,14 +1109,14 @@ function pushReadResult(
  *  跳过计数**就地累加进调用方持有的 `skipped`**（而不是返回一份新表）：中途抛错时
  *  上层 catch 仍要报出已经数到的那部分。 */
 async function importFromDirectory(
-  fs: Pick<FsService, "listDir" | "readText">,
+  fs: Pick<FsService, "listDir" | "readText" | "contains">,
   absolute: string,
   target: FsTarget,
   limits: DirScanLimits,
   skipped: SkipCounts,
 ): Promise<TemplateEntry[]> {
   const rootChildren = await fs.listDir(target);
-  const rootFiles = mdCandidates(rootChildren, path.basename(absolute));
+  const rootFiles = mdCandidates(fs, target, rootChildren, path.basename(absolute));
   const subDirs = rootChildren
     .filter((child) => isVisibleDirectory(child))
     .map((child) => child.target)
@@ -924,7 +1126,7 @@ async function importFromDirectory(
   const subScans = await mapBounded(subDirs, limits.readConcurrency, async (sub) => {
     const children = await fs.listDir(sub);
     return {
-      files: mdCandidates(children, path.basename(sub.displayPath)),
+      files: mdCandidates(fs, sub, children, path.basename(sub.displayPath)),
       deeper: children.filter((child) => isVisibleDirectory(child)).map((child) => child.target),
     };
   });
@@ -957,7 +1159,7 @@ async function importFromDirectory(
  *  不需要它；保留这个开关只为让"内置全量导入"不依赖安装位置是否命中隐藏段判断）。
  *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由路由注入）。 */
 export async function collectAgentTemplates(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText">,
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   requested: string,
   cwd: string | undefined,
   messages: HostMessages,
@@ -1024,6 +1226,11 @@ export function buildOrganizeSystem(
   input: Omit<OrganizeInput, "prompt">,
   messages: HostMessages,
 ): string {
+  // ⚠ 信任序：这里只放**宿主自己产生**的内容（规则 + 会话 cwd）。仓库摘要、会话历史、
+  // 角色正文一律不进 system——它们是用户仓库里可控的文本，攻击者只要克隆一个仓库、
+  // 在某个 .md 里写下「忽略以上规则」，就能借 system 槽的最高信任位改写模型行为。
+  // 真正的用户草稿本来就只走 user 消息，把不可信块也放进 user，两者在同一信任层，
+  // 谁也冒充不了谁。
   return [
     messages.sysRole,
     messages.sysRulesHeading,
@@ -1034,19 +1241,45 @@ export function buildOrganizeSystem(
     messages.sysRuleResolveRefs,
     messages.sysRuleNoListing,
     messages.sysRuleRoleView,
+    messages.sysRuleDataNotInstruction,
     fillTemplate(messages.sysCwdLine, [["{cwd}", input.cwd || messages.sysCwdMissing]]),
-    input.entriesSummary !== undefined && input.entriesSummary !== ""
-      ? fillTemplate(messages.sysSummaryLine, [["{summary}", input.entriesSummary]])
-      : "",
-    input.recentTurns !== undefined && input.recentTurns !== ""
-      ? fillTemplate(messages.sysRecentTurnsLine, [["{turns}", input.recentTurns]])
-      : "",
-    input.roleText !== undefined && input.roleText !== ""
-      ? fillTemplate(messages.sysRoleLine, [["{roleText}", input.roleText]])
-      : "",
   ]
     .filter((part) => part.length > 0)
     .join("\n");
+}
+
+/**
+ * user 消息 = 草稿 + 围栏起来的不可信数据块。
+ *
+ * 围栏用**成对的定界标记**而不是缩进或横线：模型侧最容易被无视的是「看起来像普通内容」
+ * 的标记，而 `</data>` 这种成对标签既显眼、又难以由数据自身伪造（数据里出现的
+ * `</data>` 会被当作提前闭合，后续内容重新落回指令位——所以围栏内容仍按纯文本处理，
+ * 不做任何解析或转义）。
+ *
+ * @param prompt - 真正的用户草稿
+ * @param input - 其余上下文（摘要/历史/角色）
+ * @param messages - 注入的字典
+ * @returns 交给模型的那条 user 文本
+ */
+export function buildOrganizeUser(
+  prompt: string,
+  input: Omit<OrganizeInput, "prompt">,
+  messages: HostMessages,
+): string {
+  const fenced = (line: string): string =>
+    [messages.sysDataFenceStart, line, messages.sysDataFenceEnd].join("\n");
+  const blocks = [
+    input.entriesSummary !== undefined && input.entriesSummary !== ""
+      ? fenced(fillTemplate(messages.sysSummaryLine, [["{summary}", input.entriesSummary]]))
+      : "",
+    input.recentTurns !== undefined && input.recentTurns !== ""
+      ? fenced(fillTemplate(messages.sysRecentTurnsLine, [["{turns}", input.recentTurns]]))
+      : "",
+    input.roleText !== undefined && input.roleText !== ""
+      ? fenced(fillTemplate(messages.sysRoleLine, [["{roleText}", input.roleText]]))
+      : "",
+  ].filter((part) => part.length > 0);
+  return blocks.length === 0 ? prompt : [prompt, "", ...blocks].join("\n");
 }
 
 /** 文本块守卫（content 数组里 type==='text' 且 text 是 string 的块；替代 as 断言）。 */
@@ -1156,6 +1389,8 @@ export async function runOrganize(
   input: OrganizeInput,
   messages: HostMessages,
   timeoutMs: number = ORGANIZE_TIMEOUT_MS,
+  // 调用方（HTTP 路由）的取消信号：客户端断开时用它中止流。
+  callerSignal?: AbortSignal,
 ): Promise<{ content: string }> {
   const { prompt } = input;
   // prompt 在 OrganizeInput 里是必选 string（organize 路由已用 `typeof === "string"` 收敛成
@@ -1173,13 +1408,26 @@ export async function runOrganize(
   const llmMessages: RequestUserInput[] = [
     {
       role: "user",
-      content: [{ type: "text", text: prompt }],
+      content: [{ type: "text", text: buildOrganizeUser(prompt, input, messages) }],
     },
   ];
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
+  // 客户端断开也要中止：没有这条，一次「点了整理就关页面」会继续烧满整个超时窗口
+  // 和一份真实 token 账单，而响应反正没人收。abort 监听用 once + finally 里摘除，
+  // 免得在长驻的宿主进程里给每次请求留一个悬挂监听。
+  const onCallerAbort = (): void => {
+    controller.abort();
+  };
+  if (callerSignal !== undefined) {
+    if (callerSignal.aborted) {
+      onCallerAbort();
+    } else {
+      callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    }
+  }
   try {
     const stream = llm.stream({
       provider: model.provider,
@@ -1206,6 +1454,7 @@ export async function runOrganize(
     return { content };
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
 
@@ -1246,7 +1495,7 @@ const TemplateEntrySchema = Schema.object({
  *    `JSON.stringify([uid, schema.toJSON(), entry.options.config])` 取指纹，schema.ts:24
  *    的 plainSchema 保留 meta.default），所以内置集不进 schema、由 host 半端点按需下发；而既然空表就是
  *    「未设置」的运行时形状，回落判据仍由 client 半出。 */
-const configSchema = Schema.object({
+const configShape = {
   templates: Schema.array(TemplateEntrySchema).volatile(),
   importAllowRoots: Schema.array(Schema.string()).default([]).volatile(),
   // ── Config 化（默认与原模块常量同值；config.md:78-92：部署间可能想配不同值的
@@ -1257,7 +1506,15 @@ const configSchema = Schema.object({
   maxSnippetBytes: Schema.natural().default(MAX_SNIPPET_BYTES),
   readConcurrency: Schema.natural().default(READ_CONCURRENCY),
   importBodyMaxBytes: Schema.natural().default(DEFAULT_IMPORT_BODY_MAX_BYTES),
-});
+};
+
+// 注解写 `ReturnType<typeof Schema.object<typeof configShape>>` 而不是让它推断：schemastery 的
+// `object` 返回类型是 `ObjectS<X> & Dict`，那个 `Dict` 来自 @deepseek-ai/cosmokit——cosmokit 不是
+// 本包的依赖，声明文件一旦点名它，pnpm 严格布局下消费方根本解析不到（TS2883 会直接拒绝产出
+// host.d.ts，表现为整个入口的声明文件缺失）。dict 单独起常量，是为了让 `typeof configShape`
+// 有名字可引——内联对象字面量没有。
+const configSchema: ReturnType<typeof Schema.object<typeof configShape>> =
+  Schema.object(configShape);
 
 /** cordis 校验过 configSchema 后交进 apply 的那份配置：volatile 字段以 Volatile 引用
  *  形态进来，读当前值一律 `.get()`（改设置不必重挂载插件）。
@@ -1316,7 +1573,10 @@ export interface RouteDeps {
   importAllowRoots?: () => readonly string[];
   /** 部署值（Config 化）：整理超时 / 摘要字节上限 / 读取并发。
    *  缺省回落原模块常量（与 schema .default 同值）——测试与旧调用方不必逐一改。 */
-  limits?: () => DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number };
+  limits?: () => RouteLimits;
+  /** 内置精选模板表的取数口。缺省走按需 import 产物；测试替掉它即可覆盖载入失败那条回执，
+   *  而不必去改磁盘上那份产物（它的 URL 一旦被加载过就进了 Node 的 ESM 缓存，改了也没用）。 */
+  loadDefaultTemplates?: () => Promise<readonly TemplateEntry[]>;
 }
 
 /** 路由 handler 形状（本包自己的路由表投影）。官方 `WebRoute["handler"]` 的返回是
@@ -1426,10 +1686,7 @@ interface RouteScope {
   readonly deps: RouteDeps;
   readonly csrf: string;
   readonly messagesOf: MessagesOf;
-  readonly limitsOf: () => DirScanLimits & {
-    organizeTimeoutMs: number;
-    importBodyMaxBytes: number;
-  };
+  readonly limitsOf: () => RouteLimits;
 }
 
 /** GET context 的正文（信任闸门之后）：缺 fs / 缺 cwd / 扫描报错各回一句，成功才下发条目表。 */
@@ -1538,6 +1795,7 @@ async function sendOrganizeResponse(
   res: ServerResponse,
   messages: HostMessages,
   parsed: unknown,
+  callerSignal?: AbortSignal,
 ): Promise<void> {
   try {
     const llm = scope.deps.llm?.();
@@ -1577,6 +1835,7 @@ async function sendOrganizeResponse(
         },
         messages,
         scope.limitsOf().organizeTimeoutMs,
+        callerSignal,
       );
       sendJson(res, 200, { ok: true, content: result.content });
     } catch (error: unknown) {
@@ -1659,22 +1918,22 @@ export function createRouteHandlers(
   // 测试侧不传即是保守档——这也是"171 个手搓构造点不必改"的同一条口径。
   servingNonLoopback = false,
 ): {
-  defaults: SyncRouteHandler;
+  defaults: AsyncRouteHandler;
   context: AsyncRouteHandler;
   model: SyncRouteHandler;
   organize: AsyncRouteHandler;
   importAgent: AsyncRouteHandler;
 } {
   // 每次请求现读（与 importAllowRoots 同一口径）：cordis 行 config 改了无须重启。
-  const limitsOf = (): DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number } =>
-    deps.limits?.() ?? DEFAULT_LIMITS;
+  // sanitizeLimits 收口：这一处是全部路由读 limits 的唯一入口，致命值在这里夹一次即可。
+  const limitsOf = (): RouteLimits => sanitizeLimits(deps.limits?.() ?? DEFAULT_LIMITS);
   const scope: RouteScope = { deps, csrf, messagesOf, limitsOf };
 
   return {
-    /** 内置精选角色表（DEFAULT_TEMPLATES）的按需读面。表只在 host 侧：
-     *  src/default-templates.generated.ts 有 640KB，打包进 client 半等于每次开页都
-     *  传输+解析它（本包曾因此 711KB）。client 首次打开「模板」下拉时拉这一发。 */
-    defaults(req, res) {
+    /** 内置精选角色表的按需读面。两头都按需：表在独立产物 templates.data.mjs 里，
+     *  这里第一次被请求时才 import；client 首次打开「模板」下拉时才拉这一发。
+     *  （早先把表打进 client 半，等于每次开页都传输+解析它，本包曾因此 711KB。） */
+    async defaults(req, res) {
       // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
       if (!guardTrust(req, res, { servingNonLoopback })) {
         return;
@@ -1683,7 +1942,14 @@ export function createRouteHandlers(
         methodNotAllowed(res, "GET");
         return;
       }
-      sendJson(res, 200, { ok: true, templates: DEFAULT_TEMPLATES });
+      try {
+        const loadTemplates = deps.loadDefaultTemplates ?? loadDefaultTemplates;
+        sendJson(res, 200, { ok: true, templates: await loadTemplates() });
+      } catch (error: unknown) {
+        // 载入失败只有一个成因：产物没跟着包发出去（files 漏了 templates.data.mjs，或
+        // 装了旧版本）。按本仓约定回 200 + ok:false，理由原文带出去便于定位。
+        sendJson(res, 200, { ok: false, error: errorText(error) });
+      }
     },
     async context(req, res) {
       // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
@@ -1724,7 +1990,13 @@ export function createRouteHandlers(
         sendBadRequestJson(res, messages.invalidJsonBody);
         return;
       }
-      await sendOrganizeResponse(scope, res, messages, parsed);
+      // 客户端断开 = 取消。`close` 在响应正常收尾时也会触发，但那时流已结束，
+      // 中止一个已完成的流是空操作，所以不必区分断开与正常完成。
+      const disconnected = new AbortController();
+      req.on("close", () => {
+        disconnected.abort();
+      });
+      await sendOrganizeResponse(scope, res, messages, parsed, disconnected.signal);
     },
     async importAgent(req, res) {
       // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
@@ -1867,9 +2139,7 @@ export function apply(ctx: Context, config: Config): void {
       const disposeDefaults = webServer.register({
         kind: "exact",
         path: DEFAULTS_PATH,
-        handler: (req, res) => {
-          handlers.defaults(req, res);
-        },
+        handler: (req, res) => handlers.defaults(req, res),
       });
       const disposeContext = webServer.register({
         kind: "exact",

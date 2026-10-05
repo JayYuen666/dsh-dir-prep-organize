@@ -17,13 +17,17 @@
 // 「现读官方 locale 命名空间」的整条装配在 apply 装配一节里直接调原始实现。
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
-import { apply, createRouteHandlers as createRouteHandlersWithDict } from "../host.ts";
+import {
+  apply,
+  createRouteHandlers as createRouteHandlersWithDict,
+  defaultTemplatesFrom,
+} from "../host.ts";
 import type {
   Config,
   DerivedMessageView,
@@ -76,6 +80,7 @@ function makeReq(partial: {
   declareLength?: number;
   failStream?: boolean;
 }): IncomingMessage {
+  const listeners = new Map<string, () => void>();
   const headers: Record<string, unknown> = { ...partial.headers };
   if (partial.declareLength !== undefined) {
     headers["content-length"] = String(partial.declareLength);
@@ -84,6 +89,12 @@ function makeReq(partial: {
     method: partial.method,
     url: partial.url ?? "/",
     headers,
+    // 生产代码挂 `close` 监听做「客户端断开即取消 LLM 流」；夹具把监听存下来并
+    // 通过返回对象的 emit() 触发，这样「断开」才是用例能真正制造的事件。
+    on(event: string, listener: () => void) {
+      listeners.set(event, listener);
+      return raw;
+    },
     [Symbol.asyncIterator]() {
       let sent = false;
       return {
@@ -100,7 +111,11 @@ function makeReq(partial: {
       };
     },
   };
-  return raw as unknown as IncomingMessage;
+  return Object.assign(raw as unknown as IncomingMessage, {
+    emit(event: string): void {
+      listeners.get(event)?.();
+    },
+  });
 }
 
 interface FakeResponse {
@@ -173,6 +188,24 @@ async function callOrganize(
 /** fs target 替身：`targetKey` 是官方品牌 `FsTargetKey`（installed dsh-fs types.d.ts:14），
  *  合法构造口只有官方 `brandString`（恒等函数）——替身也走它，不用 `as` 绕过；品牌位直接
  *  索引官方成员形状（dsh-fs 根模块未 re-export 该名字）。 */
+/** 夹具共用的 contains 实现：后端用自己的世界判包含关系，本地夹具就用 targetKey 的
+ *  路径前缀等价。生产代码走的是 dsh-fs 自己的 contains，不经过这里。 */
+/** ContentBlock 是联合类型，只有 text 块带 text——取文本前先窄化，不写 as 断言。 */
+function textOf(block: unknown): string {
+  if (typeof block !== "object" || block === null || !("type" in block)) {
+    return "";
+  }
+  if (block.type !== "text" || !("text" in block)) {
+    return "";
+  }
+  return typeof block.text === "string" ? block.text : "";
+}
+
+function containsIn(parent: FsTarget, child: FsTarget): boolean {
+  const root = parent.targetKey;
+  return child.targetKey === root || child.targetKey.startsWith(`${root}${path.sep}`);
+}
+
 function fsTargetOf(full: string): FsTarget {
   return { targetKey: brandString<FsTarget["targetKey"]>(full), displayPath: full };
 }
@@ -197,6 +230,7 @@ const sessionsReturningNone = sessionsReturning(undefined);
 function realFsService(): FsService {
   return {
     resolve: async (target: string) => fsTargetOf(target),
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async (dir: FsTarget) => {
       const { readdir, stat } = await import("node:fs/promises");
       const names = await readdir(dir.targetKey, { withFileTypes: true });
@@ -212,10 +246,7 @@ function realFsService(): FsService {
         }),
       );
     },
-    readText: async (target: FsTarget) => {
-      const { readFile } = await import("node:fs/promises");
-      return readFile(target.targetKey, "utf8");
-    },
+    readText: async (target: FsTarget) => readFile(target.targetKey, "utf8"),
   };
 }
 
@@ -223,6 +254,7 @@ function realFsService(): FsService {
 function brokenListDirFs(): FsService {
   return {
     resolve: async (target: string) => fsTargetOf(target),
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async (): Promise<FsDirEntry[]> => {
       throw new Error("ENOENT");
     },
@@ -234,6 +266,7 @@ function brokenListDirFs(): FsService {
 function fsReturning(children: FsDirEntry[]): FsService {
   return {
     resolve: async (target: string) => fsTargetOf(target),
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async () => children,
     readText: async () => "",
   };
@@ -243,10 +276,13 @@ const depsOf = (partial: Record<string, unknown>): RouteDeps => partial;
 
 /** 一条正常完成的整理流（text-delta + finish(stop)）。
  *  `satisfies` 校验它确实是 host 的 LlmService，同时保留"stream 无参"的调用面。 */
+const FINISH_STOP = { type: "finish", reason: { kind: "stop" } } as const;
+/** 官方 StreamChunk 的 text 增量判别位（字面量重复超阈值，提出来免得抄错）。 */
+const TEXT_DELTA = "text-delta";
 const okStream = {
   async *stream(): AsyncGenerator<StreamChunk> {
-    yield { type: "text-delta", index: 0, text: "已整理" };
-    yield { type: "finish", reason: { kind: "stop" } };
+    yield { type: TEXT_DELTA, index: 0, text: "已整理" };
+    yield FINISH_STOP;
   },
 } satisfies LlmService;
 
@@ -473,7 +509,7 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
   it("非 GET → 405 + Allow: GET + JSON 体", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
-    handlers.defaults(makeReq({ method: "POST", url: DEFAULTS_PATH }), res);
+    await handlers.defaults(makeReq({ method: "POST", url: DEFAULTS_PATH }), res);
     assert.equal(out.statusCode, 405);
     assert.equal(out.headers["Allow"], "GET");
     assert.match(out.body, /"error":"GET only"/u, "F1-3：405 也回 JSON 体");
@@ -482,7 +518,7 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
   it("闸门在方法判定之前：恶意 Host 的 POST 回 403 而不是 405", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
-    handlers.defaults(
+    await handlers.defaults(
       makeReq({ method: "POST", url: DEFAULTS_PATH, headers: { host: EVIL_HOST } }),
       res,
     );
@@ -493,7 +529,7 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
   it("GET → ok:true，且下发的就是 host 侧那份表（单源，不在 client 复制）", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
-    handlers.defaults(makeReq({ method: "GET", url: DEFAULTS_PATH }), res);
+    await handlers.defaults(makeReq({ method: "GET", url: DEFAULTS_PATH }), res);
     const body = parsed(out);
     assert.equal(body["ok"], true);
     const list = body["templates"];
@@ -511,8 +547,41 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
   it("表里没有csrf/凭据面：这条 GET 无需 token 也零副作用", async () => {
     const handlers = createRouteHandlers(depsOf({}), "secret-csrf");
     const { res, out } = makeRes();
-    handlers.defaults(makeReq({ method: "GET", url: DEFAULTS_PATH }), res);
+    await handlers.defaults(makeReq({ method: "GET", url: DEFAULTS_PATH }), res);
     assert.doesNotMatch(out.body, /secret-csrf/u, "只读端点不下发 token（跨源脚本拿不到写面）");
+  });
+
+  it("模板产物形状不对 → ok:false 且带原因，而不是一张空模板列表", async () => {
+    // 这条守的是「产物发错/发旧时看得见症状」。按需 import 出去的东西一旦形状不对，
+    // 若只让它退化成空数组，用户看到的是「模板下拉空着」，没有任何线索；所以 loader
+    // 先验形状再抛，端点把它转成本仓惯用的 ok:false 回执。
+    const handlers = createRouteHandlers(
+      depsOf({
+        loadDefaultTemplates: () => Promise.reject(new Error("产物没发出去")),
+      }),
+      "t",
+    );
+    const { res, out } = makeRes();
+    await handlers.defaults(makeReq({ method: "GET", url: DEFAULTS_PATH }), res);
+    const body = parsed(out);
+    assert.equal(body["ok"], false);
+    assert.match(String(body["error"]), /产物没发出去/u, "回执把原因原样带出去");
+    assert.equal(body["templates"], undefined, "失败时不发一张空列表冒充成功");
+  });
+
+  it("形状不对的那一层自己也会抛（纯函数，不必动磁盘上的产物）", () => {
+    assert.throws(
+      () => defaultTemplatesFrom({ SOMETHING_ELSE: 1 }),
+      /DEFAULT_TEMPLATES/u,
+      "导出名不对必须抛，不能当成空表",
+    );
+    assert.throws(() => defaultTemplatesFrom(null), /DEFAULT_TEMPLATES/u, "非模块形状也抛");
+    assert.throws(
+      () => defaultTemplatesFrom({ DEFAULT_TEMPLATES: {} }),
+      /DEFAULT_TEMPLATES/u,
+      "导出值不是数组也抛",
+    );
+    assert.equal(defaultTemplatesFrom({ DEFAULT_TEMPLATES: [1] }).length, 1, "形状对就照取");
   });
 });
 
@@ -807,12 +876,17 @@ describe("organize 端点", () => {
     assert.equal(parsed(out)["content"], "已整理");
     const [firstCall] = calls;
     assert.ok(firstCall, "stream 收到一次调用");
+    // 信任序修复后的主证：roleText / 会话历史 / 目录摘要都是仓库与历史里可控的文本，
+    // 一律进 user 消息的围栏；system 只留宿主自产的规则与 cwd。
     const system = firstCall.system ?? "";
-    // 审计修复主证：roleText 必须进 system（旧版漏传 → 角色整理是 no-op）
-    assert.match(system, /参考角色/u);
-    assert.ok(system.includes("纵深防御"), "system 含角色正文");
-    assert.ok(system.includes("会话最近对话"), "system 含最近对话");
-    assert.ok(system.includes("📄 a.ts"), "system 含目录摘要");
+    const block = firstCall.messages[0]?.content[0];
+    const user = textOf(block);
+    assert.equal(system.includes("纵深防御"), false, "角色正文不得进 system");
+    assert.match(user, /参考角色/u);
+    assert.ok(user.includes("纵深防御"), "user 含角色正文");
+    assert.ok(user.includes("会话最近对话"), "user 含最近对话");
+    assert.ok(user.includes("📄 a.ts"), "user 含目录摘要");
+    assert.ok(user.includes("<data>") && user.includes("</data>"), "不可信块有围栏");
     assert.equal(firstCall.reasoningEffort, "low");
     assert.equal(firstCall.messages.length, 1, "只发一条 user 消息");
   });
@@ -1568,5 +1642,57 @@ describe("405 的统一回执", () => {
     assert.equal(out.statusCode, 405);
     assert.equal(out.headers["Allow"], "POST");
     assert.match(out.body, /"error":"POST only"/u);
+  });
+});
+
+/** 断开后即抛的假流：signal 一旦 aborted 就不该再产出任何 chunk。 */
+async function* abortedAwareStream(signal: AbortSignal | undefined): AsyncGenerator<StreamChunk> {
+  if (signal?.aborted === true) {
+    throw new Error("aborted by client disconnect");
+  }
+  yield { type: TEXT_DELTA, index: 0, text: "不该出现" };
+  yield FINISH_STOP;
+}
+
+describe("客户端断开即取消整理", () => {
+  it("close 事件 → 取消信号传到 llm.stream，本次整理中止而不是跑完", async () => {
+    const req = makeReq({
+      method: "POST",
+      url: "/o",
+      headers: { "x-dir-prep-csrf": "tok" },
+      body: JSON.stringify({ prompt: "帮我整理", sessionId: "s1" }),
+    });
+    const signal = await (async () => {
+      let captured: AbortSignal | undefined;
+      const llm = {
+        stream(options: LlmStreamOptions): AsyncIterable<StreamChunk> {
+          captured = options.signal;
+          // 真实场景是 socket 关掉；这里在拿到 options 后立刻发 close
+          (req as unknown as { emit: (event: string) => void }).emit("close");
+          return abortedAwareStream(captured);
+          /* 旧写法（内联匿名生成器）见下方 abortedAwareStream：
+          if (captured?.aborted === true) {
+              throw new Error("aborted by client disconnect");
+            }
+            yield { type: TEXT_DELTA, index: 0, text: "不该出现" };
+            yield { type: "finish", reason: { kind: "stop" } };
+          });*/
+        },
+      } satisfies LlmService;
+      const handlers = createRouteHandlers(
+        depsOf({
+          llm: () => llm,
+          sessions: () => sessionsWithMessages("/w", []),
+          agentDefaultModel: () => ({
+            currentSelection: () => ({ provider: "p", model: "m" }),
+          }),
+        }),
+        "tok",
+      );
+      const out = parsed(await callOrganize(handlers, req));
+      assert.equal(out["ok"], false, "断开后应回失败而非成功");
+      return captured;
+    })();
+    assert.equal(signal?.aborted, true, "close 必须真的把 signal 置为 aborted");
   });
 });

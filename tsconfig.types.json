@@ -1,0 +1,14 @@
+{
+  "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "rootDir": ".",
+    "outDir": "types",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["host.ts", "src/**/*.ts"]
+}

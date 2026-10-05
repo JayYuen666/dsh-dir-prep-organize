@@ -18,12 +18,15 @@ import {
   collectDirContext as collectDirContextWithDict,
   runOrganize as runOrganizeWithDict,
   buildOrganizeSystem as buildOrganizeSystemWithDict,
+  buildOrganizeUser,
   drainStreamToText as drainStreamToTextWithDict,
   importPathError as importPathErrorWithDict,
   collectAgentTemplates as collectAgentTemplatesWithDict,
   Config,
   extractRecentTurns,
   importAllowRootsOf,
+  clampInt,
+  sanitizeLimits,
 } from "../host.ts";
 import type {
   CollectResult,
@@ -47,6 +50,9 @@ const { zh } = HOST_MESSAGES;
 // ── 夹具单源 ────────────────────────────────────────────────────────────────
 // 本文件里重复 3 次以上的字面量集中在此。**刻意写死、不引被测模块的常量**：
 // 断言要钉的是「实现交出什么」，拿实现自己的常量去比实现自己就没人检查任何东西了。
+
+/** 单行 TS 夹具正文（本文件多处复用，字面量重复超阈值故提出来）。 */
+const TS_FIXTURE_BODY = "export const a = 1\n";
 
 /** 官方 StreamChunk 的 text 增量判别位。 */
 const TEXT_DELTA = "text-delta";
@@ -75,7 +81,7 @@ function importPathError(
 }
 
 async function collectAgentTemplates(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText">,
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   requested: string,
   cwd: string | undefined,
   opts?: { skipPolicy?: boolean; allowRoots?: readonly string[] },
@@ -87,8 +93,19 @@ function buildOrganizeSystem(input: Omit<OrganizeInput, "prompt">): string {
   return buildOrganizeSystemWithDict(input, zh);
 }
 
-async function runOrganize(llm: LlmService, input: OrganizeInput): Promise<{ content: string }> {
-  return runOrganizeWithDict(llm, input, zh);
+function buildUser(prompt: string, input: Omit<OrganizeInput, "prompt">): string {
+  return buildOrganizeUser(prompt, input, zh);
+}
+
+async function runOrganize(
+  llm: LlmService,
+  input: OrganizeInput,
+  timeoutMs?: number,
+  callerSignal?: AbortSignal,
+): Promise<{ content: string }> {
+  return timeoutMs === undefined && callerSignal === undefined
+    ? runOrganizeWithDict(llm, input, zh)
+    : runOrganizeWithDict(llm, input, zh, timeoutMs ?? 120_000, callerSignal);
 }
 
 async function drainStreamToText(stream: AsyncIterable<StreamChunk>): Promise<string> {
@@ -142,9 +159,29 @@ function msgs(count: number): {
 }
 
 /** node:fs → host 的 FsService 契约适配器（resolve → listDir → 按 target readText）。 */
+/** 夹具共用的 contains 实现：后端用自己的世界判包含关系，本地夹具就用 targetKey 的
+ *  路径前缀等价。生产代码走的是 dsh-fs 自己的 contains，不经过这里。 */
+/** ContentBlock 是联合类型，只有 text 块带 text——取文本前先窄化，不写 as 断言。 */
+function textOf(block: unknown): string {
+  return typeof block === "object" &&
+    block !== null &&
+    "type" in block &&
+    block.type === "text" &&
+    "text" in block &&
+    typeof block.text === "string"
+    ? block.text
+    : "";
+}
+
+function containsIn(parent: FsTarget, child: FsTarget): boolean {
+  const root = parent.targetKey;
+  return child.targetKey === root || child.targetKey.startsWith(`${root}${path.sep}`);
+}
+
 function realFs(): FsService {
   return {
     resolve: async (target) => targetOf(target),
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async (dir) => {
       const base = dir.targetKey;
       const names = await readdir(base, { withFileTypes: true });
@@ -175,7 +212,7 @@ describe("collectDirContext", () => {
 
   it("正常目录：条目+关键文件摘要+目录无摘要", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-ctx-"));
-    await writeFile(path.join(dir, "a.ts"), "export const a = 1\n", "utf8");
+    await writeFile(path.join(dir, "a.ts"), TS_FIXTURE_BODY, "utf8");
     await writeFile(path.join(dir, "b.json"), '{"v":2}', "utf8");
     await writeFile(path.join(dir, "README.md"), "# Title\n\nbody", "utf8");
     await writeFile(path.join(dir, "image.png"), "binary", "utf8");
@@ -260,7 +297,7 @@ describe("collectDirContext", () => {
 
   it("关键文件读取失败 → snippet 降级 undefined，不炸", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-bad-"));
-    await writeFile(path.join(dir, "a.ts"), "export const a = 1", "utf8");
+    await writeFile(path.join(dir, "a.ts"), TS_FIXTURE_BODY, "utf8");
     const fsBad = {
       ...realFs(),
       readText: async () => {
@@ -324,8 +361,10 @@ describe("runOrganize", () => {
       roleText: ROLE_TEXT,
     });
     const roleSystem = withRole.calls[0]?.system ?? "";
-    assert.ok(roleSystem.includes("- 参考角色:"), "角色段进了 system");
-    assert.ok(roleSystem.includes("纵深防御"), "角色正文全文进 system，不得被丢掉");
+    assert.equal(roleSystem.includes("纵深防御"), false, "角色正文不得进 system");
+    const roleUser = textOf(withRole.calls[0]?.messages[0]?.content[0]);
+    assert.ok(roleUser.includes("- 参考角色:"), "角色段进了 user 消息");
+    assert.ok(roleUser.includes("纵深防御"), "角色正文全文进了 user 消息，不得被丢掉");
 
     const plain = fakeLlm(stopStream);
     await runOrganize(plain, {
@@ -364,13 +403,15 @@ describe("runOrganize", () => {
     assert.ok(message, "一条 user 消息");
     assert.equal(message.role, "user");
     const [firstBlock] = message.content;
-    assert.equal(firstBlock?.type === "text" ? firstBlock.text : undefined, "帮我看看这个项目");
+    const userText = textOf(firstBlock);
+    // 草稿仍是第一段；不可信的上下文以围栏块追加在它后面（信任序，见 buildOrganizeUser）
+    assert.ok(userText.startsWith("帮我看看这个项目"), "user 消息以草稿开头");
+    assert.ok(userText.includes("<data>"), "其后是围栏包裹的数据块");
     // 0.1.7 的 request-only 契约：整理帧从不落持久消息位，故走 `RequestUserInput`
     // （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:457-462，两面都是
     // `?: never`）。旧断言盯的"归属本插件的 source.kind"正是被这条政策移除的形状——
-    // 决策记录 dsh 仓 .agents/notes/implemented/architecture/
-    // 2026-09-17-persistence-attribution-policy.md："Request-only prompts need no
-    // durable identity"。键必须**根本不存在**，而不是存在但为 undefined。
+    // 宿主的归属策略是"request-only 输入不需要持久身份"。键必须**根本不存在**，
+    // 而不是存在但为 undefined。
     assert.ok(!Object.hasOwn(message, "id"), "request-only 输入不得带自造 id");
     assert.ok(!Object.hasOwn(message, "source"), "request-only 输入不得声明 source");
     assert.equal(message.id, undefined, "读不到 id（契约里是 never）");
@@ -426,26 +467,35 @@ describe("runOrganize", () => {
 // ── buildOrganizeSystem ────────────────────────────────────────────────────
 
 describe("buildOrganizeSystem", () => {
-  it("含 cwd 与目录摘要；无摘要时省略目录行", () => {
-    const sys = buildOrganizeSystem({ cwd: "/w/proj", entriesSummary: "📄 a.ts" });
-    assert.ok(sys.includes("/w/proj"));
-    assert.ok(sys.includes("📄 a.ts"));
-    const sys2 = buildOrganizeSystem({ cwd: "", entriesSummary: "" });
-    assert.ok(!sys2.includes("目录结构摘要"));
+  it("cwd 留在 system，目录摘要搬进 user 的围栏；无摘要时省略该块", () => {
+    const input = { cwd: "/w/proj", entriesSummary: "📄 a.ts" };
+    const sys = buildOrganizeSystem(input);
+    assert.ok(sys.includes("/w/proj"), "cwd 是宿主自己产生的，留在 system");
+    assert.equal(sys.includes("📄 a.ts"), false, "仓库摘要不得留在 system");
+    const usr = buildUser("草稿", input);
+    assert.ok(usr.includes("📄 a.ts"), "摘要进 user 围栏");
+    const bare = buildOrganizeSystem({ cwd: "", entriesSummary: "" });
+    assert.ok(!bare.includes("目录结构摘要"));
+    assert.ok(!buildUser("草稿", { cwd: "", entriesSummary: "" }).includes("目录结构摘要"));
   });
 
   it("有 recentTurns 时注入对话行；为空/缺省时省略（首次对话场景）", () => {
-    const sys = buildOrganizeSystem({
-      cwd: "/w",
-      entriesSummary: "",
-      recentTurns: "user: 帮我看看 a.ts\nassistant: 已分析",
-    });
-    assert.ok(sys.includes("会话最近对话"), "注入对话标题行");
-    assert.ok(sys.includes("user: 帮我看看 a.ts"));
-    const sysEmpty = buildOrganizeSystem({ cwd: "/w", entriesSummary: "", recentTurns: "" });
-    assert.ok(!sysEmpty.includes("会话最近对话"), "空 recentTurns 不注入");
-    const sysUndef = buildOrganizeSystem({ cwd: "/w", entriesSummary: "" });
-    assert.ok(!sysUndef.includes("会话最近对话"), "缺省 recentTurns 不注入");
+    const turns = "user: 帮我看看 a.ts\nassistant: 已分析";
+    const sys = buildOrganizeSystem({ cwd: "/w", entriesSummary: "", recentTurns: turns });
+    assert.equal(sys.includes("会话最近对话"), false, "对话历史不得留在 system");
+    const usr = buildUser("草稿", { cwd: "/w", entriesSummary: "", recentTurns: turns });
+    assert.ok(usr.includes("会话最近对话"), "注入对话标题行");
+    assert.ok(usr.includes("user: 帮我看看 a.ts"));
+    assert.ok(
+      !buildUser("草稿", { cwd: "/w", entriesSummary: "", recentTurns: "" }).includes(
+        "会话最近对话",
+      ),
+      "空 recentTurns 不注入",
+    );
+    assert.ok(
+      !buildUser("草稿", { cwd: "/w", entriesSummary: "" }).includes("会话最近对话"),
+      "缺省 recentTurns 不注入",
+    );
   });
 
   it("只整理不执行：显式禁止把草稿当任务执行（写代码/答题/生成内容）", () => {
@@ -574,16 +624,14 @@ describe("extractRecentTurns", () => {
 // ── buildOrganizeSystem：角色上下文（整理角色化）────────────────────────────
 
 describe("buildOrganizeSystem roleText", () => {
-  it("有 roleText → 注入参考角色段（身份/规则内容出现）", () => {
-    const sys = buildOrganizeSystem({
-      cwd: "/w",
-      entriesSummary: "",
-      roleText: ROLE_TEXT,
-    });
+  it("有 roleText → 进 user 的围栏（system 不含）", () => {
+    const sys = buildOrganizeSystem({ cwd: "/w", entriesSummary: "", roleText: ROLE_TEXT });
+    const usr = buildUser("草稿", { cwd: "/w", entriesSummary: "", roleText: ROLE_TEXT });
+    assert.equal(sys.includes("- 参考角色:"), false, "角色段不得留在 system");
     // 注入行以 "- 参考角色:" 开头（区分于规则文案里的"参考角色"字样）
-    assert.ok(sys.includes("- 参考角色:"), "注入角色标题行");
-    assert.ok(sys.includes("你是安全工程师"));
-    assert.ok(sys.includes("纵深防御"));
+    assert.ok(usr.includes("- 参考角色:"), "注入角色标题行");
+    assert.ok(usr.includes("你是安全工程师"));
+    assert.ok(usr.includes("纵深防御"));
   });
 
   it("缺省/空 roleText → 不注入角色段", () => {
@@ -595,7 +643,7 @@ describe("buildOrganizeSystem roleText", () => {
 
   it("超长 roleText 全量注入（不截断，用户拍板）", () => {
     const longText = "x".repeat(5000);
-    const sys = buildOrganizeSystem({ cwd: "/w", entriesSummary: "", roleText: longText });
+    const sys = buildUser("草稿", { cwd: "/w", entriesSummary: "", roleText: longText });
     const idx = sys.indexOf("参考角色:");
     const segment = idx === -1 ? "" : sys.slice(idx);
     assert.ok(segment.includes(longText), "参考角色正文全量注入（无 2200 硬上限截断）");
@@ -979,6 +1027,7 @@ describe("collectAgentTemplates", () => {
 function fsWithSize(entries: { name: string; size?: number }[]): FsService {
   return {
     resolve: async () => targetOf("root"),
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async () =>
       entries.map((entry): FsDirEntry => ({
         name: entry.name,
@@ -1092,7 +1141,7 @@ describe("importPathError 逃逸拦截", () => {
 // ── 审计修复：roleText 端到端进 system（runOrganize）────────────────────────
 
 describe("runOrganize 角色上下文透传", () => {
-  it("传 roleText → system 含参考角色段；不传 → 不含（旧版恒不含 = 功能空转）", async () => {
+  it("传 roleText → user 消息的围栏里含参考角色段，system 不含；不传 → 也不含", async () => {
     const llmWith = fakeLlm(stopStream);
     await runOrganize(llmWith, {
       prompt: "写点什么",
@@ -1102,9 +1151,13 @@ describe("runOrganize 角色上下文透传", () => {
     });
     const [withRole] = llmWith.calls;
     assert.ok(withRole, ONLY_ONE_STREAM_CALL);
+    // 信任序：角色正文是仓库里可控的文本，只能进 user 槽，不能占 system 的最高信任位。
     const system = withRole.system ?? "";
-    assert.ok(system.includes("- 参考角色:"), "system 带角色标题行");
-    assert.ok(system.includes("纵深防御"), "system 带角色正文（旧版此处为 false）");
+    assert.equal(system.includes("纵深防御"), false, "system 不得含不可信的角色正文");
+    const userText = textOf(withRole.messages[0]?.content[0]);
+    assert.ok(userText.includes("- 参考角色:"), "user 消息带角色标题行");
+    assert.ok(userText.includes("纵深防御"), "user 消息带角色正文");
+    assert.ok(userText.includes("</data>"), "不可信块有闭合围栏");
 
     const llmWithout = fakeLlm(stopStream);
     await runOrganize(llmWithout, {
@@ -1225,6 +1278,7 @@ function memFs(files: Record<string, string>, opts: MemFsOptions = {}): FsServic
       }
       return targetOf(target);
     },
+    contains: (parent, child) => containsIn(parent, child),
     listDir: async (dir: FsTarget) => {
       if (opts.listDirFails !== undefined) {
         failWith(opts.listDirFails);
@@ -1441,15 +1495,21 @@ describe("HOST_MESSAGES 字典", () => {
 describe("en 字典注入（纯函数只吃入参字典，不读设置）", () => {
   const { en } = HOST_MESSAGES;
 
-  it("整理 system prompt 整段切英文：规则正文与各段标题行都来自 en 表", () => {
-    const sys = buildOrganizeSystemWithDict(
-      { cwd: "/w", entriesSummary: "a.ts", recentTurns: "user: hi", roleText: "Reviewer" },
-      en,
-    );
+  it("整理 prompt 整段切英文：system 只有规则与 cwd，可信上下文段归 user", () => {
+    const input = {
+      cwd: "/w",
+      entriesSummary: "a.ts",
+      recentTurns: "user: hi",
+      roleText: "Reviewer",
+    };
+    const sys = buildOrganizeSystemWithDict(input, en);
+    const usr = buildOrganizeUser("draft", input, en);
     assert.match(sys, /^- Current working directory: \/w$/mu);
-    assert.match(sys, /Directory summary:/u);
-    assert.match(sys, /Recent conversation/u);
-    assert.match(sys, /Reference role:/u);
+    // 不可信段的标题行走 user 消息，不在 system
+    assert.equal(sys.includes("Directory summary:"), false, "摘要标题不得留在 system");
+    assert.match(usr, /Directory summary:/u);
+    assert.match(usr, /Recent conversation/u);
+    assert.match(usr, /Reference role:/u);
     assert.doesNotMatch(sys, hanPattern, "英文 prompt 不该混进中文规则");
   });
 
@@ -1526,5 +1586,296 @@ describe("en 字典注入（纯函数只吃入参字典，不读设置）", () =
       en,
     );
     assert.match(failedImport.error ?? "", /Import failed: EIO/u);
+  });
+});
+
+// ── 部署值收口（clampInt / sanitizeLimits）───────────────────────────────
+describe("clampInt", () => {
+  it("区间内取值原样返回", () => {
+    assert.equal(clampInt(1, 1, 64, 8), 1);
+    assert.equal(clampInt(8, 1, 64, 8), 8);
+    assert.equal(clampInt(64, 1, 64, 8), 64);
+  });
+
+  it("越界夹到边界，小数向零取整", () => {
+    assert.equal(clampInt(0, 1, 64, 8), 1, "下界");
+    assert.equal(clampInt(-5, 1, 64, 8), 1, "负数夹到下界");
+    assert.equal(clampInt(1e9, 1, 64, 8), 64, "上界");
+    assert.equal(clampInt(7.9, 1, 64, 8), 7, "小数向零取整");
+  });
+
+  it("非有限值回落 fallback——Math.min/Math.max 对 NaN 是恒等放行", () => {
+    // 这条是 clampInt 存在的理由：`Math.min(Math.max(NaN, 1), 64)` 的结果是 NaN，
+    // 于是「看起来夹过了」的写法恰好对最危险的那个输入完全无效。
+    assert.equal(clampInt(Number.NaN, 1, 64, 8), 8);
+    assert.equal(clampInt(Number.POSITIVE_INFINITY, 1, 64, 8), 8);
+    assert.equal(clampInt(Number.NEGATIVE_INFINITY, 1, 64, 8), 8);
+  });
+});
+
+describe("sanitizeLimits", () => {
+  const base = {
+    organizeTimeoutMs: 120_000,
+    maxSnippetBytes: 262_144,
+    readConcurrency: 8,
+    importBodyMaxBytes: 8 * 1024 * 1024,
+  };
+
+  it("readConcurrency 夹进 [1,64]（0 会让宿主进程被 OOM 杀掉）", () => {
+    assert.equal(sanitizeLimits({ ...base, readConcurrency: 0 }).readConcurrency, 1);
+    assert.equal(sanitizeLimits({ ...base, readConcurrency: -5 }).readConcurrency, 1);
+    assert.equal(sanitizeLimits({ ...base, readConcurrency: 1e9 }).readConcurrency, 64);
+    assert.equal(sanitizeLimits({ ...base, readConcurrency: Number.NaN }).readConcurrency, 8);
+    assert.equal(sanitizeLimits(base).readConcurrency, 8, "合法值不动");
+  });
+
+  it("organizeTimeoutMs 夹进 [1,2^31-1]（超出后 setTimeout 静默夹成 1ms）", () => {
+    assert.equal(
+      sanitizeLimits({ ...base, organizeTimeoutMs: 2_147_483_648 }).organizeTimeoutMs,
+      2_147_483_647,
+      "2^31 夹到上界",
+    );
+    assert.equal(
+      sanitizeLimits({ ...base, organizeTimeoutMs: 3e9 }).organizeTimeoutMs,
+      2_147_483_647,
+    );
+    assert.equal(sanitizeLimits({ ...base, organizeTimeoutMs: 0 }).organizeTimeoutMs, 1);
+    assert.equal(
+      sanitizeLimits({ ...base, organizeTimeoutMs: Number.NaN }).organizeTimeoutMs,
+      120_000,
+    );
+    assert.equal(sanitizeLimits(base).organizeTimeoutMs, 120_000, "合法值不动");
+  });
+
+  it("另两项原样透传：0 有确定且已记账的行为，属用户显式意图", () => {
+    const zeroed = sanitizeLimits({ ...base, maxSnippetBytes: 0, importBodyMaxBytes: 0 });
+    assert.equal(zeroed.maxSnippetBytes, 0);
+    assert.equal(zeroed.importBodyMaxBytes, 0);
+  });
+});
+
+// ── mapBounded 自守：绕开 limitsOf 直接喂进来也必须收敛 ────────────────────
+describe("mapBounded 的 limit 自守", () => {
+  it("readConcurrency=0 直接进 collectDirContext：正常收敛，不挂死不 OOM", async () => {
+    // 这条走的是 mapBounded 自己的钳位，不经 sanitizeLimits（后者在 limitsOf 里）。
+    // 没有它，一次手写配置就能让整个 DSH 宿主进程被 OOM killer 带走。
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-zero-limit-"));
+    await Promise.all([
+      writeFile(path.join(dir, "a.ts"), "export const zeroGuardA = 1", "utf8"),
+      writeFile(path.join(dir, "b.ts"), "export const zeroGuardB = 2", "utf8"),
+    ]);
+    const result = await collectDirContextWithDict(realFs(), dir, zh, {
+      maxSnippetBytes: 262_144,
+      readConcurrency: 0,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.entries.length, 2);
+    assert.equal(result.skipped.unreadable, 0);
+  });
+});
+
+// ── isKeyFile：功能面与防护面的大小写口径必须一致 ──────────────────────────
+describe("关键文件筛选的扩展名大小写", () => {
+  it("大写扩展名照样取摘要（原先静默丢数据且不计数）", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-case-"));
+    await Promise.all([
+      writeFile(path.join(dir, "README.MD"), "UPPER_MD", "utf8"),
+      writeFile(path.join(dir, "config.JSON"), "UPPER_JSON", "utf8"),
+      writeFile(path.join(dir, "Main.TS"), "UPPER_TS", "utf8"),
+    ]);
+    const result = await collectDirContext(realFs(), dir);
+    assert.equal(result.error, undefined);
+    const byName = new Map(result.entries.map((item) => [item.name, item.snippet]));
+    assert.equal(byName.get("README.MD"), "UPPER_MD", "README.MD 应取到摘要");
+    assert.equal(byName.get("config.JSON"), "UPPER_JSON", "config.JSON 应取到摘要");
+    assert.equal(byName.get("Main.TS"), "UPPER_TS", "Main.TS 应取到摘要");
+    // 取到了就说明没被跳过，顺带确认没有误记 skip
+    assert.equal(result.skipped.tooLarge, 0);
+  });
+
+  it("防护面仍然拦得住大写的凭据文件名", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-case-secret-"));
+    await Promise.all([
+      writeFile(path.join(dir, "app.env.json"), "SECRET_ENV", "utf8"),
+      writeFile(path.join(dir, "a.Credentials.json"), "SECRET_CRED", "utf8"),
+    ]);
+    const result = await collectDirContext(realFs(), dir);
+    const byName = new Map(result.entries.map((item) => [item.name, item.snippet]));
+    assert.equal(byName.get("app.env.json"), undefined, "大写 env 仍拦得住");
+    assert.equal(byName.get("a.Credentials.json"), undefined, "大写 credentials 仍拦得住");
+  });
+});
+
+describe("凭据文件名的匹配口径", () => {
+  it("分隔符边界的连字符/下划线变体命中（子串表会漏掉这一整类）", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-secret-"));
+    const leaked = [
+      "api-keys.json",
+      "api_key.json",
+      "token.json",
+      "tokens.json",
+      "auth.json",
+      "service-account.json",
+      "keys.json",
+      "passwd.json",
+      "db-password.json",
+      "access-token.json",
+    ];
+    await Promise.all(
+      leaked.map((name, idx) => writeFile(path.join(dir, name), `LEAK_${String(idx)}`, "utf8")),
+    );
+    const result = await collectDirContext(realFs(), dir);
+    assert.equal(result.error, undefined);
+    for (const name of leaked) {
+      const entry = result.entries.find((item) => item.name === name);
+      assert.equal(entry?.snippet, undefined, `${name} 的正文绝不能进上下文`);
+    }
+  });
+
+  it("边界规则不吃掉正常文档：key/auth 嵌在词中间不算命中", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-secret-fp-"));
+    const innocent = ["monkey.js", "AUTHORS.md", "author.md", "environment.md"];
+    await Promise.all(
+      innocent.map((name, idx) => writeFile(path.join(dir, name), `OK_${String(idx)}`, "utf8")),
+    );
+    const result = await collectDirContext(realFs(), dir);
+    const byName = new Map(result.entries.map((item) => [item.name, item.snippet]));
+    for (const name of innocent) {
+      assert.notEqual(byName.get(name), undefined, `${name} 是正常文档，不该被跳过`);
+    }
+  });
+});
+
+describe("符号链接越根（contains 复判）", () => {
+  it("listDir 报出的越界条目不进候选——策略判字符串、读取走真实对象，必须复判一次", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-symlink-"));
+    await writeFile(path.join(dir, "inside.md"), "---\nname: Inside\n---\n正文", "utf8");
+    const roleBody = "---\nname: Leaked\n---\n不该被读走的正文";
+
+    // 越界目标**必须真的有可解析内容**，否则 readText 失败会被记成 unreadable，
+    // 条目照样不产出——那样的用例有没有 contains 过滤都绿，等于没有牙齿。
+    const leaky = memFs({
+      [path.join(dir, "inside.md")]: "---\nname: Inside\n---\n正文",
+      "/etc/credentials.md": roleBody,
+    });
+    const original = leaky.listDir.bind(leaky);
+    const escaping = await leaky.resolve("/etc/credentials.md");
+    leaky.listDir = async (target) =>
+      // 扮演「后端跟随符号链接，仍把越界条目列进结果」的情形
+      // size 必须给：size 未知时 readCandidate 按既定策略整份跳过（计 tooLarge），
+      // 那样有没有 contains 过滤都不产出条目，用例同样没有牙齿。
+      [
+        ...(await original(target)),
+        { name: "leaked.md", type: "file" as const, target: escaping, size: roleBody.length },
+      ];
+    // contains 才是那道门：如实按「child 在 parent 之内」判，越界条目自然落选
+    leaky.contains = (parent, child) =>
+      child.targetKey.startsWith(`${parent.targetKey}${path.sep}`);
+
+    const result = await collectAgentTemplatesWithDict(leaky, dir, dir, zh, {
+      allowRoots: [dir],
+      limits: { maxSnippetBytes: 262_144, readConcurrency: 8 },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.entries.length, 1, "只应有允许根内的那一条");
+    assert.equal(result.entries[0]?.name, "Inside", "留下的是根内条目");
+    assert.equal(
+      result.entries.some((item) => item.name === "Leaked"),
+      false,
+      "越界条目绝不能产出",
+    );
+  });
+});
+
+/** 尊重 signal 的假流：signal 一旦 abort，就在下一个 chunk 之前抛出。
+ *  真实 llm.stream 正是这个契约——不观察 signal 的流测不出取消是否接线。 */
+async function* signalAwareStream(options: LlmStreamOptions): AsyncGenerator<StreamChunk> {
+  // 每次现读：直接写两次 `options.signal?.aborted === true` 会被控制流窄化成恒假，
+  // 反而看不出「中途取消」这一路到底走没走。
+  const isAborted = (): boolean => options.signal?.aborted === true;
+  if (isAborted()) {
+    throw new Error("aborted by caller");
+  }
+  yield* streamOf(stopStream);
+  if (isAborted()) {
+    throw new Error("aborted by caller");
+  }
+}
+
+const abortableLlm: LlmService = {
+  stream: (options: LlmStreamOptions) => signalAwareStream(options),
+};
+
+describe("客户端断开即取消 LLM 流", () => {
+  const input = {
+    prompt: "写点什么",
+    cwd: "/w",
+    model: { provider: "p", model: TEST_MODEL },
+  };
+
+  it("进来时信号已 abort → 这次整理直接中止，不空跑", async () => {
+    const caller = new AbortController();
+    caller.abort();
+    await assert.rejects(
+      runOrganize(abortableLlm, input, 120_000, caller.signal),
+      /aborted/iu,
+      "已取消的信号必须让这次调用失败，而不是照常跑完",
+    );
+  });
+
+  it("途中 abort → 流被中止；结束后 abort 监听被摘除", async () => {
+    const caller = new AbortController();
+    const llm: LlmService = {
+      stream(options: LlmStreamOptions): AsyncIterable<StreamChunk> {
+        caller.abort();
+        return signalAwareStream(options);
+      },
+    };
+    await assert.rejects(runOrganize(llm, input, 120_000, caller.signal), /aborted/iu);
+    // 再 abort 一次不得抛：监听已摘除，不会重复触发已释放的 controller
+    caller.abort();
+    assert.equal(caller.signal.aborted, true);
+  });
+
+  it("不带 callerSignal（其他调用方）行为不变", async () => {
+    const llm = fakeLlm(stopStream);
+    const result = await runOrganize(llm, input, 120_000);
+    assert.equal(typeof result.content, "string", "无取消信号时照常聚合出内容");
+  });
+});
+
+describe("摘要总量封顶", () => {
+  it("超出总量预算的文件整份跳过并计入 tooLarge，不截半份", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-total-"));
+    const body = "x".repeat(4096);
+    await Promise.all(
+      Array.from({ length: 8 }, (_v, idx) =>
+        writeFile(path.join(dir, `f${String(idx)}.ts`), body, "utf8"),
+      ),
+    );
+    // 预算只够 3 份：前 3 份进上下文，其余整份跳过
+    const result = await collectDirContextWithDict(realFs(), dir, zh, {
+      maxSnippetBytes: 262_144,
+      readConcurrency: 8,
+      maxTotalBytes: 4096 * 3,
+    });
+    assert.equal(result.error, undefined);
+    const withSnippet = result.entries.filter((item) => item.snippet !== undefined);
+    assert.equal(withSnippet.length, 3, "只有预算内的文件拿到摘要");
+    assert.equal(result.skipped.tooLarge, 5, "超预算的整份计入 tooLarge");
+    assert.equal(result.truncated, true, "truncated 必须如实反映");
+    for (const item of withSnippet) {
+      assert.equal(item.snippet, body.trim(), "命中的文件给的是完整正文，不是半份");
+    }
+  });
+
+  it("预算充足时行为不变：全部拿到摘要，tooLarge 为 0", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-total-ok-"));
+    await writeFile(path.join(dir, "a.ts"), TS_FIXTURE_BODY, "utf8");
+    const result = await collectDirContext(realFs(), dir);
+    assert.equal(result.entries.length, 1);
+    assert.notEqual(result.entries[0]?.snippet, undefined, "默认预算下摘要在");
+    assert.equal(result.skipped.tooLarge, 0);
+    assert.equal(result.truncated, false);
   });
 });
