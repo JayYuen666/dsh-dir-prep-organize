@@ -23,7 +23,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 ```
 
 - 宿主区间 `>= 0.2.0-rc.2`，同时写进 `peerDependencies` 与 `engines.dsh`。真正生效的只有 `peerDependencies`：自 `0.1.7-rc.1` 起宿主载入插件时会校验它并把不兼容的条目**停用**（`compatibility-preflight.ts` 的 `deny()`）；`engines.dsh` 在该宿主版本上没有任何读者。
-- `@deepseek-ai/dsh-*` 依赖仍精确钉在 `0.2.1-alpha.1`——那是本包构建并测过的宿主版本。区间是对**它能跑在哪些宿主上**的声明，钉版是对**它在哪个宿主版本上编译过**的事实；把两者混成一条断言，正是发布门禁现在把它们拆开分别验的原因。
+- `@deepseek-ai/dsh-*` 依赖仍精确钉在 `0.2.1-alpha.2`——那是本包构建并测过的宿主版本。区间是对**它能跑在哪些宿主上**的声明，钉版是对**它在哪个宿主版本上编译过**的事实；把两者混成一条断言，正是发布门禁现在把它们拆开分别验的原因。
 - client 半 `dsh.client.platform = web`、`immediately`。
 - 发布形态为按包单仓，`repository.url` 为 git+https://github.com/JayYuen666/dsh-dir-prep-organize.git ；问题反馈走同一仓库的 issue（`bugs`）。
 - 要求 Node.js `>= 22.12`。本包是纯 ESM：用 `import { apply } from "@jayyuen66/dsh-dir-prep-organize"` 或 `require("@jayyuen66/dsh-dir-prep-organize")`。**没有默认导出**——`import pkg from …` 会报 `does not provide an export named 'default'`，请取具名导出。正是这个 Node 下限让 `require()` 能吃下这个 ESM 入口，所以 `engines.node` 要写明。
@@ -31,9 +31,11 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 - 发布产物只有 `host.js`、`client.js`、`templates.data.mjs`、`types/`、`cordis.patch.yml`、`agents/` 与 `THIRD_PARTY_NOTICES.md`（package.json 的 `files`）；`LICENSE`、`README.md`、`package.json` 由 registry 客户端无条件附带。
 - 内置精选模板表单独成一个产物，**首次用到时才载入**，不再随插件载入就进内存。它原先被打进 `host.js`，于是即便用户从不开「模板」下拉，也要替 85 条模板付内存——现在 `host.js` 只有原先的约十分之一，而浏览器那一侧本来就是按需拉的。
 - `agents/` 并非本仓原创：它来自上游项目 [`agency-agents-zh`](https://github.com/jnMetaCode/agency-agents-zh)（MIT）。MIT 要求声明随每一份分发副本一起给出，故其版权与许可声明收录在 `THIRD_PARTY_NOTICES.md`。
-- 运行期依赖四枚，全在 `dependencies`：`@jayyuen66/dsh-plugin-shared`、`@deepseek-ai/schemastery`（宿主 fork，0.1.7 的 `.volatile()` 活引用只有它解析得出来）、`@deepseek-ai/dsh-brand`（`0.2.1-alpha.1`）与 `@deepseek-ai/cosmokit`（`1.8.6-alpha.1`）。
-  - 第四枚同样不是笔误：schemastery 的 `Dict` 取自 cosmokit，于是凡是提到 schema 的声明产物都会带上对它的引用。若把 cosmokit 留作传递依赖，消费方在 pnpm 严格布局下解析不到这个引用——声明入口在那边根本过不了类型检查。这里钉的正是 schemastery 本就会解析到的那个版本，不增加任何安装体积。
-  - 第三枚不是笔误：`host.ts` 的 `brandString` 是**值导入**，必须落 `dependencies`——`build-host.mjs` 的外部化名单只读 `dependencies`∪`peerDependencies`，放 `devDependencies` 就会被 rolldown 把官方函数体内联进 `host.js`（`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」）。
+- `dependencies` 里不放任何 `@deepseek-ai/*`，这不是风格偏好。本包的消费方是 dsh 插件，被装进 profile（`nodeLinker: hoisted`、`autoInstallPeers: false`），宿主包只要出现在 `dependencies`，pnpm 就会在那棵 profile 依赖树里把它落成**真实目录**，与宿主进程已经加载的那份并存。而 `@deepseek-ai/dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例计算——宿主 `dsh-agent-loop` 拿自己那份的 Symbol 去读由副本挂载出来的 `ToolRuntime`，得到 `undefined`，于是**每一次原生工具调用都抛** `Cannot read properties of undefined (reading 'prepare')`，整个 profile 的工具一起失效。本包的构建、类型检查与测试在这之前全部照绿，所以判据由 `test/publish-manifest.test.ts` 落在 manifest 面。
+- 产物 `host.js` 里以**值**导入的两枚宿主包是非 optional 的 `peerDependencies`：`@deepseek-ai/schemastery`（宿主 fork，0.1.7 的 `.volatile()` 活引用只有它解析得出来）与 `@deepseek-ai/dsh-brand`（`0.2.1-alpha.2`）。运行期由宿主在场提供，而 profile 不装 peer，所以不产生副本。`build-host.mjs` 的外部化名单读 `dependencies` ∪ `peerDependencies`，两张表都读，所以 `host.js` 里的裸说明符一字未变——这正是 `brandString` 那处裁定的落点：落 peer 保住「说明符在」，只写 `devDependencies` 就会被 rolldown 把官方函数体内联进来（`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」）。
+- 凡被**声明产物**点名的宿主包都写进 `peerDependencies`，其中只在那里现身的都判为 optional：`@deepseek-ai/cordis`（`4.0.5-alpha.1`）、`@deepseek-ai/cosmokit`（`1.8.6-alpha.1`，只经 schemastery 的 `Dict` 现身）以及 `@deepseek-ai/dsh-agent-default-model`、`-client-locale`、`-client-ui-conversation`、`-client-ui-renderer`、`-client-ui-settings`、`-client-ui-slots`、`-fs`、`-llm`、`-session`（全为 `0.2.1-alpha.2`）。声明它们不是礼节：pnpm 严格布局下，`types/host.d.ts` 里一枚没有任何 manifest 表认领的裸说明符就是解析不到——消费方那侧的声明入口根本过不了类型检查，而本仓自己的 typecheck 照绿，因为我们两张表都有它。`test/publish-manifest.test.ts` 因此按 `types/**/*.d.ts` 现扫这份名单，而不是照这段话抄，两边就此漂不开。`@deepseek-ai/dsh` 是唯一谁也没 import 的 peer：它指宿主本身，也就是 `engines.dsh` 用文字说的那件事。
+- 每枚 peer 都在 `devDependencies` 里以同一枚精确版本再写一份，本仓自己的 typecheck、build 与测试靠它解析。其余 `@deepseek-ai/*` 在源码里是 type-only，在声明产物里也不留说明符，所以只留在 `devDependencies`。
+- `dependencies` 剩下的确实是本包自己的运行期代码：`@jayyuen66/dsh-plugin-shared`。
 
 ## 在 dsh 里启用
 
@@ -80,7 +82,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 路由与令牌                                    | 四条都是 webServer 精确路由（注册时 `kind: "exact"`）；每条 handler 体的**第一条语句**是 `guardTrust(req, res, { servingNonLoopback })`（shared/lib/trust），非 trusted 即写一次 403 并 return，不再读 body；`csrf` 为 per-apply 随机令牌，两个 GET 下发、organize 回填 |
 | 信任判据的次序                                | Host 权威 → `sec-fetch-site` 白名单（只放 same-origin/none/缺失）→ `origin` 与 Host 逐字比对；本包 handler 里自家那枚 `isCrossOrigin` 分支在闸门落地后不可达、已删（共享层 `guardBody` 的同形检查也被闸门挡在前面），拒跨域的是闸门，错误文本由它给                       |
-| Host 权威不是本机可信地址                     | 403 + `{ok:false,error:"untrusted host authority"}`；`servingNonLoopback` 取自 `webServer.host === "0.0.0.0"`，取不到即按只绑回环的保守档                                                                                                                               |
+| Host 权威不是本机可信地址                     | 403 + `{ok:false,error:"untrusted host authority"}`；`servingNonLoopback` 取自 `isNonLoopbackBindHost(webServer.host)`（shared/lib/trust）——宿主的 `Config.host` 收任意本机接口地址、通配地址在载入即拒，所以跟 `"0.0.0.0"` 比字面量恒为 false；服务不报绑定地址时按只绑回环的保守档                                                                                              |
 | `sec-fetch-site` 不在白名单、或 origin 对不上 | 403 + `{ok:false,error:"cross-origin request rejected"}`（`origin` 为 `null` 的沙箱页，以及缺 Host 却又带了 `origin` 的本地面，同落这一句）                                                                                                                             |
 | 方法不符                                      | 405 带 `Allow`，体是 JSON：`{ok:false,error:"GET only"}`（organize/import 为 `"POST only"`）                                                                                                                                                                            |
 | CSRF 缺失或错                                 | 403 + `{ok:false,error:"invalid csrf token"}`（`guardBody` 那一条，仍在闸门之后）                                                                                                                                                                                       |

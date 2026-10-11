@@ -281,6 +281,9 @@ function atLeast(version: string, bound: string): boolean {
   return true;
 }
 
+/** 宿主包名前缀：`@deepseek-ai/` 整族，含 cordis / cosmokit / schemastery 这几枚不同版本的底座。 */
+const HOST_PREFIX = "@deepseek-ai/";
+
 /** dsh-* 包名前缀：本门禁里按它筛选依赖，提出来免得三处各抄一遍。 */
 const DSH_PREFIX = "@deepseek-ai/dsh-";
 
@@ -380,18 +383,55 @@ describe("发布形态", () => {
   });
 });
 
+/**
+ * 宿主包在 peer 与 dev 两张表里的并集。`dependencies` 是禁区（见下面那条门禁）：peer 记录
+ * 「运行期由宿主提供」，dev 记录「本包编译与测试要用它」，两者都不会被消费方的 profile 安装。
+ * 同名键以 peer 表为准，那才是消费方环境里真正提供的那一枚。
+ *
+ * @param manifest - 解析后的 package.json
+ * @returns 宿主包名到版本区间
+ */
+function hostRanges(manifest: Manifest): Record<string, string> {
+  return { ...manifest.devDependencies, ...manifest.peerDependencies };
+}
+
 describe("宿主依赖的版本形状（升级防线）", () => {
+  it("@deepseek-ai/* 一律不进 dependencies：装出去会在宿主进程里物化第二份", async () => {
+    // 钉的是「全绿但宿主瘫痪」这一类坑，别把它当风格偏好，更别把任何 @deepseek-ai/*「恢复」回
+    // dependencies。本插件被装进消费方 profile 的口径是 `nodeLinker: hoisted` 且
+    // `autoInstallPeers: false`（见 pnpm-workspace.yaml），所以 `dependencies` 里的每一枚宿主包
+    // 都会在那棵 profile 依赖树里落成**真实目录**，与宿主进程已经加载的那份并存在一起。
+    // 而 `@deepseek-ai/dsh-tools` 的 TOOL_RUNTIME_SCHEDULER 是普通 `Symbol`（不是 `Symbol.for`），
+    // 符号身份按模块实例计算：宿主的 dsh-agent-loop 用自己那份的 Symbol 去读由副本挂载出来的
+    // ToolRuntime，拿到 `undefined`，于是 `.prepare(...)` 在**每一次**原生工具调用上抛
+    // "Cannot read properties of undefined (reading 'prepare')"，整个 profile 的工具一起失效。
+    // 本包的构建、类型检查与测试在此之前全部照绿，判据只能落在 manifest 面。
+    // 运行期真要用的那两枚（host.js 值导入 dsh-brand 与 schemastery）走**非 optional 的 peer**：
+    // 宿主在场提供，而 profile 不装 peer，所以不产生副本；只被声明产物引用的 cosmokit 是 optional
+    // peer。外部化名单读 dependencies ∪ peerDependencies（build-host.mjs），因此挪进 peer 之后
+    // 产物里的裸说明符一字不变——挪去 dev 才会被 rolldown 内联，那由 test/build-host.test.ts 拦。
+    const { manifest } = await readSurface();
+    const leaked = Object.keys(manifest.dependencies ?? {}).filter((name) =>
+      name.startsWith(HOST_PREFIX),
+    );
+    expect(leaked, "这些宿主包会随消费方装进 profile，物化出第二份实例").toStrictEqual([]);
+  });
+
   it("dsh-* 家族一律精确钉，不留任何范围算子", async () => {
     // registry 上的 dist-tag 是实测出来的陷阱：`latest` 可能指向远早于宿主 ABI 的版本。
     // 精确钉是让「不带版本地装成远古版本」这件事不可能发生的最小条件；一旦放宽成 `^`/`~`，
     // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让消费方在没有测试的
     // 情况下换掉宿主类型面。
     const { manifest } = await readSurface();
+    // 判据读 peer ∪ dev，不读 dependencies——宿主包已经不在那张表里了（见上一条门禁），照着
+    // dependencies 读只会得到一个空集，于是这道门自己先静默失效。
     // 过滤出违规项再一次性断言，而不是在循环里按条件 expect：失败时 diff 直接列出
     // 「哪个包钉成了什么」，比逐条抛错更好读。
-    const ranged = Object.entries(manifest.dependencies ?? {}).filter(
-      ([name, range]) => name.startsWith(DSH_PREFIX) && !/^\d+\.\d+\.\d+-/u.test(range),
+    const dshDeps = Object.entries(hostRanges(manifest)).filter(([name]) =>
+      name.startsWith(DSH_PREFIX),
     );
+    expect(dshDeps.length, "至少要钉住一枚 dsh-* 宿主依赖，否则这道门是空转").toBeGreaterThan(0);
+    const ranged = dshDeps.filter(([, range]) => !/^\d+\.\d+\.\d+-/u.test(range));
     expect(ranged, "这些 dsh-* 依赖没有精确钉住版本").toStrictEqual([]);
   });
 
@@ -409,19 +449,19 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     const { manifest } = await readSurface();
     const peer = manifest.peerDependencies?.["@deepseek-ai/dsh"];
     expect(peer, "peer 依赖缺失：宿主版本就失去基准了").toBeDefined();
-    const devDeps = manifest.devDependencies ?? {};
+    const host = hostRanges(manifest);
 
-    const runtime = Object.entries(manifest.dependencies ?? {}).filter(([name]) =>
-      name.startsWith(DSH_PREFIX),
-    );
-    // ①② 全部 dsh-*（运行期 + 构建期）钉同一个版本。只比 dependencies 不够——
+    // ①② 全部 dsh-*（运行期的 peer + 构建期的 dev）钉同一个版本。只比一张表不够——
     // devDependencies 里的 dsh-* 同样是编译期真实存在的类型面，两边分家就会出现
     // 「同一个会话里两份宿主包」，而它不报编译错、只在运行期报「认不出这个 callId」。
-    const allDsh = [
-      ...Object.entries(manifest.dependencies ?? {}),
-      ...Object.entries(devDeps),
-    ].filter(([name]) => name.startsWith(DSH_PREFIX));
+    // 宿主包现在一律落 peer 与 dev（见上面那条门禁），hostRanges 的并集就是这两张表，
+    // 没有第三个来源要并进来；读 dependencies 只会拿到空集，①② 便成了空转。
+    const allDsh = Object.entries(host).filter(([name]) => name.startsWith(DSH_PREFIX));
     expect(new Set(allDsh.map(([, range]) => range)).size, "dsh-* 钉在了不同版本上").toBe(1);
+    // ③ 的基准取**运行期**那一面：peer 表里的 dsh-* 才是消费方环境真正提供的那几枚。
+    const runtime = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) =>
+      name.startsWith(DSH_PREFIX),
+    );
     const pinned = runtime[0]?.[1] ?? "";
     // ③ 不高于 peer 下界：钉的版本比声称支持的宿主区间还高，就是「装得上、跑不了」。
     const bound = lowerBoundOf(peer ?? "");
@@ -437,6 +477,72 @@ describe("宿主依赖的版本形状（升级防线）", () => {
         `${name}@${pinned} 高于 peer 下界 ${bound}，会在更老的宿主上装出一个跑不了的包`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * 声明产物里的裸说明符：`from "x"` 与 `import("x")` 引号内那一段。
+ * 用前后向断言而不是捕获组——本仓 tsc 的 `noPropertyAccessFromIndexSignature` 与 oxlint 的
+ * `dot-notation` 对具名组的字面量键互斥（点访问报 TS4111，方括号报 dot-notation），
+ * 零组则直接取 `match[0]`，两边都不烫。
+ */
+const DECLARATION_SPECIFIER = /(?<=\bfrom\s*["']|\bimport\(\s*["'])[^"']+(?=["'])/gu;
+
+/**
+ * 把一条说明符收成**包名**（剥掉子路径），供与 manifest 的表键比对。
+ *
+ * @param specifier - 声明产物里出现的一条说明符
+ * @returns 包名；相对路径与 `node:` 内置返回 undefined（它们不由 manifest 决定能否解析）
+ */
+function packageNameOf(specifier: string): string | undefined {
+  const segments = specifier.split("/");
+  const bare = specifier.startsWith("@") ? segments.slice(0, 2).join("/") : (segments[0] ?? "");
+  // 相对路径与 `node:` 内置不参与 manifest 比对：那两类由消费方自己的运行时决定能否解析。
+  return specifier.startsWith(".") || bare.startsWith("node:") ? undefined : bare;
+}
+
+/**
+ * 扫出一棵目录里所有 `.d.ts` 引用到的包名。
+ *
+ * @param dir - 声明产物目录
+ * @returns 被引用的包名集合
+ */
+async function declarationPackages(dir: string): Promise<Set<string>> {
+  const listed = await readdir(dir, { recursive: true });
+  const texts = await Promise.all(
+    listed
+      .map((name) => name.split(path.sep).join("/"))
+      .filter((rel) => rel.endsWith(".d.ts"))
+      .map((rel) => readFile(path.join(dir, rel), "utf8")),
+  );
+  const found = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(DECLARATION_SPECIFIER)) {
+      const pkg = packageNameOf(match[0]);
+      if (pkg !== undefined) {
+        found.add(pkg);
+      }
+    }
+  }
+  return found;
+}
+
+describe("声明产物的可解析性（升级防线）", () => {
+  it("types/ 引用的每枚宿主包都落在 peer 表：否则消费方的声明入口过不了类型检查", async () => {
+    // 判据取**产物**而不是源码：type-only 导入在 host.ts 里随构建擦除，却原样留在
+    // types/host.d.ts 的裸说明符里。消费方那侧只按 manifest 装依赖，声明里没这个名字
+    // 就是 TS2307，而本仓自己的 typecheck 全照绿——dev 与 peer 两张表我们都有它。
+    // 宿主包不许进 dependencies（见上面那条门禁），所以唯一的合法落点就是 peer。
+    const { manifest } = await readSurface();
+    const referenced = await declarationPackages(path.join(pkgDir, "types"));
+    expect(referenced.size, "至少要扫到一枚被声明产物引用的包，否则这道门是空转").toBeGreaterThan(
+      0,
+    );
+    const missing = [...referenced]
+      .filter((name) => name.startsWith(HOST_PREFIX))
+      .filter((name) => manifest.peerDependencies?.[name] === undefined)
+      .toSorted();
+    expect(missing, "这些宿主包只被声明产物引用，却没声明为 peer").toStrictEqual([]);
   });
 });
 

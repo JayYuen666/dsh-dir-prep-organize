@@ -66,10 +66,12 @@ import type { Context, Volatile } from "@deepseek-ai/cordis";
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
 // 值导入：`brandString` 是官方幻影品牌唯一的合法构造口（用在哪两位上见下面 SessionsService 的
 // 注释）。它是恒等函数，且 dsh-brand 自述「不拥有任何具体域值，也不保留任何运行时身份或可变
-// 状态，独立安装的副本产出可互换的值」——据此把它落 dependencies、
-// 产物留裸说明符；旧写法（放 devDependencies）会让 rolldown 把函数体内联进 host.js，等于
-// 每包各持一份官方实现。与 danger-guard 的 `brandNumber`、session-rescue 的 `brandString`
-// 同一处、同一理由。
+// 状态，独立安装的副本产出可互换的值」——据此把它落 peerDependencies（并在 devDependencies
+// 里同版再写一份供本仓编译与测试）、产物留裸说明符。只放 devDependencies 会让 rolldown 把函数体
+// 内联进 host.js，等于每包各持一份官方实现；写进 dependencies 更糟——消费方的 profile 是 hoisted
+// 安装且 autoInstallPeers: false，它会在那棵树里物化成**第二份真实目录**，与宿主进程已加载的那份
+// 并存，见 test/publish-manifest.test.ts 的那条门禁。与 danger-guard 的 `brandNumber`、
+// session-rescue 的 `brandString` 同一处、同一理由。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { FsDirEntry, FsTarget, FileSystem } from "@deepseek-ai/dsh-fs";
 import type { WebServer } from "@deepseek-ai/dsh-host-webserver";
@@ -84,8 +86,9 @@ import type {
 import type { SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
 import { guardBody, queryParam, sendJson } from "@jayyuen66/dsh-plugin-shared/lib/http";
-// 信任闸门：四条路由 handler 的第一条语句。
-import { guardTrust } from "@jayyuen66/dsh-plugin-shared/lib/trust";
+// 信任闸门：四条路由 handler 的第一条语句。`isNonLoopbackBindHost` 是它的绑定地址判据，
+// 与本文件的路由注册同属一处，见下面 servingNonLoopback 的取法。
+import { guardTrust, isNonLoopbackBindHost } from "@jayyuen66/dsh-plugin-shared/lib/trust";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 字典本身在 src/host-messages.ts（纯数据），本文件只负责取表与注入。
 import {
@@ -103,10 +106,10 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 /** 本包送进 `llm.stream({ messages })` 的整理请求帧是 **request-only 输入**：它从不落
  *  任何持久消息位（`runOrganize` 只回 `{ content }`，路由也不把帧身份回投给卡片），所以
  *  按 0.1.7 它既不需要 `id` 也不带 `source`——证据三条：
- *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts:457-462` 的 `RequestUserInput`
+ *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts:468-473` 的 `RequestUserInput`
  *     把两面都标成 `?: never`（`readonly id?: never` / `readonly source?: never`），
  *     `GenerateOptions.messages` 收的是 `RequestMessage[] = Message | RequestUserInput`
- *     （同文件 :464，字段注记 "a hand-built one-shot may include identity-free user
+ *     （同文件 :475，字段注记 "a hand-built one-shot may include identity-free user
  *     inputs"）；
  *  2. 持久那半边 `Message` 要的 `source.kind` 必须是**已声明**进 `MessageSourceMap` 的
  *     kind（installed `dsh-llm/lib/types/message.d.ts:101-133`），本包的
@@ -336,10 +339,10 @@ export interface DerivedMessageView {
 
 /**
  * 本包读到的会话面 = 官方 `Session` 两位成员的**边界投影**（installed
- * @deepseek-ai/dsh-session/lib/types/index.d.ts：`readonly header: SessionHeader` :118、
- * `deriveMessages(): Message[]` :292）。
+ * @deepseek-ai/dsh-session/lib/types/index.d.ts：`readonly header: SessionHeader` :150、
+ * `deriveMessages(): Message[]` :347）。
  * 键名一律借自官方（`header` 借 `Session`、`cwd` 借 `SessionHeader`，installed
- * @deepseek-ai/dsh-llm 域内 types.d.ts:69 `readonly cwd?: string`），值域收成"本包真的读的那位
+ * @deepseek-ai/dsh-session 域内 types.d.ts:69 `readonly cwd?: string`），值域收成"本包真的读的那位
  * + 可缺失"：官方把 header/deriveMessages 记成必选成员，但那句承诺说的是宿主自己 `new`
  * 出来的 Session；跨进程递来的会话是否具备某位只能运行时判（见 `extractSessionConversation`
  * 的 `typeof session.deriveMessages !== "function"` 与 `cwdOfSession` 的 `typeof === "string"`
@@ -352,10 +355,10 @@ export interface SessionLike {
 
 /**
  * `Context.sessions`（官方 `SessionStore`，installed @deepseek-ai/dsh-session/lib/types/
- * index.d.ts:26-28）的 `get` 一位（:436 `get(id: SessionId): Session | undefined`）在本包的
+ * index.d.ts:26-28）的 `get` 一位（:491 `get(id: SessionId): Session | undefined`）在本包的
  * 读法：入参就此是官方品牌的 `SessionId`（边界上递来的是裸 string，构造口只有文件头那枚
  * `brandString<SessionId>`），返回值域换成上面的 `SessionLike` 投影——直接取官方返回的整枚
- * `Session` 类会把名义类一路渗进本包（`private log`/`surfaceManager`，:105-107），那三道运行时
+ * `Session` 类会把名义类一路渗进本包（`private log`/`surfaceManager`，:137-139），那三道运行时
  * 守卫当场在编译器眼里变成死代码，而它们挡的是真实输入。返回 `undefined` 与官方一致。
  * 口径同 danger-guard/host.ts 的 `GuardExecution`（借键名、值域换投影）。
  */
@@ -371,7 +374,7 @@ const sessionIdOf = (value: string): SessionId => brandString<SessionId>(value);
  *  「转换点为 0」并不成立。取官方类型后模型选择与 stream 入参两侧共用同一真值。 */
 export type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 /** 默认模型选择直接取官方成员的返回形状（`AgentDefaultModelConfig.currentSelection()`
- *  的返回类型，installed @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:41）。
+ *  的返回类型，installed @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:42）。
  *  旧镜像自己抄了 `{ provider, model, reasoningEffort? }` 三位——其中 `reasoningEffort` 是
  *  `ReasoningEffortId` 品牌（本文件上面已按官方 re-export），抄本一旦与官方漂开，
  *  品牌值塞不进 stream 入参就是静默丢字段。取 ReturnType 之后本包不再裁定它的形状。 */
@@ -391,7 +394,7 @@ export type { FinishReason, StreamChunk } from "@deepseek-ai/dsh-llm";
 
 /** stream 入参：官方 `GenerateOptions` 的本包用到的子集。此前这里在 `Pick` 之外**另加**
  *  了一枚 `signal?: AbortSignal`，注释写着"本包附加的取消位"——官方其实**就有**这一位
- *  （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:494），另写一次等于凭空多出一个
+ *  （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:519），另写一次等于凭空多出一个
  *  与官方并行的形状声明；现在连同 `signal` 一起 `Pick`，一处来源。 */
 export type LlmStreamOptions = Pick<
   GenerateOptions,
@@ -405,18 +408,20 @@ export type LlmStreamOptions = Pick<
 export type LlmService = Pick<LlmRuntime, "stream">;
 /**
  * 官方 `WebServer`（@deepseek-ai/dsh-host-webserver，installed
- * `lib/types/index.d.ts:67` 起：cordis `Service` 子类 + 一整套 private 路由表字段
+ * `lib/types/index.d.ts:119` 起：cordis `Service` 子类 + 一整套 private 路由表字段
  * `exact`/`prefixes`/`upgrades`/`fallback`/`server`… → TS 对类按名义比，测试替身永远满足
- * 不了整类型）的**方法面投影**：本包只调 `register()`（installed `:90`），路由字面量因此
- * 受官方 `WebRoute`（installed `:33-39`）约束——旧镜像自己抄了一份 `WebRoute`，`kind` 的
+ * 不了整类型）的**方法面投影**：本包只调 `register()`（installed `:157`），路由字面量因此
+ * 受官方 `WebRoute`（installed `:34-40`）约束——旧镜像自己抄了一份 `WebRoute`，`kind` 的
  * `"exact" | "prefix"` 联合与 handler 的 `(IncomingMessage, ServerResponse)` 形参都是手抄
  * 的，现在全部由官方交出，disposer 亦按官方 `() => void` 收。
- * ⚠ 本包 `register` 之外仍镜像了 `registerFallback`（installed `:106`）吗：**没有**，类型上
- * 只剩 `register` 一位。但 `isWebServerService` 的**运行时**判据仍是两条（register +
- * registerFallback），理由与旧注释一致：只看 `register` 就分不出 webServer 与 settings，
- * 服务装错会静默通过。守卫入参是 `unknown`，故第二条判据不依赖类型里有这个成员。
+ * ⚠ 本包 `register` 之外仍镜像了 `registerFallback`（installed `:173`）吗：**没有**，类型上
+ * 只剩 `register` 加一枚**可选**的 `host` 读位。但 `isWebServerService` 的**运行时**判据仍是
+ * 两条（register + registerFallback），理由与旧注释一致：只看 `register` 就分不出 webServer
+ * 与 settings，服务装错会静默通过。守卫入参是 `unknown`，故第二条判据不依赖类型里有这个成员。
+ * `host` 写成 `Partial`：它是官方实例上的 getter（installed `:144`），本包只读它挑信任闸门的
+ * 非回环档，读不到就按只绑回环的保守档走——所以这条投影不主张宿主一定给得出这一位。
  */
-type WebServerService = Pick<WebServer, "register">;
+type WebServerService = Pick<WebServer, "register"> & Partial<Pick<WebServer, "host">>;
 
 // ── 守卫（session-rescue 同款防御：typeof 收窄为 Record / 具名方法，不经 as 断言）────
 
@@ -1580,8 +1585,8 @@ export interface RouteDeps {
 }
 
 /** 路由 handler 形状（本包自己的路由表投影）。官方 `WebRoute["handler"]` 的返回是
- *  `void | Promise<void>`（installed `@deepseek-ai/dsh-host-webserver/lib/types/index.d.ts:38`），
- *  dispatcher 侧写成 `await route.handler(req, res)`（installed lib/index.js:235）——
+ *  `void | Promise<void>`（installed `@deepseek-ai/dsh-host-webserver/lib/types/index.d.ts:40`），
+ *  dispatcher 侧写成 `await route.handler(req, res)`（installed lib/index.js:356）——
  *  await 对同步返回同样成立，而外层 `handle` 本身是 async，故同步抛与 reject 在调用方
  *  观察上等价：**没有调用方依赖 handler 返回 promise**。于是投影按实现拆成两枚，
  *  让 createRouteHandlers 的返回值继续自证——确有 await 的三枚是 AsyncRouteHandler，
@@ -2101,9 +2106,11 @@ export function apply(ctx: Context, config: Config): void {
       }
       // per-apply 写操作令牌；context/model GET 下发，organize POST 回填校验
       const csrf = randomUUID();
-      // host 不在这条形状守卫的检查面里（它查的是 register / registerFallback 两枚函数），
-      // 故按 unknown 逐位读；缺位就当"只绑回环"，那是保守档。
-      const servingNonLoopback = isRecord(rawWebServer) && rawWebServer["host"] === "0.0.0.0";
+      // 绑定地址读 webServer 自己的 `host` 位（官方 getter），判据走 shared 的
+      // `isNonLoopbackBindHost` 而不是比字面量：宿主的 `Config.host` 收的是任意本机接口 IP
+      // 字面量，通配地址在载入即拒，所以 `host === "0.0.0.0"` 这类写法恒为 false，
+      // 局域网那一面会被信任闸门整片拒成 403。读不到即按只绑回环的保守档。
+      const servingNonLoopback = isNonLoopbackBindHost(webServer.host);
       // 惰性 getter：服务可能在路由注册之后才就绪（inject 只声明 webServer 硬依赖）
       // 各服务经形状守卫投影（替代 `svc.get(...) as X` 断言）。
       const deps: RouteDeps = {

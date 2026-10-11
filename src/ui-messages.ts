@@ -184,7 +184,7 @@ export interface UiMessages {
 
 /**
  * 本包的文案命名空间 merge 进官方的 `LocaleNamespaceMap`（installed
- * `dsh-client-ui-slots/lib/types/index.d.ts:33`「Dictionary owners extend via declaration
+ * `dsh-client-ui-slots/lib/types/index.d.ts:23`「Dictionary owners extend via declaration
  * merging (exactly like SlotMap)」）。这不是美化：不 merge 时 `ctx.locale.bind(NS)` 只能
  * 落到官方那条**未类型化**重载（返回 `Translate<string>`），卡片要的窄键集 `t` 就无官方
  * 来源，本地只好手写一份同构签名（就是被这一段替换掉的旧版本）。

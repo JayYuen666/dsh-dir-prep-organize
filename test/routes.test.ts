@@ -18,7 +18,7 @@
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -476,6 +476,47 @@ function routeOf(env: Harness, suffix: string): RouteRecord {
   const found = env.routes.find((route) => route.path.endsWith(suffix));
   assert.ok(found, `路由 ${suffix} 已注册`);
   return found;
+}
+
+// ── 绑定地址夹具（信任闸门的非回环档只有装配面走得到，见下面三条）──────────────
+// TEST-NET-1（RFC 5737 的文档地址段）不会被真网卡占到，所以替换 networkInterfaces 之后
+// 判据是确定的，不随跑测试的机器变。
+const LAN_BIND_HOST = "192.0.2.7";
+
+/** 给替身 webServer 补上官方那枚 `host` getter 的位（不补即"服务不报绑定地址"）。 */
+function setBindHost(env: Harness, host: string): void {
+  (env.serviceRegistry["webServer"] as { host?: string }).host = host;
+}
+
+/** 把 `os.networkInterfaces()` 换成只报 LAN_BIND_HOST 一枚地址（闸门的本机地址面现读它）。 */
+async function withOnlyLanInterface<TResult>(run: () => Promise<TResult>): Promise<TResult> {
+  const lan: os.NetworkInterfaceInfo = {
+    address: LAN_BIND_HOST,
+    family: "IPv4",
+    netmask: "255.255.255.0",
+    mac: "00:00:00:00:00:00",
+    internal: false,
+    cidr: `${LAN_BIND_HOST}/24`,
+  };
+  const original = os.networkInterfaces;
+  os.networkInterfaces = () => ({ eth0: [lan] });
+  try {
+    return await run();
+  } finally {
+    os.networkInterfaces = original;
+  }
+}
+
+/** 以本机网卡地址为 Host 权威驱动一次 context GET。 */
+async function driveFromLanAuthority(env: Harness): Promise<FakeResponse> {
+  return driveRoute(
+    routeOf(env, "context"),
+    makeReq({
+      method: "GET",
+      url: CONTEXT_PATH,
+      headers: { host: LAN_BIND_HOST, "sec-fetch-site": "same-origin" },
+    }),
+  );
 }
 
 /** importAgent 的 POST 调用（该端点不校 CSRF）。 */
@@ -1116,7 +1157,8 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.equal(env.routes.length, 0, "webServer 形状不认 → 不注册路由");
   });
 
-  // 上面那条只覆盖到「装配期什么都不注册」。host.ts:1478 那个三元还有一支在**请求期**：
+  // 上面那条只覆盖到「装配期什么都不注册」。host.ts 的 `localeMessages` 里那枚三元
+  // （installed 视角见 host.ts:2068）还有一支在**请求期**：
   // localeMessages() 每次取表都要 getService("settings") 再过 isSettingsService，
   // 假支（缺席 / 形状不符）此前从没被执行过——因为那两条用例的 webServer 也是坏的，
   // 路由一条没注册，取表路径压根没跑起来。真宿主少装/换形 settings 时走的就是这支，
@@ -1179,7 +1221,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
 
   it("settings 缺席时两个效应仍各回一个 disposer：占位那个调用不抛、不误注销，路由那个才是真注销", () => {
     // 0.1.7 起 apply 期唯一的 settings 动作挂在注入效应上，缺席时它回的是
-    // host.ts:1446 的占位 noopDisposer。此前没人调用过它（函数覆盖 99.56% 的缺项就是
+    // host.ts:2036 的占位 noopDisposer。此前没人调用过它（函数覆盖 99.56% 的缺项就是
     // 这一处）：cordis 要求每个效应可回收，占位实现若被顺手改成会抛的东西，卸载即炸宿主。
     const env = harness({ settings: undefined });
     applyTo(env);
@@ -1630,6 +1672,28 @@ describe("信任闸门：/_dsh/dir-prep/* 的五条路由", () => {
       res,
     );
     assert.equal(out.statusCode, 403);
+    assert.match(String(parsed(out)["error"]), /untrusted host/u);
+  });
+
+  // 绑定地址这条腿只有装配面走得通：createRouteHandlers 的第 4 位由 apply 从 webServer 取，
+  // 手搓构造点不传即是保守档。宿主把 `Config.host` 收成任意本机接口 IP 字面量、并在载入时拒掉
+  // 通配地址之后，`host === "0.0.0.0"` 那种写法恒为 false——局域网那一面被闸门整片拒成 403，
+  // 而类型检查、构建、其余用例全照绿。下面这两条钉的是「网卡地址确实流到了闸门」这件事本身
+  // （夹具见文件头的 setBindHost / withOnlyLanInterface / driveFromLanAuthority）。
+  it("webServer.host 是本机网卡地址：局域网 Host 权威被放行（比字面量恒 false 的那类回归）", async () => {
+    const env = harness();
+    setBindHost(env, LAN_BIND_HOST);
+    applyTo(env);
+    const out = await withOnlyLanInterface(() => driveFromLanAuthority(env));
+    assert.notEqual(out.statusCode, 403, "绑的就是这枚网卡地址，闸门不该拒本机接口自己的 Host");
+    assert.equal(out.statusCode, 200);
+  });
+
+  it("同一枚 Host、webServer 却不报 host 位：闸门回到只认回环的保守档并拒成 403", async () => {
+    const env = harness();
+    applyTo(env);
+    const out = await withOnlyLanInterface(() => driveFromLanAuthority(env));
+    assert.equal(out.statusCode, 403, "读不到绑定地址就当只绑回环，这是保守档");
     assert.match(String(parsed(out)["error"]), /untrusted host/u);
   });
 });

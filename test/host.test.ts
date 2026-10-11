@@ -797,7 +797,7 @@ describe("0.1.7 隐式注册验收", () => {
     // 这条是「模板列表在页面上整个空掉」那次故障的根因锁定：host 半的注释一度写着
     // 「未设置 → 引用里是 undefined，内置列表由 client 兜」，但 schemastery 对 array 字段
     // 把缺失值 cast 成 `[]`，宿主 describe() 的 projectForm 又只丢 undefined 位
-    // （settings/src/index.ts:141-147），于是「未设置」递到客户端就是一张空表。
+    // （settings/src/schema.ts:59-67），于是「未设置」递到客户端就是一张空表。
     // 回落判据因此只能由 client 半出（client-entry.ts 的 fromSettings）——任何按
     // `=== undefined` 判"未设置"的写法都会让内置精选集永不出现。
     interface VolatileRef {

@@ -1,7 +1,7 @@
 // host.js 构建冒烟 + 防回归锁（产物落「包根」这条不变式是本包的生命线）。
 //
 // 为什么锁得这么死：host.ts 用 `path.join(import.meta.dirname, "agents")` 定位内置
-// 角色库（host.ts:67），而 `import.meta.dirname` 取的是**运行期模块自身所在目录**。
+// 角色库（host.ts:132），而 `import.meta.dirname` 取的是**运行期模块自身所在目录**。
 // 产物一旦挪进 dist/，AGENTS_DIR 就静默指向 <pkg>/dist/agents（不存在），「导入内置
 // 全部」直接空集——不报错、只是没有角色。故这里同时锁三件事：
 //   1. 跨包依赖在产物里保持 external（内联会把 shared 的模块级状态复制成多份）；
@@ -66,7 +66,7 @@ describe("dir-prep-organize host 构建", () => {
     }
     assert.ok(
       text.includes('from "@deepseek-ai/dsh-brand"'),
-      "dsh-brand 必须外部化（口径 A：值导入落 dependencies，内联=复制官方构造器）",
+      "dsh-brand 必须外部化（口径 A：值导入落 peerDependencies、不进 dependencies，内联=复制官方构造器）",
     );
     assert.ok(!/^function brandString\(/mu.test(text), "产物不得内联 brandString 的函数体");
     // 设置 schema 引擎 = 宿主 fork 的 schemastery：0.1.7 的 `.volatile()` 只有它有实现，
