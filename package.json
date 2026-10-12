@@ -1,6 +1,6 @@
 {
   "name": "@jayyuen66/dsh-dir-prep-organize",
-  "version": "0.1.2-rc",
+  "version": "0.1.2",
   "description": "dsh 插件：对话输入框「整理」按钮（主键直接整理/▾ 以角色视角整理，结合当前目录 + session 模型整理优化草稿）+「模板」下拉（内置精选角色集生成自插件 agents/ 角色库，可按部门分组；设置卡可增删改/一键导入内置全部/导入本地角色 .md）",
   "homepage": "https://github.com/JayYuen666/dsh-dir-prep-organize#readme",
   "bugs": {
@@ -57,34 +57,26 @@
     "fmt:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@jayyuen66/dsh-plugin-shared": "^0.1.4"
+    "@jayyuen66/dsh-plugin-shared": "^0.1.5-rc"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5-alpha.1",
     "@deepseek-ai/cosmokit": "1.8.6-alpha.1",
-    "@deepseek-ai/dsh-agent": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-agent-default-model": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-api-remotes": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-app-boot": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-brand": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-locale": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-store": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-config-editor": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-fs": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-host-directory-picker": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-host-webserver": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-llm": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-llm-retry": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-package-manifest": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-sandbox": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-scope": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-session": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-session-projection": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-settings": "0.2.1-alpha.2",
     "@deepseek-ai/schemastery": "3.18.5-alpha.1",
     "@types/node": "catalog:",

@@ -31,13 +31,17 @@ import {
   loadBuiltinTemplates,
   persistError,
   rootsPersistError,
-  rawOrganizeTimeoutMsOf,
   resetBuiltinTemplates,
   subscribeBuiltinTemplates,
   inject as clientInject,
 } from "../src/client-entry.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { Translate, UiMessages } from "../src/ui-messages.ts";
+import {
+  MAX_TIMER_MS,
+  organizeFetchTimeoutMs,
+  rawOrganizeTimeoutMsOf,
+} from "../src/client-timeouts.ts";
 import { DEFAULT_TEMPLATES } from "../src/templates.ts";
 import type { TemplateEntry } from "../src/templates.ts";
 import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
@@ -410,6 +414,8 @@ interface FakeScope extends ConfigForm<Record<string, unknown>> {
   acceptWrites: boolean;
   /** true = 写入被收下，但宿主回读源随即转为未就绪（回执"不可确认"的形状）。 */
   goesStaleOnWrite: boolean;
+  /** set 的在途闸：置一个 promise 就让后续 set 停在它上面（测并发写同一字段用）。 */
+  holdSet?: Promise<unknown> | undefined;
 }
 
 function makeScope(initial: FormSnapshot): FakeScope {
@@ -445,6 +451,9 @@ function makeScope(initial: FormSnapshot): FakeScope {
     },
     async set(field, value) {
       scope.writes.push({ field, value });
+      if (scope.holdSet !== undefined) {
+        await scope.holdSet;
+      }
       if (!scope.acceptWrites) {
         // 宿主拒绝：官方的 set resolve(false) 且快照不变（不 reject）。
         return false;
@@ -976,6 +985,54 @@ describe("rawOrganizeTimeoutMsOf 对同源超时位的快照净化", () => {
     assert.equal(rawOrganizeTimeoutMsOf({ organizeTimeoutMs: Number.NaN }), undefined);
     assert.equal(rawOrganizeTimeoutMsOf({}), undefined, "宿主没投影该位 → undefined");
   });
+
+  it("超出 setTimeout 上界 → 夹到 2^31-1（V8 会把越界延时静默变成 1ms）", () => {
+    // host 侧 clampInt 已经夹过一遍，但这里是**唯一**发起 fetch 的地方，它不夹就白搭；
+    // 而 schema 的 natural() 没有上界，用户配得出来。
+    assert.equal(rawOrganizeTimeoutMsOf({ organizeTimeoutMs: MAX_TIMER_MS }), MAX_TIMER_MS);
+    assert.equal(
+      rawOrganizeTimeoutMsOf({ organizeTimeoutMs: MAX_TIMER_MS + 1 }),
+      MAX_TIMER_MS,
+      "越界值必须被夹住，不能原样透传给 setTimeout",
+    );
+    assert.equal(
+      rawOrganizeTimeoutMsOf({ organizeTimeoutMs: Number.POSITIVE_INFINITY }),
+      undefined,
+      "非有限值走 undefined 回落（而不是 Math.min 把它夹成上界）",
+    );
+    assert.equal(
+      rawOrganizeTimeoutMsOf({ organizeTimeoutMs: 1500.7 }),
+      1500,
+      "小数取整（setTimeout 会自己截断，这里先落定，省得两端算出不同的值）",
+    );
+  });
+
+  it("上界夹位对任意大配置值都成立（schema 的 natural() 没有上界）", () => {
+    // 钉「夹位之后一定落在 setTimeout 的可表示区间内」这条不变式，而不是逐个枚举输入
+    // ——那正是原实现漏掉的那一档（`organizeTimeoutMs + 5000` 自己就越界）。
+    for (const raw of [1, 1000, 60_000, MAX_TIMER_MS - 1, MAX_TIMER_MS, MAX_TIMER_MS + 1, 1e15]) {
+      const parsed = rawOrganizeTimeoutMsOf({ organizeTimeoutMs: raw });
+      assert.ok(parsed !== undefined, `${String(raw)}：合法值不该被回落`);
+      assert.ok(parsed >= 1 && parsed <= MAX_TIMER_MS, `${String(raw)}：解析值必须已夹住`);
+      assert.ok(
+        organizeFetchTimeoutMs(parsed) <= MAX_TIMER_MS,
+        `${String(raw)}：加完余量仍不得越界`,
+      );
+    }
+  });
+
+  it("organizeFetchTimeoutMs：加余量之后仍在可安全 setTimeout 的区间内", () => {
+    assert.equal(organizeFetchTimeoutMs(undefined), 125_000, "缺省 = 回落时限 + 5s 余量");
+    // 下界那档用贴近真实的 1s（1s + 5s = 6s）而不是最小值 1ms：断言的是「夹位后
+    // 仍可安全 setTimeout」，量级结论相同而读起来更贴近真实配置。
+    assert.equal(organizeFetchTimeoutMs(1000), 6000, "最小档 + 余量");
+    assert.equal(
+      organizeFetchTimeoutMs(MAX_TIMER_MS),
+      MAX_TIMER_MS,
+      "上界 + 余量会越界，必须**加完再夹一次**",
+    );
+    assert.ok(organizeFetchTimeoutMs(MAX_TIMER_MS) <= MAX_TIMER_MS);
+  });
 });
 describe("persistError（写入回执核验，文本取自卡片字典）", () => {
   beforeEach(domFixtureSetup);
@@ -1020,23 +1077,39 @@ describe("formatImportSkips（计数句子取自卡片字典）", () => {
 
   it("缺省 / 全 0 → 空串", () => {
     assert.equal(formatImportSkips(tZh, undefined), "");
-    assert.equal(formatImportSkips(tZh, { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0 }), "");
+    assert.equal(
+      formatImportSkips(tZh, { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0, escaped: 0 }),
+      "",
+    );
   });
 
-  it("四类计数都进句子", () => {
-    const out = formatImportSkips(tZh, { tooLarge: 1, unreadable: 2, deeper: 40, unnamed: 3 });
+  it("五类计数都进句子（escaped = 符号链接被安全闸门拦下的那一项）", () => {
+    const out = formatImportSkips(tZh, {
+      tooLarge: 1,
+      unreadable: 2,
+      deeper: 40,
+      unnamed: 3,
+      escaped: 4,
+    });
     assert.match(out, /40 个更深层/u);
     assert.match(out, /1 个文件超字节上限/u);
     assert.match(out, /2 个文件读取失败/u);
     assert.match(out, /3 个非角色文件/u);
-    assert.match(out, /^（.+，.+，.+，.+）$/u, "外层括号 + 中文顿号分隔同样来自字典");
+    assert.match(out, /4 个文件的真实目标在允许根之外/u);
+    assert.match(out, /^（.+，.+，.+，.+，.+）$/u, "外层括号 + 中文顿号分隔同样来自字典");
   });
 
   it("en 字典：同一份计数产出英文句子与英文分隔符", () => {
-    const out = formatImportSkips(tEn, { tooLarge: 1, unreadable: 0, deeper: 40, unnamed: 0 });
+    const out = formatImportSkips(tEn, {
+      tooLarge: 1,
+      unreadable: 0,
+      deeper: 40,
+      unnamed: 0,
+      escaped: 2,
+    });
     assert.equal(
       out,
-      " (40 deeper .md files were not scanned (imports cover two levels), 1 files were skipped for exceeding the byte limit)",
+      " (40 deeper .md files were not scanned (imports cover two levels), 1 files were skipped for exceeding the byte limit, 2 files whose real target lies outside the allowed roots (symlinks) were excluded by policy)",
     );
   });
 });
@@ -1479,12 +1552,41 @@ describe("OrganizeButton", () => {
     assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /读取模型失败/u);
   });
 
-  it("写回动作缺失 → 明确错误（不静默）", async () => {
-    stubOrganizeOk();
+  it("写回动作缺失 → 按钮禁用并在发请求**之前**就说明原因（不烧 LLM 调用）", async () => {
+    const calls: string[] = [];
+    stubFetch((url) => {
+      calls.push(url);
+      return { body: { ok: true, csrf: "t", cwd: "/w", entries: [], provider: "p", model: "m" } };
+    });
     const { organize } = mountAll();
     await mount(React.createElement(organize, kitProps({ inputActions: undefined })));
+    const btn = buttonByField(FIELD_ORGANIZE_BTN);
+    assert.ok(btn, "整理按钮在位");
+    assert.equal(btn.disabled, true, "整理结果无处可写时按钮就该是禁用的");
+    assert.match(btn.title, /输入框动作不可用/u);
+    await press(btn);
+    assert.deepEqual(calls, [], "一次真实的 LLM 请求换一句报错，纯浪费——请求不该发出去");
+  });
+
+  it("写回动作在整理途中失效 → 明确错误（不静默吞掉一次已付费的调用）", async () => {
+    // 与上一条互补：canWrite 只在**渲染那一刻**判一次；宿主若在请求在途时把
+    // setDraft 摘掉，writeDraft 仍要抛，否则这次调用就白花了且界面毫无交代。
+    // 注意改的是**嵌套对象**的成员：React.createElement 拷的是顶层 props，
+    // 改本地 `props.inputActions = undefined` 组件根本看不见。
+    stubOrganizeOk();
+    const { organize } = mountAll();
+    const props = kitProps();
+    const actions = props["inputActions"] as { setDraft?: (value: string) => void };
+    await mount(React.createElement(organize, props));
+    assert.equal(buttonByField(FIELD_ORGANIZE_BTN)?.disabled, false, "渲染时动作还在，按钮可点");
+    delete actions.setDraft;
     await press(buttonByField(FIELD_ORGANIZE_BTN));
-    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /输入框动作不可用/u);
+    assert.match(
+      buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "",
+      /输入框动作不可用/u,
+      "写不回就该说一句，而不是无声失败",
+    );
+    assert.deepEqual(writes, [], "内容没有写回去");
   });
 
   it("loading 期间重复点击被门禁（DOM disabled + 组件内 seq 双保险）", async () => {
@@ -2169,6 +2271,37 @@ describe("TemplatesCard 恢复默认", () => {
     await press(buttonContaining("确认恢复默认"));
     assert.match(errText(), /恢复默认未生效：宿主拒绝了本次写入/u);
   });
+
+  it("保存在途时「恢复默认」禁用（两者写同一份表单，不能并发）", async () => {
+    // reset 走 unset、保存走 set，落点是同一个字段。放开并发就是「最后写入者赢」：
+    // 一次保存可能刚写进去就被 unset 抹掉（或反过来），而界面全程显示成功。
+    stubBuiltinTemplates();
+    // 用 Promise<undefined> 而非 Promise<void>：闸门只在用例末尾 resolve 一次、解析值
+    // 无人消费（typescript/no-invalid-void-type 只允许 void 作返回值或类型实参）。
+    const gate = Promise.withResolvers<undefined>();
+    const { ctx } = await openCard();
+    await press(buttonContaining("新增模板"));
+    await flush();
+    assert.equal(
+      buttonContaining("恢复默认")?.disabled,
+      false,
+      "空闲态必须可点（否则这条用例连门禁都测不到）",
+    );
+    ctx.scope.holdSet = gate.promise;
+    await press(saveButton());
+    assert.equal(saveButton()?.disabled, true, "busy 态：保存按钮自己就禁着");
+    assert.equal(
+      buttonContaining("恢复默认")?.disabled,
+      true,
+      "busy 期间不得能再点恢复默认，否则 unset 与 set 落在同一字段上",
+    );
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await flush();
+    assert.equal(errText(), "", "保存本身不受影响");
+    assert.equal(buttonContaining("恢复默认")?.disabled, false, "保存结束后恢复可用");
+  });
 });
 
 // ── 内置精选表按需下发（表体在 host 侧，不再打进每次开页的 combo）────────────
@@ -2431,6 +2564,35 @@ describe("ImportPanel 角色导入", () => {
     await flush();
     assert.equal(calls, 1, "importBusy 期间的第二次点击被忽略");
     assert.match(text(), /已从内置角色库导入全部 1 条/u, "首个导入结果正常落地");
+  });
+
+  it("导入在途期间的编辑不得被回填覆盖（草稿按最新值合并，而不是按点击那一刻的旧值）", async () => {
+    const gate = Promise.withResolvers<undefined>();
+    stubFetch(async (url) => {
+      if (url === IMPORT_URL) {
+        await gate.promise;
+        return importBody({
+          ok: true,
+          count: 1,
+          entries: [
+            { id: "imp", name: "导入角色", description: "", text: "正文", group: "", emoji: "" },
+          ],
+        });
+      }
+      return { body: { ok: true } };
+    });
+    await openCard();
+    await clickViaProps(buttonWithText("导入角色"));
+    assert.ok(buttonWithText("导入中…"), "导入请求在途");
+    // 在途窗口里用户新增一行：这一行不能被稍后落地的导入结果吃掉。
+    await press(buttonContaining("新增模板"));
+    assert.equal(rowValue(CLS_NAME, 1), "新模板 2", "在途期间新增的行已进草稿");
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await flush();
+    assert.equal(rowValue(CLS_NAME, 1), "新模板 2", "在途期间的编辑必须活下来");
+    assert.equal(rowValue(CLS_NAME, 2), "导入角色", "导入的条目并入在它后面");
   });
 
   it("导入回执整体不是对象 → 报「导入失败（未知错误）」", async () => {

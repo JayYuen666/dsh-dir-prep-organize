@@ -28,6 +28,7 @@ import {
   clampInt,
   sanitizeLimits,
 } from "../host.ts";
+import type { FsInfo, FsVersion } from "@deepseek-ai/dsh-fs";
 import type {
   CollectResult,
   DerivedMessageView,
@@ -64,9 +65,19 @@ const SESSION_CWD = "/Users/me/w";
 const ROLE_TEXT = "你是安全工程师。关键规则：纵深防御。";
 /** 断言消息：一次整理只该发一次 stream 调用。 */
 const ONLY_ONE_STREAM_CALL = "stream 收到一次调用";
+/** 导入用例共用的参照根与被导入的单文件（字面量重复到阈值，提出来免得两处漂移）。 */
+const IMPORT_ROLES_ROOT = "/roles";
+const IMPORT_SINGLE_MD = "/roles/a.md";
+/** 单文件导入的用例共用：stat 失败那一档的错因。 */
+const EACCES = "EACCES";
+/** 内存假 fs 的 stat 版本号（品牌串只是不透明 token，用例不解释，见 FsVersion 注释）。 */
+const FAKE_VERSION = "fake";
+const MEM_VERSION = "mem";
 
 async function collectDirContext(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText">,
+  // contains 现在是 collectDirContext 的必读取面（软链逃逸由后端复判，见 host.ts:737-746），
+  // 这一层薄包装的签名要跟着官方 Pick 走，否则「测试注入的替身没有 contains」也能过。
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   cwd: string | undefined,
 ): Promise<CollectResult> {
   return collectDirContextWithDict(fs, cwd, zh);
@@ -81,7 +92,7 @@ function importPathError(
 }
 
 async function collectAgentTemplates(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains" | "stat">,
   requested: string,
   cwd: string | undefined,
   opts?: { skipPolicy?: boolean; allowRoots?: readonly string[] },
@@ -111,6 +122,11 @@ async function runOrganize(
 async function drainStreamToText(stream: AsyncIterable<StreamChunk>): Promise<string> {
   return drainStreamToTextWithDict(stream, zh);
 }
+
+/** 替身里的 stat 版本号：走真磁盘的拿 `ino`（同一文件系统内稳定且唯一），
+ *  纯内存的拿固定串（只是不透明 token，本包不解释）。 */
+const inoVersion = (ino: number): FsVersion => brandString<FsVersion>(String(ino));
+const fakeVersion = (raw: string): FsVersion => brandString<FsVersion>(raw);
 
 /** fs target 替身：dsh 的 targetKey/displayPath 在本包就是路径本身。
  *  `targetKey` 是官方品牌 `FsTargetKey`（installed @deepseek-ai/dsh-fs/lib/types/
@@ -161,6 +177,8 @@ function msgs(count: number): {
 /** node:fs → host 的 FsService 契约适配器（resolve → listDir → 按 target readText）。 */
 /** 夹具共用的 contains 实现：后端用自己的世界判包含关系，本地夹具就用 targetKey 的
  *  路径前缀等价。生产代码走的是 dsh-fs 自己的 contains，不经过这里。 */
+/** stat 的版本号是**不透明新鲜度 token**（dsh-fs types.d.ts:29-36 明说消费方不解释），
+ *  替身只负责造出一个形状合法的值，因此与 targetKey 一样走 brandString 品牌化。 */
 /** ContentBlock 是联合类型，只有 text 块带 text——取文本前先窄化，不写 as 断言。 */
 function textOf(block: unknown): string {
   return typeof block === "object" &&
@@ -198,6 +216,16 @@ function realFs(): FsService {
       return entries.toSorted((left, right) => left.name.localeCompare(right.name));
     },
     readText: async (target) => readFile(target.targetKey, "utf8"),
+    // 单文件导入的字节上限只有 stat 能给（目录候选自带 listDir 的 size，见 host.ts 的
+    // FsService 注释）。替身走真磁盘 stat，与 listDir 报的 size 同一来源。
+    stat: async (target) => {
+      const info = await stat(target.targetKey);
+      return {
+        version: inoVersion(info.ino),
+        type: info.isDirectory() ? "directory" : "file",
+        size: info.size,
+      };
+    },
   };
 }
 
@@ -1025,17 +1053,23 @@ describe("collectAgentTemplates", () => {
 
 /** 只列 /v 下给定条目、readText 恒返小串的假 fs（size 由测试自己决定）。 */
 function fsWithSize(entries: { name: string; size?: number }[]): FsService {
+  // targetKey 的父子关系必须自洽：真实后端（fs-local）的 contains 判的是 realpath 之后的
+  // 相对路径，子项 key 一定落在父项 key 之下。此前这里父给 "root"、子给 "huge.ts"，
+  // 于是「替身」与后端的包含关系并不同构——collectDirContext 一旦补上 contains 复判，
+  // 这类替身就把所有条目当成「链接到根外」，跳过记账全部走错分支。
   return {
-    resolve: async () => targetOf("root"),
+    resolve: async () => targetOf("/root"),
     contains: (parent, child) => containsIn(parent, child),
     listDir: async () =>
       entries.map((entry): FsDirEntry => ({
         name: entry.name,
         type: "file",
-        target: targetOf(entry.name),
+        target: targetOf(`/root/${entry.name}`),
         ...(entry.size === undefined ? {} : { size: entry.size }),
       })),
     readText: async () => "内容",
+    // 假 fs 的 size 由 listDir 合成、stat 报不出 → 本仓据此走「size 未知即不读」。
+    stat: async () => ({ version: fakeVersion(FAKE_VERSION), type: "file" }),
   };
 }
 
@@ -1292,6 +1326,19 @@ function memFs(files: Record<string, string>, opts: MemFsOptions = {}): FsServic
       }
       return files[target.targetKey] ?? "";
     },
+    // 单文件导入的字节上限来源：与 pushEntry 写进 listDir 的 size 同一算法，
+    // 这样两条分支（目录候选 / 单文件）对「多大算超限」给出同一个答案。
+    stat: async (target: FsTarget) => {
+      const failure = opts.failsOnRead;
+      if (failure !== undefined && failure.name === path.basename(target.targetKey)) {
+        failWith(failure.reason);
+      }
+      return {
+        version: fakeVersion(MEM_VERSION),
+        type: "file",
+        size: new TextEncoder().encode(files[target.targetKey] ?? "").length,
+      };
+    },
   };
 }
 
@@ -1309,7 +1356,7 @@ describe("collectAgentTemplates 分类计数", () => {
     };
     const fs = memFs(files, { failsOnRead: { name: "broken.md", reason: new Error("EIO") } });
     const result = await collectAgentTemplates(fs, "/roles", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.equal(result.error, undefined);
     assert.equal(result.skipped.tooLarge, 1, "big.md 超字节上限");
@@ -1326,7 +1373,7 @@ describe("collectAgentTemplates 分类计数", () => {
       "/roles/b/x.md": roleDoc("乙"),
     });
     const result = await collectAgentTemplates(fs, "/roles", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.deepEqual(
       result.entries.map((entry) => entry.id).toSorted(),
@@ -1338,7 +1385,7 @@ describe("collectAgentTemplates 分类计数", () => {
   it("正文提炼为空（全代码围栏）→ 该条剔除并计 unnamed", async () => {
     const fs = memFs({ "/roles/a/only-fence.md": "---\nname: 空正文\n---\n```\ncode\n```" });
     const result = await collectAgentTemplates(fs, "/roles", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.equal(result.entries.length, 0);
     assert.equal(result.skipped.unnamed, 1);
@@ -1347,16 +1394,69 @@ describe("collectAgentTemplates 分类计数", () => {
   it("单文件正文提炼为空 → entries 空数组", async () => {
     const fs = memFs({ "/roles/a/only-fence.md": "---\nname: 空正文\n---\n```\ncode\n```" });
     const result = await collectAgentTemplates(fs, "/roles/a/only-fence.md", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.equal(result.error, undefined);
     assert.deepEqual(result.entries, []);
   });
 
-  it("skipPolicy + 相对路径且无 cwd → 按空前缀解析（不抛）", async () => {
+  it("单文件 stat 抛错 → 按「拿不到大小」处理，整份跳过且不冒泡", async () => {
+    // readText 自述无上限，所以拿不到 size 时的唯一安全选择就是不读（host.ts 的
+    // fileBytesWithin）。stat 抛错与 stat 说「目标不存在」是同一档。
+    const fs = memFs({ "/roles/a.md": roleDoc("甲") });
+    fs.stat = async () => {
+      throw new Error(EACCES);
+    };
+    const result = await collectAgentTemplates(fs, IMPORT_SINGLE_MD, undefined, {
+      allowRoots: [IMPORT_ROLES_ROOT],
+    });
+    assert.equal(result.error, undefined, "取不到大小不该让整次导入变成「导入失败」");
+    assert.deepEqual(result.entries, []);
+    assert.equal(result.skipped.tooLarge, 1);
+  });
+
+  it("单文件 readText 抛错 → 计 unreadable，不让整次导入变成「导入失败」", async () => {
+    // 目录分支的 readCandidate 早就把读失败降级成 unreadable（host.ts），单文件分支
+    // 原先没有：一次 EACCES 直接冒泡到 collectAgentTemplates 的 catch，于是同一次导入
+    // 里其它一切信息（连同「是哪个文件读不到」）全部丢失。两档口径必须一致。
+    // 只让 readText 失败：stat 照常给 size，才能走到读失败那一档（stat 失败是上一条）。
+    const fs = memFs({ "/roles/a.md": roleDoc("甲") });
+    fs.readText = async () => {
+      throw new Error(EACCES);
+    };
+    const result = await collectAgentTemplates(fs, IMPORT_SINGLE_MD, undefined, {
+      allowRoots: [IMPORT_ROLES_ROOT],
+    });
+    assert.equal(result.error, undefined, "单个文件读失败不该让整次导入变成「导入失败」");
+    assert.deepEqual(result.entries, []);
+    assert.equal(result.skipped.unreadable, 1, "读失败要如实计数");
+    assert.equal(result.truncated, true, "truncated 必须反映「确实有东西没进来」");
+  });
+
+  it("单文件 stat 报不出 size → 同档跳过（size 未知即不敢盲读）", async () => {
+    // 官方 stat 的文档语义是「缺席返回 undefined」（dsh-fs index.d.ts:181-187），而签名
+    // 不含 undefined。跨进程递来的后端未必守得住声明，所以这一档必须有运行时兜底。
+    const fs = memFs({ "/roles/a.md": roleDoc("甲") });
+    // 官方签名不含 undefined，所以这处必须显式越声明一次（类型体操在本仓只允许出现在
+    // 用例里，且此处正是它唯一说得通的用途：造一个"后端违了自己的文档"的形状）。
+    const absent: FsInfo = undefined as unknown as FsInfo;
+    fs.stat = async () => absent;
+    const result = await collectAgentTemplates(fs, IMPORT_SINGLE_MD, undefined, {
+      allowRoots: [IMPORT_ROLES_ROOT],
+    });
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.entries, []);
+    assert.equal(result.skipped.tooLarge, 1);
+  });
+
+  it("skipPolicy + 相对路径且无 cwd → 按空前缀解析后仍被真实对象这道门挡住（不抛）", async () => {
+    // skipPolicy 只跳**字符串**那一层（importPathError）；后端 contains 那一层照旧生效。
+    // 空前缀把相对路径落到 process.cwd() 下，那不是任何允许根，于是回一句越界而不是
+    // 放行——这正是「绝对路径默认拒绝」在真实对象面上的延伸。
     const fs = memFs({ "roles/a.md": roleDoc("甲") });
     const result = await collectAgentTemplates(fs, "roles", undefined, { skipPolicy: true });
-    assert.equal(result.error, undefined);
+    assert.match(result.error ?? "", /越界/u, "真实目标不在允许根之内，必须拒");
+    assert.equal(result.skipped.escaped, 1, "越界要计入 escaped");
   });
 
   it("相对目录路径 + cwd → 正常解析", async () => {
@@ -1371,7 +1471,7 @@ describe("collectAgentTemplates 分类计数", () => {
   it("listDir 以非 Error 失败 → 导入失败回执走 String()", async () => {
     const broken = memFs({ "/roles/a.md": roleDoc("甲") }, { listDirFails: "raw-string-error" });
     const result = await collectAgentTemplates(broken, "/roles", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.match(result.error ?? "", /导入失败: raw-string-error/u);
   });
@@ -1382,7 +1482,7 @@ describe("collectAgentTemplates 分类计数", () => {
       { failsOnRead: { name: "a.md", reason: "string-reason" } },
     );
     const result = await collectAgentTemplates(fs, "/roles", undefined, {
-      allowRoots: ["/roles"],
+      allowRoots: [IMPORT_ROLES_ROOT],
     });
     assert.equal(result.entries.length, 0);
     assert.equal(result.skipped.unreadable, 1);
@@ -1768,9 +1868,10 @@ describe("符号链接越根（contains 复判）", () => {
         ...(await original(target)),
         { name: "leaked.md", type: "file" as const, target: escaping, size: roleBody.length },
       ];
-    // contains 才是那道门：如实按「child 在 parent 之内」判，越界条目自然落选
-    leaky.contains = (parent, child) =>
-      child.targetKey.startsWith(`${parent.targetKey}${path.sep}`);
+    // contains 才是那道门：如实按官方语义判（child **就是** parent 或其后代为真），
+    // 越界条目自然落选。必须用 containsIn 而不是 `startsWith(parent+sep)` —— 后者对
+    // 「导入根就是允许根本身」这一档返回 false，而那正是「导入 cwd 本身」的合法情形。
+    leaky.contains = containsIn;
 
     const result = await collectAgentTemplatesWithDict(leaky, dir, dir, zh, {
       allowRoots: [dir],

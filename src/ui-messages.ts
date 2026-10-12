@@ -112,6 +112,8 @@ export interface UiMessages {
   readonly skipUnreadable: string;
   /** 跳过计数：非角色文件。 */
   readonly skipUnnamed: string;
+  /** 跳过计数：真实目标在允许根之外（符号链接逃逸），被安全闸门拦下。 */
+  readonly skipEscaped: string;
   /** 跳过计数整句的外层括号。 */
   readonly skipSummary: string;
   /** 跳过计数各项的分隔符。 */
@@ -270,6 +272,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     skipTooLarge: "{count} 个文件超字节上限被跳过",
     skipUnreadable: "{count} 个文件读取失败",
     skipUnnamed: "{count} 个非角色文件（frontmatter 无 name）",
+    skipEscaped: "{count} 个文件的真实目标在允许根之外（符号链接），已按安全策略排除",
     skipSummary: "（{list}）",
     skipSeparator: "，",
     rootsHeading: "导入允许目录（importAllowRoots）",
@@ -371,6 +374,8 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     skipTooLarge: "{count} files were skipped for exceeding the byte limit",
     skipUnreadable: "{count} files could not be read",
     skipUnnamed: "{count} non-role files (no name in frontmatter)",
+    skipEscaped:
+      "{count} files whose real target lies outside the allowed roots (symlinks) were excluded by policy",
     skipSummary: " ({list})",
     skipSeparator: ", ",
     rootsHeading: "Import allowed directories (importAllowRoots)",

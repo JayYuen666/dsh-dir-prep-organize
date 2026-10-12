@@ -302,11 +302,17 @@ export type { FsDirEntry, FsTarget } from "@deepseek-ai/dsh-fs";
 
 /**
  * 官方 `FileSystem`（installed @deepseek-ai/dsh-fs/lib/types/index.d.ts:61，cordis `Service`
- * 子类 → 名义比较）的方法面投影：本包只用 `resolve`(:94) / `listDir`(:208) / `readText`(:162)。
- * 旧镜像漏抄了官方那三位的可选 `signal?: AbortSignal` 形参（抄本里没有的形参在 TS 里
- * 是"少收一个参数"，调用点不会报错，但真实宿主多一档取消语义）；投影之后它回到官方形状。
+ * 子类 → 名义比较）的方法面投影：本包用 `resolve`(:94) / `listDir`(:208) / `readText`(:162)
+ * / `contains`(:173) / `stat`(:181)。旧镜像漏抄了官方那几位的可选 `signal?: AbortSignal`
+ * 形参（抄本里没有的形参在 TS 里是"少收一个参数"，调用点不会报错，但真实宿主多一档取消
+ * 语义）；投影之后它回到官方形状。
+ *
+ * `stat`（installed index.d.ts:181-187，返回 `{version,type,size?}`）是**单文件导入**那条
+ * 路径唯一的字节上限来源：目录分支的每个候选都自带 `listDir` 给的 `size`，而单文件导入
+ * 只有一个 `resolve` 出来的 target，不 stat 就无从判断该不该读——而官方 `readText`
+ * 自述"读整份文本"、**没有任何上限**。缺了它，一个几 MB 的 .md 就能把整份读进宿主内存。
  */
-export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "contains">;
+export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "contains" | "stat">;
 
 /**
  * 本包从会话消息史的读取面 = **官方 `Message` 的键名投影**（installed
@@ -456,8 +462,11 @@ function isWebServerService(value: unknown): value is WebServerService {
 function isSessionsService(value: unknown): value is SessionsService {
   return hasFnMember(value, "get");
 }
+// stat 与 resolve 同为硬依赖：单文件导入的字节上限只有 stat 能给（见 FsService 注释）。
+// 守卫漏掉它，缺 stat 的服务会以 "resolve is not a function" 的形态炸在请求中途，
+// 而不是端点回一句「fs 服务不可用」。
 function isFsService(value: unknown): value is FsService {
-  return hasFnMember(value, "resolve");
+  return hasFnMember(value, "resolve") && hasFnMember(value, "stat");
 }
 function isLlmService(value: unknown): value is LlmService {
   return hasFnMember(value, "stream");
@@ -534,9 +543,13 @@ function isKeyFile(name: string): boolean {
 }
 
 /** 关键文件摘要：全量正文（用户拍板不截断——上下文完整性优先，
- *  模型 context 超限由模型报错提示用户自行处理）。仅 trim 去头尾空白。 */
+ *  模型 context 超限由模型报错提示用户自行处理）。仅 trim 去头尾空白。
+ *  ⚠ 行尾先归一：官方 readText 承诺 byte-for-byte（**不归一 CRLF**，宿主 fs-local
+ *  源码注明），于是 Windows 仓库里的 `\r` 会原样进摘要；client 侧的折行压平只换
+ *  `\n`，`\r` 就留在发给模型的 prompt 里（既污染文本又让行数统计失真）。
+ *  归一放在这一层而不是 client：host 是「真实字节 → 模型文本」的唯一转换点。 */
 function makeSnippet(content: string): string {
-  const trimmed = content.trim();
+  const trimmed = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
   return trimmed.length === 0 ? "" : trimmed;
 }
 
@@ -615,10 +628,14 @@ export interface SkipCounts {
   deeper: number;
   /** 读到了但解析不出角色 name（非角色文件）而被跳过的文件数（仅导入端点用）。 */
   unnamed: number;
+  /** 真实目标落在允许根之外（符号链接指向根外文件）而被策略排除的文件数。
+   *  必须单列：它既不是读失败也不是超限，把「凭据文件被链接进工作目录」这类事
+   *  混进 unreadable，用户就看不出是安全闸门拦的还是目录本身坏了。 */
+  escaped: number;
 }
 
 function skipCounts(): SkipCounts {
-  return { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0 };
+  return { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0, escaped: 0 };
 }
 
 export interface CollectResult {
@@ -711,7 +728,7 @@ export function sanitizeLimits(limits: RouteLimits): RouteLimits {
 }
 
 export async function collectDirContext(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText">,
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   cwd: string | undefined,
   messages: HostMessages,
   limits?: DirScanLimits,
@@ -731,8 +748,18 @@ export async function collectDirContext(
     const dirTarget = await fs.resolve(cwd);
     const raw = await fs.listDir(dirTarget);
     // 关键文件摘要：有界并发预取，失败/超限静默降级 undefined（并计数）。
-    const keyFiles = raw.filter((item) => item.type === "file" && isKeyFile(item.name));
+    // contains 复判（与 mdCandidates 同一道门）：后端的 listDir 会把符号链接**报成目标的
+    // 类型并给出目标的 size**，于是 cwd 里一个 `notes.md -> ~/.aws/credentials` 会连名字
+    // 带正文一起进 system prompt，发给第三方模型。策略判的是 cwd 这个字符串，读取走的是
+    // realpath 之后的真实对象，两者之间必须由后端复判一次。
+    const keyFiles = raw.filter(
+      (item) => item.type === "file" && isKeyFile(item.name) && fs.contains(dirTarget, item.target),
+    );
     const skipped = skipCounts();
+    skipped.escaped = raw.filter(
+      (item) =>
+        item.type === "file" && isKeyFile(item.name) && !fs.contains(dirTarget, item.target),
+    ).length;
     const reads = await mapBounded(keyFiles, scan.readConcurrency, async (item) => ({
       targetKey: item.target.targetKey,
       ...(await readSnippetBounded(fs, item, scan.maxSnippetBytes)),
@@ -761,7 +788,7 @@ export async function collectDirContext(
     return {
       cwd,
       entries,
-      truncated: skipped.tooLarge + skipped.unreadable > 0,
+      truncated: skipped.tooLarge + skipped.unreadable + skipped.escaped > 0,
       skipped,
     };
   } catch (error: unknown) {
@@ -889,6 +916,21 @@ function outsideRootsError(
   ]);
 }
 
+/** 真实目标是否落在**每一个**允许根之外。判据交给后端（`contains` 用它自己的世界判
+ *  包含关系），而不是再写第二条字符串规则：符号链接让「路径长得合法」与「读的是哪个
+ *  对象」分叉，只有后端能收这个叉。一个根命中即放行；全落空即为逃逸。 */
+async function escapesAllRoots(
+  fs: Pick<FsService, "resolve" | "contains">,
+  target: FsTarget,
+  roots: readonly ImportRoot[],
+): Promise<boolean> {
+  // 先把根解析成后端身份再逐个判包含：`for + await` 在这里既是 await-in-loop，
+  // 也让「命中即返回」省掉后续 resolve——但根只有两三枚，一并 resolve 更简单，
+  // 也不用在循环里背着取消语义。
+  const resolved = await Promise.all(roots.map((root) => fs.resolve(root.absolute)));
+  return !resolved.some((root) => fs.contains(root, target));
+}
+
 export function importPathError(
   requested: string,
   cwd: string | undefined,
@@ -976,33 +1018,40 @@ function isVisibleMdFile(child: FsDirEntry): boolean {
   return child.type === "file" && child.name.endsWith(".md") && !child.name.startsWith(".");
 }
 
-/** 一层目录内容 → 顶层 .md 候选（跳过隐藏项，按名排序保确定性）。 */
+/** 一层目录内容 → 顶层 .md 候选（跳过隐藏项，按名排序保确定性）。
+ *  `skipped` 就地累加 escaped 计数：被 contains 拦下的链接文件如果不数出来，
+ *  用户只会看到「导入 3 条」而不知道有一份被安全闸门挡在门外。 */
 function mdCandidates(
   fs: Pick<FsService, "contains">,
   parent: FsTarget,
   children: FsDirEntry[],
   dirName: string,
+  skipped: SkipCounts,
 ): ImportCandidate[] {
-  return (
-    children
-      // contains 是后端**用它自己的世界**判包含关系的那道门，不是我们自己拿 targetKey
-      // 当路径比——targetKey 按官方契约是 opaque 的，在沙箱后端上它根本不是宿主路径。
-      //
-      // 为什么必须有：`importPathError` 只对 `path.resolve()` 出来的**字符串**做段比较，
-      // 而随后的 `readText(entry.target)` 会跟随符号链接。于是 cwd 里一个
-      // `roles/secret.md -> /Users/me/.aws/credentials.md` 能通过策略（路径看着在 cwd 内），
-      // 读出来的却是允许根之外的文件。策略判的是字符串形状、读取走的是真实对象，
-      // 两者之间必须由后端自己复判一次。
-      .filter((child) => fs.contains(parent, child.target))
-      .filter((child) => isVisibleMdFile(child))
-      .map((child) => ({
-        name: child.name,
-        dirName,
-        target: child.target,
-        size: child.size,
-      }))
-      .toSorted((left, right) => left.name.localeCompare(right.name))
-  );
+  const visible = children.filter((child) => isVisibleMdFile(child));
+  const inside = visible.filter((child) => {
+    // contains 是后端**用它自己的世界**判包含关系的那道门，不是我们自己拿 targetKey
+    // 当路径比——targetKey 按官方契约是 opaque 的，在沙箱后端上它根本不是宿主路径。
+    //
+    // 为什么必须有：`importPathError` 只对 `path.resolve()` 出来的**字符串**做段比较，
+    // 而随后的 `readText(entry.target)` 会跟随符号链接。于是 cwd 里一个
+    // `roles/secret.md -> /Users/me/.aws/credentials.md` 能通过策略（路径看着在 cwd 内），
+    // 读出来的却是允许根之外的文件。策略判的是字符串形状、读取走的是真实对象，
+    // 两者之间必须由后端自己复判一次。
+    const contained = fs.contains(parent, child.target);
+    if (!contained) {
+      skipped.escaped += 1;
+    }
+    return contained;
+  });
+  return inside
+    .map((child) => ({
+      name: child.name,
+      dirName,
+      target: child.target,
+      size: child.size,
+    }))
+    .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
 /** 候选 → 解析结果：字节超限整份跳过（单条模板 = 一整个角色正文，超限就放弃该
@@ -1036,16 +1085,61 @@ function importGate(
   return skip ? undefined : importPathError(requested, cwd, allowRoots, messages);
 }
 
-/** 单文件导入（路径直指一个角色 .md）：解析不出 name → 记 unnamed 并回原因；
- *  读到了但正文提炼为空 → 空条目列表（agentEntryFromFile 返回 undefined 的形状）。 */
-async function importFromFile(
-  fs: Pick<FsService, "readText">,
-  absolute: string,
+/** 单个候选的字节上限判定：与 readSnippetBounded 同一口径——**size 未知即拒读**。
+ *
+ * 为什么单文件分支也需要这道门：目录分支的每个候选都自带 `listDir` 给的 `size`，于是
+ * `readCandidate` 能在读之前判上限；而单文件导入只有一个 `resolve` 出来的 target，
+ * 不 `stat` 就只能盲读——官方 `readText` 自述"读整份文本"、**没有任何上限**，于是一个
+ * 几 MB 的 .md 会整份进宿主内存（实测把 maxSnippetBytes 配成 1024，3 MB 的文件照样
+ * 被读进来并返回成模板条目）。宁可少导一条并如实计数，也不拿宿主进程的存亡去赌。
+ *
+ * @returns 通过时给出字节数，未通过时给出 undefined（调用方计 tooLarge）。
+ */
+async function fileBytesWithin(
+  fs: Pick<FsService, "stat">,
   target: FsTarget,
-  skipped: SkipCounts,
-  messages: HostMessages,
+  maxBytes: number,
+): Promise<number | undefined> {
+  // stat 抛错 = 拿不到大小 = 不敢盲读，与「size 未知」同档处理。
+  // 降级值用 `null` 而不是 `undefined`：本仓 unicorn/no-useless-undefined 判的是
+  // 「显式写一个可有可无的 undefined」，而此处 null 才是有意义的第三态——「压根没
+  // stat 出来」与「stat 出来了但没报 size」是两件事，只是都导向不读。
+  const info = await fs.stat(target).catch(() => null);
+  // 官方签名为 `stat(target): Promise<FsInfo>`（**不**含 undefined），而缺席路径的
+  // 文档语义是「返回 undefined」（installed dsh-fs/lib/types/index.d.ts:181-187：
+  // "or undefined when the target does not exist"）。声明面比实现面窄——跨进程
+  // 递来的后端未必守得住——所以这里的 `?.` 是运行时兜底，不是给类型擦补丁：
+  // 缺席与「报不出 size」同档处理（都不读）。
+  const size = info?.size;
+  return size === undefined || size > maxBytes ? undefined : size;
+}
+
+/** 单文件导入（路径直指一个角色 .md）：字节超限或读失败各计各的；解析不出 name →
+ *  记 unnamed 并回原因；读到了但正文提炼为空 → 空条目列表（agentEntryFromFile
+ *  返回 undefined 的形状）。 */
+async function importFromFile(
+  args: {
+    fs: Pick<FsService, "readText" | "stat">;
+    target: FsTarget;
+    limits: DirScanLimits;
+    skipped: SkipCounts;
+    messages: HostMessages;
+  },
+  absolute: string,
 ): Promise<ImportResult> {
-  const info = parseAgentFrontmatter(await fs.readText(target));
+  const { fs, target, limits, skipped, messages } = args;
+  const size = await fileBytesWithin(fs, target, limits.maxSnippetBytes);
+  if (size === undefined) {
+    skipped.tooLarge += 1;
+    return { entries: [], truncated: true, skipped };
+  }
+  let info: AgentFileInfo | undefined;
+  try {
+    info = parseAgentFrontmatter(await fs.readText(target));
+  } catch {
+    skipped.unreadable += 1;
+    return { entries: [], truncated: true, skipped };
+  }
   if (info === undefined) {
     skipped.unnamed = 1;
     return { entries: [], truncated: false, skipped, error: messages.missingRoleName };
@@ -1059,15 +1153,39 @@ async function importFromFile(
   return { entries: entry === undefined ? [] : [entry], truncated: false, skipped };
 }
 
+/**
+ * listDir 的降级读面：列不出来（EACCES / ELOOP / 枚举期间被删）时记 unreadable 并交空表。
+ *
+ * 为什么必须有：`mapBounded` 内部是 `Promise.all`，worker 一抛就整批 reject，把**同一批
+ * 里已经读完的结果一起丢掉**，上层 `collectAgentTemplates` 的 catch 再把整次导入变成
+ * 「导入失败」。实测：一个 chmod 000 的子目录就让同层读得好好的 .md 一条都进不来。
+ * 文件级读取早就有这道降级（`readCandidate` → `{kind:"unreadable"}`），目录枚举却漏了，
+ * 口径不一致；`mapBounded` 自己的注释也写着「worker 自己负责错误降级（不抛）」。
+ */
+async function listDirOrUnreadable(
+  fs: Pick<FsService, "listDir">,
+  target: FsTarget,
+  skipped: SkipCounts,
+): Promise<FsDirEntry[]> {
+  try {
+    return await fs.listDir(target);
+  } catch {
+    skipped.unreadable += 1;
+    return [];
+  }
+}
+
 /** 更深层（第三层）目录：只清点可见 .md 数、不读正文——扫描深度是设计上限，
- *  但静默省略是 bug（内置库 game-development/<engine>/*.md 曾整批消失）。 */
+ *  但静默省略是 bug（内置库 game-development/<engine>/*.md 曾整批消失）。
+ *  列不出来的深层目录按 unreadable 计数，不让整次导入归零。 */
 async function countDeeperMdFiles(
   fs: Pick<FsService, "listDir">,
   deepDirs: readonly FsTarget[],
   readConcurrency: number,
+  skipped: SkipCounts,
 ): Promise<number> {
   const counts = await mapBounded(deepDirs, readConcurrency, async (dir) => {
-    const children = await fs.listDir(dir);
+    const children = await listDirOrUnreadable(fs, dir, skipped);
     return children.filter((child) => isVisibleMdFile(child)).length;
   });
   let total = 0;
@@ -1121,17 +1239,20 @@ async function importFromDirectory(
   skipped: SkipCounts,
 ): Promise<TemplateEntry[]> {
   const rootChildren = await fs.listDir(target);
-  const rootFiles = mdCandidates(fs, target, rootChildren, path.basename(absolute));
+  // 包含判据一律用**本次导入的根**（target），不是子项的直接父目录：链接进来的子目录
+  // 自己的 target 已经在根外，拿它当父判据会把根外的角色文件整批放进来。
+  const rootFiles = mdCandidates(fs, target, rootChildren, path.basename(absolute), skipped);
   const subDirs = rootChildren
     .filter((child) => isVisibleDirectory(child))
     .map((child) => child.target)
     .toSorted((left, right) => left.displayPath.localeCompare(right.displayPath));
   // 子目录 listDir 有界并发（避免 await-in-loop，也避免 266 个并发打开打满 fd）：
   // 一次遍历同时产出「该层 .md 候选」与「更深一层的目录」（后者只清点不读）。
+  // 逐个降级：列不出来的子目录只自己计 unreadable，不牵连同批已读完的结果。
   const subScans = await mapBounded(subDirs, limits.readConcurrency, async (sub) => {
-    const children = await fs.listDir(sub);
+    const children = await listDirOrUnreadable(fs, sub, skipped);
     return {
-      files: mdCandidates(fs, sub, children, path.basename(sub.displayPath)),
+      files: mdCandidates(fs, target, children, path.basename(sub.displayPath), skipped),
       deeper: children.filter((child) => isVisibleDirectory(child)).map((child) => child.target),
     };
   });
@@ -1141,7 +1262,7 @@ async function importFromDirectory(
     subFiles.push(...scan.files);
     deepDirs.push(...scan.deeper);
   }
-  const deeperMdCount = await countDeeperMdFiles(fs, deepDirs, limits.readConcurrency);
+  const deeperMdCount = await countDeeperMdFiles(fs, deepDirs, limits.readConcurrency, skipped);
   skipped.deeper += deeperMdCount;
   const candidates: ImportCandidate[] = [...rootFiles, ...subFiles];
   const reads = await mapBounded(candidates, limits.readConcurrency, (file) =>
@@ -1164,7 +1285,7 @@ async function importFromDirectory(
  *  不需要它；保留这个开关只为让"内置全量导入"不依赖安装位置是否命中隐藏段判断）。
  *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由路由注入）。 */
 export async function collectAgentTemplates(
-  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
+  fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains" | "stat">,
   requested: string,
   cwd: string | undefined,
   messages: HostMessages,
@@ -1175,13 +1296,8 @@ export async function collectAgentTemplates(
   },
 ): Promise<ImportResult> {
   const limits: DirScanLimits = opts?.limits ?? DEFAULT_LIMITS;
-  const policyError = importGate(
-    requested,
-    cwd,
-    opts?.allowRoots ?? [],
-    messages,
-    opts?.skipPolicy === true,
-  );
+  const allowRoots = opts?.allowRoots ?? [];
+  const policyError = importGate(requested, cwd, allowRoots, messages, opts?.skipPolicy === true);
   if (policyError !== undefined) {
     return { entries: [], truncated: false, skipped: skipCounts(), error: policyError };
   }
@@ -1191,14 +1307,35 @@ export async function collectAgentTemplates(
   const skipped = skipCounts();
   try {
     const target = await fs.resolve(absolute);
+    // ⚠ 真实目标必须在允许根之内——**单文件与目录两条分支都要过这道**，判据交给后端。
+    //
+    // 为什么不能只判字符串：`importPathError` 走的是 `path.resolve()` 出来的**字符串段**，
+    // 而 `fs.resolve` 给的 targetKey 是 realpath 之后的**真实对象**（installed fsio.ts:165）。
+    // 于是 cwd 里一个 `roles -> /Users/me/.aws/credentials` 的软链目录，
+    // 字符串形状「就在 cwd 之内」而真身在所有允许根之外。
+    //
+    // 这道闸原先只挂在单文件分支上，目录分支整批漏掉：`importFromDirectory` 的
+    // `mdCandidates` 拿 `fs.contains(target, child.target)` 当门，而那里的 `target`
+    // **就是已经逃逸的那个目录自己**，用它当父判据必然为真，于是根外目录里的 .md
+    // 连同正文整批被当成本地角色导入（已用真磁盘 + 符号链接复现：断言「0 条」实得 1 条）。
+    // 目录分支原本的 contains 只防「根内的子项被链接到根外」，防不了「根本身是链接」。
+    const roots = importRootsOf(cwd, allowRoots, messages);
+    if (await escapesAllRoots(fs, target, roots)) {
+      skipped.escaped = 1;
+      return {
+        entries: [],
+        truncated: true,
+        skipped,
+        error: outsideRootsError(target.displayPath, roots, messages),
+      };
+    }
     if (absolute.endsWith(".md")) {
-      const single = await importFromFile(fs, absolute, target, skipped, messages);
-      return single;
+      return await importFromFile({ fs, target, limits, skipped, messages }, absolute);
     }
     const entries = await importFromDirectory(fs, absolute, target, limits, skipped);
     return {
       entries,
-      truncated: skipped.tooLarge + skipped.unreadable + skipped.deeper > 0,
+      truncated: skipped.tooLarge + skipped.unreadable + skipped.deeper + skipped.escaped > 0,
       skipped,
     };
   } catch (error: unknown) {

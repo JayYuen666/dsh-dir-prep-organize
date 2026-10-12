@@ -17,10 +17,11 @@
 // 「现读官方 locale 命名空间」的整条装配在 apply 装配一节里直接调原始实现。
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { brandString } from "@deepseek-ai/dsh-brand";
+import type { FsVersion } from "@deepseek-ai/dsh-fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 import {
@@ -185,9 +186,21 @@ async function callOrganize(
   return out;
 }
 
+/** 内存替身的固定版本号（品牌串只是不透明 token，用例不解释）。 */
+const FAKE_VERSION = "fake";
+const MEM_VERSION = "mem";
+
+/** 替身里的 stat 版本号。走 `brandString` 而不是 dsh-fs 的 `FsVersion(...)`：
+ *  两者都是恒等函数，但后者大写开头会被 eslint/new-cap 当成构造函数调用；
+ *  本仓对品牌串一律走 brandString（见上面 fsTargetOf 的 targetKey），同一口径。 */
+const inoVersion = (ino: number): FsVersion => brandString<FsVersion>(String(ino));
+const fakeVersion = (raw: string): FsVersion => brandString<FsVersion>(raw);
+
 /** fs target 替身：`targetKey` 是官方品牌 `FsTargetKey`（installed dsh-fs types.d.ts:14），
  *  合法构造口只有官方 `brandString`（恒等函数）——替身也走它，不用 `as` 绕过；品牌位直接
- *  索引官方成员形状（dsh-fs 根模块未 re-export 该名字）。 */
+ *  索引官方成员形状（dsh-fs 根模块未 re-export 该名字）。
+ *  `FsVersion` 同理走官方构造口（types.d.ts:36）：它是后端给的**不透明新鲜度 token**，
+ *  消费方不解释，本包只原样取回。 */
 /** 夹具共用的 contains 实现：后端用自己的世界判包含关系，本地夹具就用 targetKey 的
  *  路径前缀等价。生产代码走的是 dsh-fs 自己的 contains，不经过这里。 */
 /** ContentBlock 是联合类型，只有 text 块带 text——取文本前先窄化，不写 as 断言。 */
@@ -232,7 +245,7 @@ function realFsService(): FsService {
     resolve: async (target: string) => fsTargetOf(target),
     contains: (parent, child) => containsIn(parent, child),
     listDir: async (dir: FsTarget) => {
-      const { readdir, stat } = await import("node:fs/promises");
+      const { readdir, stat: diskStat } = await import("node:fs/promises");
       const names = await readdir(dir.targetKey, { withFileTypes: true });
       return Promise.all(
         names.map(async (dirent): Promise<FsDirEntry> => {
@@ -241,12 +254,21 @@ function realFsService(): FsService {
           if (dirent.isDirectory()) {
             return { name: dirent.name, type: "directory", target };
           }
-          const fileStat = await stat(full);
+          const fileStat = await diskStat(full);
           return { name: dirent.name, type: "file", target, size: fileStat.size };
         }),
       );
     },
     readText: async (target: FsTarget) => readFile(target.targetKey, "utf8"),
+    // 单文件导入的字节上限来源（目录候选自带 listDir 的 size，见 host.ts 的 FsService 注释）。
+    stat: async (target: FsTarget) => {
+      const info = await stat(target.targetKey);
+      return {
+        version: inoVersion(info.ino),
+        type: info.isDirectory() ? "directory" : "file",
+        size: info.size,
+      };
+    },
   };
 }
 
@@ -259,16 +281,20 @@ function brokenListDirFs(): FsService {
       throw new Error("ENOENT");
     },
     readText: async () => "",
+    stat: async () => ({ version: fakeVersion(FAKE_VERSION), type: "file" }),
   };
 }
 
-/** listDir 恒返回给定条目、readText 恒返回空串的内存 fs（导入端点用）。 */
+/** listDir 恒返回给定条目、readText 恒返回空串的内存 fs（导入端点用）。
+ *  stat 报不出 size ⇒ 单文件导入按「size 未知即不读」处理（端点级用例只回 403/400，
+ *  真正读盘的大小判据由 test/integration 的 DiskFileSystem 覆盖）。 */
 function fsReturning(children: FsDirEntry[]): FsService {
   return {
     resolve: async (target: string) => fsTargetOf(target),
     contains: (parent, child) => containsIn(parent, child),
     listDir: async () => children,
     readText: async () => "",
+    stat: async () => ({ version: fakeVersion(MEM_VERSION), type: "file" }),
   };
 }
 
@@ -676,7 +702,15 @@ describe("context 端点", () => {
     assert.equal(body["cwd"], root);
     assert.equal(body["truncated"], false);
     assert.equal(fieldArray(body["entries"]).length, 2, "a.ts + sub 两条");
-    assert.deepEqual(body["skipped"], { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0 });
+    assert.deepEqual(body["skipped"], {
+      tooLarge: 0,
+      unreadable: 0,
+      deeper: 0,
+      unnamed: 0,
+      // escaped：真实目标在允许根外（符号链接）被拦下的项数。回执必须带这一位，
+      // 否则 client 侧的跳过句子少一类，用户看不出「有一份被安全策略挡在外面」。
+      escaped: 0,
+    });
   });
 
   it("collectDirContext 报错 → ok:false 透传", async () => {
@@ -1055,7 +1089,15 @@ describe("importAgent 端点", () => {
     assert.equal(body["ok"], true);
     assert.equal(body["count"], 1);
     assert.equal(body["truncated"], false);
-    assert.deepEqual(body["skipped"], { tooLarge: 0, unreadable: 0, deeper: 0, unnamed: 0 });
+    assert.deepEqual(body["skipped"], {
+      tooLarge: 0,
+      unreadable: 0,
+      deeper: 0,
+      unnamed: 0,
+      // escaped：真实目标在允许根外（符号链接）被拦下的项数。回执必须带这一位，
+      // 否则 client 侧的跳过句子少一类，用户看不出「有一份被安全策略挡在外面」。
+      escaped: 0,
+    });
     assert.equal(fieldArray(body["entries"]).length, 1, "回执带出导入条目");
   });
 

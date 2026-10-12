@@ -11,7 +11,7 @@
 // 当时的上下文。只扫注释行与文档；测试夹具里的日期（modifiedAfter 之类的边界值）是数据，
 // 角色文档里的日期是内容，两者都不在禁面内。
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { strict as assert } from "node:assert";
 import { describe, expect, it } from "vitest";
@@ -527,6 +527,83 @@ async function declarationPackages(dir: string): Promise<Set<string>> {
   return found;
 }
 
+/**
+ * 参与「引用面」扫描的文件后缀：源码、构建脚本、配置与测试。
+ *
+ * `tsx` 不在列内——本包不产 tsx，留着只会让将来任何 tsx 夹具悄悄逃过判定。
+ */
+const REFERENCE_SUFFIXES = /\.(?:ts|mts|cjs|mjs)$/u;
+
+/**
+ * 引用面扫描跳过的目录。
+ *
+ * 不能沿用注释门禁那张 {@link SKIP_DIRS}：它贴着 `test`，而集成层的四个用例恰好是宿主包
+ * 唯一的引用现场（`dsh-app-boot` / `dsh-config-editor` 只在测试里 import）。照抄过去会让
+ * 这道门一开工就把它们判成孤儿，然后有人把它们删掉、集成测试当场红。
+ */
+const CODE_SKIP_DIRS = new Set(["node_modules", "coverage", "_env", "dist", ".git", "agents"]);
+
+/**
+ * 免检的直接依赖：以「引用面」判会被误杀的例外，键是包名，值是为什么必须留着。
+ *
+ * 每条都必须是**可复查的事实**，不是习惯。加一条就等于承认这道门在这一处不成立，所以
+ * 宁可留空也要先按实证办法（摘掉→跑 typecheck+test）试一遍。
+ */
+const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {};
+
+/**
+ * 去掉整行注释与块注释：注释里的包名不算引用面。
+ *
+ * 顺序必须是**先按行剥、再剥块**：本仓注释里会出现 `fetch('/_dsh/dir-prep/*')` 这种带
+ * `/*` 的示例路径，先跑块注释正则会从那一处一路吞到下一个 `*\/`，把整段 import 当成注释
+ * 抹掉——那道「必须有引用面」的门于是把 host.ts 真正 import 的包全判成孤儿。
+ */
+function stripComments(text: string): string {
+  const lines = text.split("\n").filter((line) => !/^\s*(?:\/\/|\/\*|\*|#)/u.test(line));
+  return lines.join("\n").replaceAll(/\/\*[\s\S]*?\*\//gu, " ");
+}
+
+/**
+ * 扫一棵目录里**非注释文本**里出现的引号串，收成包名。
+ *
+ * 为什么按引号串而不是只按 `from "…"`：构建脚本的 externalNames 是一张裸字符串表
+ * （build-host.mjs:47），那同样是「代码按名字引用了这枚包」。为什么先去注释：本仓注释里
+ * 大量讨论宿主包名（`peer 面`、`第二份实例` 的成因就写在注释里），留着注释等于让门禁自己
+ * 判定自己——注释提一句就算引用，那道门就空转了。
+ *
+ * @param dir - 起始目录或文件路径
+ * @param found - 累积的包名集合（就地累加，返回同一枚引用）
+ * @param exempt - 不参与扫描的文件模式（本门禁自身要点名 peer 名，构成自引用）
+ * @returns 累积后的包名集合
+ */
+async function codePackages(
+  dir: string,
+  found: Set<string>,
+  exempt: readonly RegExp[] = [],
+): Promise<Set<string>> {
+  const info = await stat(dir);
+  if (info.isFile()) {
+    if (!REFERENCE_SUFFIXES.test(dir) || exempt.some((pattern) => pattern.test(dir))) {
+      return found;
+    }
+    const text = await readFile(dir, "utf8");
+    for (const match of stripComments(text).matchAll(/["'`](?<specifier>[^"'`\n]+)["'`]/gu)) {
+      const pkg = packageNameOf(match.groups?.["specifier"] ?? "");
+      if (pkg !== undefined) {
+        found.add(pkg);
+      }
+    }
+    return found;
+  }
+  const entries = await readdir(dir, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => !CODE_SKIP_DIRS.has(entry.name))
+      .map((entry) => codePackages(path.join(dir, entry.name), found, exempt)),
+  );
+  return found;
+}
+
 describe("声明产物的可解析性（升级防线）", () => {
   it("types/ 引用的每枚宿主包都落在 peer 表：否则消费方的声明入口过不了类型检查", async () => {
     // 判据取**产物**而不是源码：type-only 导入在 host.ts 里随构建擦除，却原样留在
@@ -543,6 +620,40 @@ describe("声明产物的可解析性（升级防线）", () => {
       .filter((name) => manifest.peerDependencies?.[name] === undefined)
       .toSorted();
     expect(missing, "这些宿主包只被声明产物引用，却没声明为 peer").toStrictEqual([]);
+  });
+
+  it("每枚宿主 devDependency 都要有引用面：代码按名引用它，或声明产物点名它", async () => {
+    // 这一条是「为填 peer 而加依赖」的防线。事故形态很具体：给集成层装真宿主时，有人把
+    // `@deepseek-ai/dsh-app-boot` 的 5 枚 peer（cordis-plugin-group / cordis-plugin-include /
+    // dsh-home-paths / dsh-launch-environment / dsh-system-prompt）逐一写进 devDependencies，
+    // 而 pnpm 的 auto-install-peers 本就会装它们，仓库里没有任何文件按名字引用过它们一次。
+    // 后果不在发布物（宿主包一律不进 dependencies，见上面那条门禁），而在依赖树：多装 5 枚
+    // 真实目录，升级时人人都得替它们做版本决定，而没人读它们。
+    // 判据取两处并集：代码里的引号串（import 说明符 + 构建脚本的 external 名单），以及
+    // types/ 点名的裸说明符（type-only 面，见下面那条 peer 门禁的同一份读法）。
+    // 剩下的缺口是「有引用但引用面是死代码」——那归覆盖率与 lint 管，不在本门禁扩面。
+    const { manifest } = await readSurface();
+    const declared = Object.keys(manifest.devDependencies ?? {}).filter((name) =>
+      name.startsWith(HOST_PREFIX),
+    );
+    expect(declared.length, "至少要有一枚宿主 devDependency，否则这道门是空转").toBeGreaterThan(0);
+
+    const cited = new Set([
+      ...(await declarationPackages(path.join(pkgDir, "types"))),
+      ...(await codePackages(pkgDir, new Set<string>(), [/publish-manifest\.test\.ts$/u])),
+    ]);
+    const orphans = declared
+      .filter((name) => !cited.has(name))
+      .filter((name) => REFERENCE_EXEMPTION[name] === undefined)
+      .toSorted();
+    expect(orphans, "这些宿主包没有引用面：删掉，或在例外表里写明依据").toStrictEqual([]);
+
+    // 例外表不许长草：条目对应的包一旦重新有了引用面（或已被删掉），就该从表里摘走。
+    const stale = Object.entries(REFERENCE_EXEMPTION)
+      .filter(([name]) => cited.has(name) || manifest.devDependencies?.[name] === undefined)
+      .map(([name, reason]) => `${name}（${reason}）`)
+      .toSorted();
+    expect(stale, "这些引用面例外已经不再成立").toStrictEqual([]);
   });
 });
 

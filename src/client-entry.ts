@@ -2,6 +2,10 @@ import { createElement, useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { mergeImportedTemplates, sanitizeAllowRoots, sanitizeTemplateList } from "./templates.ts";
 import type { TemplateEntry } from "./templates.ts";
+// 整理时限的取值与夹位（连同「为什么必须夹」的证据）单源在 client-timeouts.ts。
+import { organizeFetchTimeoutMs, rawOrganizeTimeoutMsOf } from "./client-timeouts.ts";
+// 注入样式表（纯数据，单源在 client-styles.ts；理由见那份文件头）。
+import { CARD_STYLES } from "./client-styles.ts";
 import { UI_MESSAGES } from "./ui-messages.ts";
 import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
 import type { Context } from "@deepseek-ai/cordis";
@@ -27,66 +31,6 @@ const RESET_CONFIRM_MS = 4000;
 const EMOJI_PLACEHOLDER = "😀";
 const ROOT_PATH_PLACEHOLDER = "/Users/me/roles";
 
-const CSS = [
-  ".dpi-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1;border-radius:8px;padding:6px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background .16s,border-color .16s,color .16s}",
-  ".dpi-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2)}",
-  ".dpi-btn:disabled{opacity:.55;cursor:not-allowed}",
-  '.dpi-btn:disabled[data-state="loading"]{cursor:progress}',
-  ".dpi-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}",
-  ".dpi-btn svg{width:14px;height:14px;flex:none}",
-  ".dpi-btn-err{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-secondary)}",
-  ".dpi-spin{animation:dpi-rotate .8s linear infinite}",
-  "@keyframes dpi-rotate{to{transform:rotate(360deg)}}",
-  ".dpi-wrap{position:relative;display:inline-flex}",
-  ".dpi-menu{position:absolute;bottom:calc(100% + 6px);right:0;z-index:50;min-width:224px;max-height:340px;overflow-y:auto;background:var(--dsw-menu-surface-fill);backdrop-filter:var(--dsw-menu-backdrop-filter);border:0;border-radius:10px;padding:4px;display:flex;flex-direction:column;gap:2px;box-shadow:var(--dsw-elevation-panel)}",
-  ".dpi-item{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1.4;text-align:left;border-radius:6px;padding:8px 10px;cursor:pointer;white-space:nowrap}",
-  ".dpi-item:hover,.dpi-item:focus-visible{background:var(--dsw-alias-bg-layer-2)}",
-  ".dpi-item-empty{color:var(--dsw-alias-label-tertiary);cursor:default;font-size:12px;padding:8px 10px;white-space:nowrap}",
-  ".dpi-split{display:inline-flex;align-items:stretch}",
-  ".dpi-split .dpi-main{border-top-right-radius:0;border-bottom-right-radius:0;padding-right:8px}",
-  ".dpi-split .dpi-caret{border-left:none;border-top-left-radius:0;border-bottom-left-radius:0;padding-left:4px;padding-right:6px}",
-  ".dpi-split .dpi-caret svg{width:10px;height:10px}",
-  ".dpi-group{padding:2px 0}",
-  ".dpi-grouph{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);padding:6px 10px 2px;letter-spacing:.02em}",
-  ".dpic-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}",
-  ".dpic-card:hover{border-color:var(--dsw-alias-label-dimmed)}",
-  ".dpic-card-open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}",
-  ".dpic-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}",
-  ".dpic-head{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}",
-  ".dpic-title{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}",
-  ".dpic-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}",
-  ".dpic-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}",
-  ".dpic-chevron-open{transform:rotate(180deg)}",
-  ".dpic-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:8px 0 12px;list-style:none}",
-  ".dpic-row{padding:10px 0;border-bottom:1px dashed var(--dsw-alias-border-l2)}",
-  ".dpic-rowhead{display:flex;gap:8px;align-items:center}",
-  ".dpic-idx{font-size:12px;color:var(--dsw-alias-label-tertiary);flex:none;min-width:26px}",
-  ".dpic-name{flex:1;min-width:0;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px}",
-  ".dpic-del{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;border-radius:6px;padding:4px 8px;cursor:pointer;flex:none}",
-  ".dpic-del:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}",
-  ".dpic-del:disabled{opacity:.55;cursor:not-allowed}",
-  ".dpic-text{width:100%;box-sizing:border-box;font:inherit;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:8px;margin-top:6px;min-height:96px;resize:vertical}",
-  ".dpic-name:focus,.dpic-text:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}",
-  ".dpic-emoji{width:44px;flex:none;box-sizing:border-box;font:inherit;font-size:13px;text-align:center;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 4px}",
-  ".dpic-group{width:84px;flex:none;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px}",
-  ".dpic-desc{width:100%;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px;margin-top:6px}",
-  ".dpic-emoji:focus,.dpic-group:focus,.dpic-desc:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}",
-  ".dpic-importrow{padding:12px 0;border-bottom:1px dashed var(--dsw-alias-border-l2)}",
-  ".dpic-importpath{flex:1;min-width:0;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px}",
-  ".dpic-importpath:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}",
-  ".dpic-foot{display:flex;gap:8px;align-items:center;padding-top:10px;flex-wrap:wrap}",
-  ".dpic-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;border-radius:8px;padding:6px 10px;cursor:pointer}",
-  ".dpic-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2)}",
-  ".dpic-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}",
-  ".dpic-btn:disabled{opacity:.55;cursor:not-allowed}",
-  ".dpic-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground)}",
-  ".dpic-btn-primary:disabled{opacity:.55;cursor:not-allowed}",
-  ".dpic-btn-danger{color:var(--dsw-alias-state-error-primary)}",
-  ".dpic-btn-danger:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary)}",
-  ".dpic-hint{font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:1.5;padding-top:6px}",
-  ".dpic-err{color:var(--dsw-alias-state-error-primary)}",
-].join("\n");
-
 const CLASS_ITEM_EMPTY = "dpi-item-empty";
 const CLASS_ROW_HEAD = "dpic-rowhead";
 const CLASS_IMPORT_PATH = "dpic-importpath";
@@ -100,6 +44,16 @@ export interface DirEntryView {
   sizeBytes: number;
   snippet?: string;
 }
+
+export interface ImportSkips {
+  tooLarge: number;
+  unreadable: number;
+  deeper: number;
+  unnamed: number;
+  /** 真实目标落在允许根之外（符号链接）被排除的项数；旧 host 不回这一位时读作 0。 */
+  escaped: number;
+}
+
 export interface ContextResponse {
   ok: boolean;
   error?: string;
@@ -108,6 +62,13 @@ export interface ContextResponse {
   truncated?: boolean;
   entries?: DirEntryView[];
 }
+
+export interface OrganizeResponse {
+  ok: boolean;
+  error?: string;
+  content?: string;
+}
+
 interface ModelResponse {
   ok: boolean;
   error?: string;
@@ -116,11 +77,7 @@ interface ModelResponse {
   model?: string;
   reasoningEffort?: string;
 }
-interface OrganizeResponse {
-  ok: boolean;
-  error?: string;
-  content?: string;
-}
+
 interface ImportResponse {
   ok: boolean;
   error?: string;
@@ -128,12 +85,6 @@ interface ImportResponse {
   truncated?: boolean;
   skipped?: ImportSkips;
   entries?: TemplateEntry[];
-}
-export interface ImportSkips {
-  tooLarge: number;
-  unreadable: number;
-  deeper: number;
-  unnamed: number;
 }
 
 function parseDirEntry(raw: unknown): DirEntryView {
@@ -147,17 +98,45 @@ function parseDirEntry(raw: unknown): DirEntryView {
   };
 }
 
-function parseContextResponse(raw: unknown): ContextResponse {
+/** 可选字符串位的窄化（`error`/`csrf`/`cwd`/`content` 等共用一条）。 */
+function optionalString(rec: Record<string, unknown>, key: string): string | undefined {
+  const value = rec[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** 有值才铺开成对象成员；无值时铺 `{}`，于是「缺席」与「显式 undefined」在形状上一致。
+ *
+ * 抽出来是因为四个解析器共 9 处同形展开，逐处写 `...(x === undefined ? {} : {k: x})`
+ * 既占行又容易漏掉某一位（漏一位 = 那个字段被静默丢掉）。 */
+function spreadIfDefined(value: string | undefined, key: string): Record<string, string> {
+  return value === undefined ? {} : { [key]: value };
+}
+
+/** 跳过计数的展示顺序（文案与顺序都在这里定；formatImportSkips 只负责拼句子）。 */
+function skipCountsOf(skips: ImportSkips): [keyof UiMessages, number][] {
+  return [
+    ["skipDeeper", skips.deeper],
+    ["skipTooLarge", skips.tooLarge],
+    ["skipUnreadable", skips.unreadable],
+    ["skipUnnamed", skips.unnamed],
+    ["skipEscaped", skips.escaped],
+  ];
+}
+
+// 两个 wire 解析器导出给集成层（test/integration/roundtrip.test.ts）：它们判的是
+// 「host 交来的 JSON 形状 → client 视图」这一整条边界，只有拿**真回执**喂进来才算验过，
+// 在单元测试里用自造 body 喂它，等于让写解析器的人自己出考卷。
+export function parseContextResponse(raw: unknown): ContextResponse {
   const rec = isRecord(raw) ? raw : {};
-  const { ok, error, csrf, cwd, truncated, entries } = rec;
+  const { ok, truncated, entries } = rec;
   const parsedEntries: DirEntryView[] | undefined = Array.isArray(entries)
     ? entries.map((entry) => parseDirEntry(entry))
     : undefined;
   return {
     ok: ok === true,
-    ...(typeof error === "string" ? { error } : {}),
-    ...(typeof csrf === "string" ? { csrf } : {}),
-    ...(typeof cwd === "string" ? { cwd } : {}),
+    ...spreadIfDefined(optionalString(rec, "error"), "error"),
+    ...spreadIfDefined(optionalString(rec, "csrf"), "csrf"),
+    ...spreadIfDefined(optionalString(rec, "cwd"), "cwd"),
     ...(truncated === true ? { truncated: true } : {}),
     ...(parsedEntries === undefined ? {} : { entries: parsedEntries }),
   };
@@ -165,57 +144,50 @@ function parseContextResponse(raw: unknown): ContextResponse {
 
 function parseModelResponse(raw: unknown): ModelResponse {
   const rec = isRecord(raw) ? raw : {};
-  const { ok, error, csrf, provider, model, reasoningEffort } = rec;
   return {
-    ok: ok === true,
-    ...(typeof error === "string" ? { error } : {}),
-    ...(typeof csrf === "string" ? { csrf } : {}),
-    ...(typeof provider === "string" ? { provider } : {}),
-    ...(typeof model === "string" ? { model } : {}),
-    ...(typeof reasoningEffort === "string" ? { reasoningEffort } : {}),
+    ok: rec["ok"] === true,
+    ...spreadIfDefined(optionalString(rec, "error"), "error"),
+    ...spreadIfDefined(optionalString(rec, "csrf"), "csrf"),
+    ...spreadIfDefined(optionalString(rec, "provider"), "provider"),
+    ...spreadIfDefined(optionalString(rec, "model"), "model"),
+    ...spreadIfDefined(optionalString(rec, "reasoningEffort"), "reasoningEffort"),
   };
 }
 
-function parseOrganizeResponse(raw: unknown): OrganizeResponse {
+export function parseOrganizeResponse(raw: unknown): OrganizeResponse {
   const rec = isRecord(raw) ? raw : {};
-  const { ok, error, content } = rec;
   return {
-    ok: ok === true,
-    ...(typeof error === "string" ? { error } : {}),
-    ...(typeof content === "string" ? { content } : {}),
+    ok: rec["ok"] === true,
+    ...spreadIfDefined(optionalString(rec, "error"), "error"),
+    ...spreadIfDefined(optionalString(rec, "content"), "content"),
   };
 }
 
+/** 计数位：非数字或非正一律 0（坏回执不该让界面显示 "NaN 个"）。 */
 function countField(value: unknown): number {
   return typeof value === "number" && value > 0 ? value : 0;
 }
 
 function parseImportSkips(rec: Record<string, unknown>): ImportSkips {
-  const { tooLarge, unreadable, deeper, unnamed } = rec;
   return {
-    tooLarge: countField(tooLarge),
-    unreadable: countField(unreadable),
-    deeper: countField(deeper),
-    unnamed: countField(unnamed),
+    tooLarge: countField(rec["tooLarge"]),
+    unreadable: countField(rec["unreadable"]),
+    deeper: countField(rec["deeper"]),
+    unnamed: countField(rec["unnamed"]),
+    escaped: countField(rec["escaped"]),
   };
 }
 
+/** 导入跳过计数 → 一句话（无计数时返回空串，调用方据此不追加任何文案）。 */
 export function formatImportSkips(t: Translate, skips: ImportSkips | undefined): string {
   if (skips === undefined) {
     return "";
   }
   const parts: string[] = [];
-  if (skips.deeper > 0) {
-    parts.push(t("skipDeeper", { count: skips.deeper }));
-  }
-  if (skips.tooLarge > 0) {
-    parts.push(t("skipTooLarge", { count: skips.tooLarge }));
-  }
-  if (skips.unreadable > 0) {
-    parts.push(t("skipUnreadable", { count: skips.unreadable }));
-  }
-  if (skips.unnamed > 0) {
-    parts.push(t("skipUnnamed", { count: skips.unnamed }));
+  for (const [key, count] of skipCountsOf(skips)) {
+    if (count > 0) {
+      parts.push(t(key, { count }));
+    }
   }
   return parts.length === 0 ? "" : t("skipSummary", { list: parts.join(t("skipSeparator")) });
 }
@@ -271,6 +243,19 @@ async function httpErrorMessage(response: {
   return typeof error === "string" && error.length > 0 ? error : fallback;
 }
 
+/**
+ * fetch + 超时 + JSON 解析：四个端点唯一的取数口。
+ *
+ * 超时用 AbortController（不是 Promise.race）：竞速只能让**调用方**提前放弃，
+ * 底层请求仍在跑、连接与响应体照常被读进内存；abort 才真的把传输停掉。
+ * 定时器在 finally 里清（成功/失败/超时三条路都过），否则每次请求在长驻页面里
+ * 留一个悬挂的 timer。
+ *
+ * @param url - 端点路径（常量，见文件头那一组 URL）
+ * @param init - fetch init（method/headers/body）
+ * @param timeoutMs - 中止时限；越界值由调用方先夹好（见 client-timeouts.ts）
+ * @returns 解析后的 JSON（unknown：形状交给各 parse* 判）
+ */
 async function fetchJson(
   url: string,
   init?: RequestInit,
@@ -544,12 +529,6 @@ function rawAllowRootsOf(value: Record<string, unknown>): unknown {
   return value[allowRootsKey];
 }
 
-export function rawOrganizeTimeoutMsOf(value: Record<string, unknown>): number | undefined {
-  const key = "organizeTimeoutMs";
-  const raw = value[key];
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
-}
-
 function templatesStore(scope: EntryForm): TemplatesStore {
   let cachedRaw: FormSnapshot | null = null;
   let cachedBuiltin: BuiltinState = builtinState;
@@ -645,6 +624,30 @@ export function applyTemplateToDraft(current: string, template: string): string 
     return template;
   }
   return `${base}\n\n${template}`;
+}
+
+/** 菜单项文字：有 emoji 就前缀一个（emoji 是用户自填的视觉标记，空串 = 不显示）。 */
+function templateItemLabel(tpl: TemplateEntry): string {
+  return `${tpl.emoji === "" ? "" : `${tpl.emoji} `}${tpl.name}`;
+}
+
+/** 模板 → 按 group 收拢的分组（空 group 归入「通用」）。
+ *
+ * 分组表用 `Map` 而不是对象字面量：分组标签是用户可填的 `template.group`，
+ * `__proto__` / `constructor` 这类标签作为对象键会落进原型链而不是成为一个分组
+ * （Map 没有这条缝）。顺序 = 首次出现顺序，渲染稳定可测。 */
+function groupTemplatesBy(
+  templates: readonly TemplateEntry[],
+  t: Translate,
+): { group: string; items: TemplateEntry[] }[] {
+  const buckets = new Map<string, TemplateEntry[]>();
+  for (const tpl of templates) {
+    const key = tpl.group.trim() === "" ? t("templatesGroupCommon") : tpl.group;
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(tpl);
+    buckets.set(key, bucket);
+  }
+  return [...buckets.entries()].map(([group, items]) => ({ group, items }));
 }
 
 // ── 组件 props（框架注入的 standard kit 子集，形状全部取自官方声明）───────────
@@ -841,13 +844,18 @@ interface OrganizeUIView {
   builtinRow: ReactNode | undefined;
   loading: boolean;
   menuOpen: boolean;
+  /** 宿主是否给了「把整理结果写回输入框」的手段（inputActions.setDraft）。 */
+  canWrite: boolean;
   templates: readonly TemplateEntry[];
   onRun: OrganizeRun;
   onToggleMenu: () => void;
 }
 
+/** 整理结果无处可写时的主按钮 title（与模板项那一档同一句话，同一套判据）。 */
+const NO_WRITE_BACK_TITLE_KEY = "organizeWriteBackUnavailable";
+
 function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
-  const { t, icon, label, state, errClass, errTitle, loading, onRun } = ui;
+  const { t, icon, label, state, errClass, errTitle, loading, canWrite, onRun } = ui;
   return createElement(
     "button",
     {
@@ -857,7 +865,11 @@ function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
       title: errTitle,
       "data-field": "dpi-organize-btn",
       "data-state": state,
-      disabled: loading,
+      // canWrite 与「模板」下拉项同口径（client-entry.ts 的 TemplateButton）：整理结果
+      // 最终要写回输入框，写不回时整次调用就是纯浪费——一次真实的 LLM 请求 + 一份真实
+      // 账单，换来一句错误文案。失败在写回那一步才抛（writeDraft），所以这道门只能
+      // 在发请求**之前**判断，否则钱已经花完了。
+      disabled: loading || !canWrite,
       onClick: () => {
         void onRun();
       },
@@ -963,7 +975,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
         seq,
         prompt: draft,
         sessionId: props.sessionId ?? "",
-        timeoutMs: (snap.organizeTimeoutMs ?? 120_000) + 5000,
+        timeoutMs: organizeFetchTimeoutMs(snap.organizeTimeoutMs),
         roleText,
         setLoading,
         setMenuOpen,
@@ -1002,12 +1014,18 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
       label = props.t("organizeIdle");
       state = "idle";
     }
+    const canWrite =
+      props.inputActions !== undefined && typeof props.inputActions.setDraft === "function";
+    let errTitle = props.t("organizeIdleTitle");
+    if (failed !== undefined) {
+      errTitle = props.t("organizeFailedTitle", { message: failed });
+    } else if (!canWrite) {
+      // 写不回时 title 直接说明原因（idle 档那句太泛，用户看不出该做什么）。
+      errTitle = props.t(NO_WRITE_BACK_TITLE_KEY);
+    }
     const ui: OrganizeUIView = {
       t: props.t,
-      errTitle:
-        failed === undefined
-          ? props.t("organizeIdleTitle")
-          : props.t("organizeFailedTitle", { message: failed }),
+      errTitle,
       icon,
       label,
       state,
@@ -1017,6 +1035,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
       builtinRow: builtinStatusRow(snap, props.t),
       loading,
       menuOpen,
+      canWrite,
       templates,
       onRun: handleOrganize,
       onToggleMenu: openMenu,
@@ -1059,14 +1078,9 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
       props.inputActions !== undefined && typeof props.inputActions.setDraft === "function";
     const title = canWrite ? props.t("templatesIdleTitle") : props.t("templatesBrokenTitle");
 
-    const groupedMap = new Map<string, TemplateEntry[]>();
-    for (const tpl of templates) {
-      const key = tpl.group.trim() === "" ? props.t("templatesGroupCommon") : tpl.group;
-      const bucket = groupedMap.get(key) ?? [];
-      bucket.push(tpl);
-      groupedMap.set(key, bucket);
-    }
-    const grouped = [...groupedMap.entries()].map(([group, items]) => ({ group, items }));
+    // 分组用 Map 而不是对象字面量：分组标签来自用户可填的 template.group，`__proto__`
+    // 之类作为对象键会落进原型而不是成为一个分组（Map 无此问题）。
+    const grouped = groupTemplatesBy(templates, props.t);
     const emptyHintLabel = props.t("templatesEmptyHint");
     const builtinRow = builtinStatusRow(snap, props.t);
 
@@ -1125,7 +1139,7 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
                             pick(tpl.text);
                           },
                         },
-                        `${tpl.emoji === "" ? "" : `${tpl.emoji} `}${tpl.name}`,
+                        templateItemLabel(tpl),
                       ),
                     ),
                   ),
@@ -1594,7 +1608,10 @@ function CardFootBar(props: {
       {
         type: "button",
         className: "dpic-btn dpic-btn-danger",
-        disabled: !editable,
+        // busy 门禁与保存/撤销同口径：两者写的是同一份表单（reset 走 unset、保存走
+        // set），不挡住就能并发，于是 unset 与 set 落到同一字段上，最后写入者赢——
+        // 而「恢复默认」是两步确认里的一步，用户极易在保存途中才想起来要点它。
+        disabled: !editable || busy,
         title: foot.resetTitle,
         onClick: props.onReset,
       },
@@ -1700,7 +1717,12 @@ function createDraftActions(
     ]);
   }
   function onImported(incoming: readonly TemplateEntry[]): void {
-    setDraft(mergeImportedTemplates(draft, incoming));
+    // 必须走**函数式**更新：`onImport` 要先 await 一整个网络往返（内置角色库 266 个
+    // 文件是秒级），回来时上面这个 `draft` 早已是点击那一刻的旧值。闭包直接用它，
+    // 用户在这段时间里改的行 / 加的行 / 删的行会被整份旧草稿静默覆盖（实测：在途期间
+    // 新增的一行被吃掉，界面还回显成导入结果的样子）。函数式更新把合并的基准换成
+    // React 那一刻的最新值，id 去重也随之按真实已占用的 id 进行。
+    setDraft((prev) => mergeImportedTemplates(prev, incoming));
   }
   function onRootChange(index: number, value: string): void {
     setRootsDraft(rootsDraft.map((root, idx) => (idx === index ? value : root)));
@@ -2054,29 +2076,12 @@ export type LocaleCatalog = Record<BuiltInLocaleId, LocaleDictOf<typeof NS>>;
 
 const inject = ["slots", "configForms", "locale"];
 
-function apply(ctx: ClientCtx): void {
-  ctx.effect(() => {
-    const tag = document.createElement("style");
-    tag.id = "dir-prep-organize-css";
-    tag.textContent = CSS;
-    document.head.append(tag);
-    return () => {
-      tag.remove();
-    };
-  }, "dir-prep-organize: styles");
-
-  const scope = ctx.configForms.get(NS);
-  const store = templatesStore(scope);
-
-  const OrganizeButton = createOrganizeButton();
-  const TemplateButton = createTemplateButton();
-  ctx.effect(
-    () => ctx.locale.register(NS, UI_MESSAGES),
-    "dir-prep-organize-card: locale dictionaries",
-  );
-  const t = ctx.locale.bind(NS);
-  const dockInject = (): { hooks: { card: TemplatesStore } } => ({ hooks: { card: store } });
-
+/** 注入输入框右侧的「整理」「模板」两个按钮（两枚共用同一份 store 与 t）。
+ *
+ * 一次 inject 挂两枚：它们的 inject 面完全相同（都只要 store 这一份 card hook），
+ * 分成两次 inject 会让宿主多跑一轮 occupant 装配，而拆开的唯一好处只是少几行。 */
+function injectDock(ctx: ClientCtx, store: TemplatesStore, t: Translate): void {
+  const hooks = (): { hooks: { card: TemplatesStore } } => ({ hooks: { card: store } });
   ctx.slots.inject(SLOT_INPUT_RIGHT, () => {
     const unregisterOrganize = ctx.slots.register(
       {
@@ -2085,9 +2090,9 @@ function apply(ctx: ClientCtx): void {
         order: 99,
         label: (): string => t("dockOrganizeEntry"),
         locale: NS,
-        inject: dockInject,
+        inject: hooks,
       },
-      OrganizeButton,
+      createOrganizeButton(),
     );
     const unregisterTemplates = ctx.slots.register(
       {
@@ -2096,16 +2101,23 @@ function apply(ctx: ClientCtx): void {
         order: 100,
         label: (): string => t("dockTemplatesEntry"),
         locale: NS,
-        inject: dockInject,
+        inject: hooks,
       },
-      TemplateButton,
+      createTemplateButton(),
     );
     return () => {
       unregisterOrganize();
       unregisterTemplates();
     };
   });
+}
 
+/** 注入设置页的「提示词模板」卡（插件自带卡片，宿主不再生成自动表单页）。
+ *
+ * scope 作为参数传进来而不是就地取：卡片 inject 闭包里的 set/unset 必须落到
+ * apply 期取的那**同一份**配置表单上（中途再 get 一次未必是同一个 provider 对象），
+ * 而 apply 需要它同时喂给 store 与本函数，故显式传参而不是藏进模块级状态。 */
+function injectCard(ctx: ClientCtx, store: TemplatesStore, t: Translate, scope: EntryForm): void {
   ctx.slots.inject("plugins.bundle.config", () => {
     const unregister = ctx.slots.register(
       {
@@ -2123,6 +2135,29 @@ function apply(ctx: ClientCtx): void {
     );
     return unregister;
   });
+}
+
+function apply(ctx: ClientCtx): void {
+  ctx.effect(() => {
+    const tag = document.createElement("style");
+    tag.id = "dir-prep-organize-css";
+    tag.textContent = CARD_STYLES;
+    document.head.append(tag);
+    return () => {
+      tag.remove();
+    };
+  }, "dir-prep-organize: styles");
+
+  const scope = ctx.configForms.get(NS);
+  const store = templatesStore(scope);
+
+  ctx.effect(
+    () => ctx.locale.register(NS, UI_MESSAGES),
+    "dir-prep-organize-card: locale dictionaries",
+  );
+  const t = ctx.locale.bind(NS);
+  injectDock(ctx, store, t);
+  injectCard(ctx, store, t, scope);
 }
 
 export { inject, apply };
