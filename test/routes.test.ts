@@ -1,13 +1,16 @@
-// createRouteHandlers + apply 的 HTTP 契约测试。
+// createRemotePayloads + apply 的载荷契约测试。
 //
 // 覆盖口径（重写后的覆盖面）：
-//   · 五个端点（defaults/context/model/organize/importAgent）的 405 / 403 跨域 / 403 CSRF /
-//     413 body 超限 / 400 坏流 / 400 非法 JSON / 服务缺失降级 / 正常回执。
-//   · 审计修复锁死：读 body 与 JSON.parse 分开的回执（原先超限被糊成
-//     200 {ok:false,error:"请求体不是合法 JSON"}）。
+//   · 五个载荷入口（defaults/context/model/organize/importTemplates）的业务回执：
+//     服务缺失降级、坏形状请求、越界状态码、跳过计数与正常回执。
+//   · 审计修复锁死：导入路径策略的 400/403 分支、越界回执回显解析后的路径、
+//     空正文/缺 frontmatter 的跳过计数。
 //   · apply 装配：settings 页面策略登记一次且 owner 是本插件 fiber / settings 缺独有
-//     成员守卫不认 / describe 抛错兜住（回落中文、路由照常）/ webServer 缺成员跳过 /
-//     ctx 无 get 面；注册的 handler 反向驱动，覆盖四个惰性服务 getter 的命中与未命中两支。
+//     成员守卫不认 / describe 抛错兜住（回落中文、读面照常）/ ctx 无 get 面；
+//     注册的 Remote 服务反向驱动，覆盖四个惰性服务 getter 的命中与未命中两支。
+//
+// 传输层已由宿主 /api 网关接手：本文件不再测方法守卫/跨域/CSRF/body 上限，
+// 下面的 req/res 只是把夹具接到载荷入口的**测试适配器**（见 createRouteHandlers）。
 //
 // req/res 用最小实现 + `as unknown as IncomingMessage`（宿主真类型有上百成员，
 // 结构替身只能整体收窄；这是测试面的必要断言，src 侧禁同类断言）。
@@ -18,17 +21,13 @@
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import os, { tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { FsVersion } from "@deepseek-ai/dsh-fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
-import {
-  apply,
-  createRouteHandlers as createRouteHandlersWithDict,
-  defaultTemplatesFrom,
-} from "../host.ts";
+import { apply, createRemotePayloads, defaultTemplatesFrom } from "../host.ts";
 import type {
   Config,
   DerivedMessageView,
@@ -46,15 +45,58 @@ import { HOST_MESSAGES } from "../src/host-messages.ts";
 import { DEFAULT_TEMPLATES } from "../src/templates.ts";
 import type { TemplateEntry } from "../src/templates.ts";
 
-/** 字典包装器：与迁移前同签名（回执锁中文），en 侧另有直调原始实现的用例。 */
-function createRouteHandlers(
-  deps: RouteDeps,
-  csrf: string,
-): ReturnType<typeof createRouteHandlersWithDict> {
-  return createRouteHandlersWithDict(deps, csrf, () => HOST_MESSAGES.zh);
+/** 测试适配器：把请求形状接到生产载荷入口（传输层已由官方 Remote 网关接手）。
+ *  只负责从夹具里取 sessionId / JSON body 并装回 {statusCode, body}；不复制任何
+ *  鉴权、方法守卫或体积判定——那些面已随旧 HTTP 数据面删除。 */
+function respondJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
 }
 
-const BODY_MAX = 64 * 1024 * 1024;
+function requestBodyOf(req: IncomingMessage): unknown {
+  const raw = (req as unknown as { testBody?: string }).testBody;
+  if (raw === undefined) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+function createRouteHandlers(
+  deps: RouteDeps,
+  _csrf?: string,
+): {
+  defaults: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  context: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  model: (req: IncomingMessage, res: ServerResponse) => void;
+  organize: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  importAgent: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+} {
+  void _csrf;
+  const payloads = createRemotePayloads(deps, () => HOST_MESSAGES.zh);
+  return {
+    async defaults(_req, res) {
+      respondJson(res, 200, await payloads.defaults());
+    },
+    async context(req, res) {
+      const sessionId = new URL(req.url ?? "", "http://localhost").searchParams.get("sessionId");
+      respondJson(res, 200, await payloads.context(sessionId));
+    },
+    model(_req, res) {
+      respondJson(res, 200, payloads.model());
+    },
+    async organize(req, res) {
+      respondJson(res, 200, await payloads.organize(requestBodyOf(req)));
+    },
+    async importAgent(req, res) {
+      const result = await payloads.importTemplates(requestBodyOf(req));
+      respondJson(res, result.status, result.body);
+    },
+  };
+}
 
 /** 返回 undefined 的服务替身（`get: () => undefined` 会踩 no-useless-undefined，
  *  箭头空体会踩 no-empty-function，故写成带说明的函数声明）。 */
@@ -113,6 +155,7 @@ function makeReq(partial: {
     },
   };
   return Object.assign(raw as unknown as IncomingMessage, {
+    testBody: partial.body,
     emit(event: string): void {
       listeners.get(event)?.();
     },
@@ -412,6 +455,7 @@ interface CtxStub {
   effect: (factory: () => (() => void) | undefined, label?: string) => void;
   fiber: unknown;
   inject: (deps: readonly string[], attach: (child: CtxStub) => void) => void;
+  reflect: { provide: (name: string, service: unknown) => () => void };
 }
 
 function ctxOf(env: Harness): CtxStub {
@@ -430,6 +474,14 @@ function ctxOf(env: Harness): CtxStub {
       // cordis 用带齐依赖的子上下文同步回调；替身沿用同一个 ctx（服务解析结果一致）
       attach(ctx);
     },
+    reflect: {
+      provide(name: string, service: unknown) {
+        env.serviceRegistry[name] = service;
+        return () => {
+          Reflect.deleteProperty(env.serviceRegistry, name);
+        };
+      },
+    },
   };
   return ctx;
 }
@@ -444,7 +496,6 @@ function configOf(value: ConfigValue): Config {
     organizeTimeoutMs: { get: () => 120_000 },
     maxSnippetBytes: 256 * 1024,
     readConcurrency: 8,
-    importBodyMaxBytes: 8 * 1024 * 1024,
   };
 }
 
@@ -460,32 +511,104 @@ async function runRoutes(env: Harness): Promise<FakeResponse[]> {
   return driven;
 }
 
-/** 把 ctx 替身交给 host.apply（host 的 Context 有上百成员，结构替身只能整体收窄）。
- *  第二参数是 cordis 交进来的 volatile 引用替身（0.1.7 起 apply 收两参）。 */
-function applyTo(env: Harness): void {
-  apply(ctxOf(env) as unknown as Parameters<typeof apply>[0], configOf(env.configValue));
-}
-
 /** 五条注册路由的 path 常量（与 host.ts 一致）。 */
 const CONTEXT_PATH = "/_dsh/dir-prep/context";
 const ORGANIZE_PATH = "/_dsh/dir-prep/organize";
 const IMPORT_PATH = "/_dsh/dir-prep/import";
 const DEFAULTS_PATH = "/_dsh/dir-prep/default-templates";
 
+/** 生产注册的 Remote 服务读面：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
+interface DirPrepServiceShape {
+  defaults: () => Promise<Record<string, unknown>>;
+  context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
+  model: (request: { sessionId: string }) => Record<string, unknown>;
+  organize: (request: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  importTemplates: (request: Record<string, unknown>) => Promise<Record<string, unknown>>;
+}
+
+function sessionIdOf(req: IncomingMessage): string {
+  return new URL(req.url ?? "", "http://localhost").searchParams.get("sessionId") ?? "";
+}
+
+/** 把生产注册的 Remote 服务接成请求形状：只解析 sessionId / JSON body，
+ *  不复制任何守卫——那几面已随旧 HTTP 数据面删除。 */
+function attachRemoteRoutes(env: Harness): void {
+  const service = env.serviceRegistry["dirPrepOrganize"] as DirPrepServiceShape;
+  env.routes = [
+    {
+      path: DEFAULTS_PATH,
+      handler: async (_req, res) => {
+        respondJson(res, 200, await service.defaults());
+      },
+    },
+    {
+      path: CONTEXT_PATH,
+      handler: async (req, res) => {
+        respondJson(res, 200, await service.context({ sessionId: sessionIdOf(req) }));
+      },
+    },
+    {
+      path: "/_dsh/dir-prep/model",
+      handler: (req, res) => {
+        respondJson(res, 200, service.model({ sessionId: sessionIdOf(req) }));
+      },
+    },
+    {
+      path: ORGANIZE_PATH,
+      handler: async (req, res) => {
+        const body = requestBodyOf(req);
+        const request =
+          body !== null && typeof body === "object" && !Array.isArray(body) ? body : {};
+        respondJson(res, 200, await service.organize(request as Record<string, unknown>));
+      },
+    },
+    {
+      path: IMPORT_PATH,
+      handler: async (req, res) => {
+        const body = requestBodyOf(req);
+        const request =
+          body !== null && typeof body === "object" && !Array.isArray(body) ? body : {};
+        const result = await service.importTemplates(request as Record<string, unknown>);
+        const status = typeof result["status"] === "number" ? result["status"] : 200;
+        respondJson(res, status, result);
+      },
+    },
+  ];
+}
+
+/** 同步版 console 捕获（装配期警告用；异步版见 captureConsole）。 */
+function captureWarnings(method: "warn" | "error", fn: () => void): string[] {
+  const original = console[method];
+  const seen: string[] = [];
+  console[method] = (...args: unknown[]): void => {
+    seen.push(args.map(String).join(" "));
+  };
+  try {
+    fn();
+  } finally {
+    console[method] = original;
+  }
+  return seen;
+}
+
+/** 把 ctx 替身交给 host.apply（host 的 Context 有上百成员，结构替身只能整体收窄）。
+ *  第二参数是 cordis 交进来的 volatile 引用替身（0.1.7 起 apply 收两参）。 */
+function applyTo(env: Harness): void {
+  apply(ctxOf(env) as unknown as Parameters<typeof apply>[0], configOf(env.configValue));
+  attachRemoteRoutes(env);
+}
+
 // ── 请求夹具单源（重复 3 次以上的输入值集中在此）────────────────────────────
 // 这些是**喂给 handler 的输入**与**断言用的期望值**，刻意写死而不引 host.ts / shared
 // 里的同名常量：拿实现自己的常量当期望值，断言就退化成同义反复。
 
 /** DNS 重绑定用例的恶意 Host 值（Origin 与 sec-fetch-site 都能自洽，只有 Host 腿拒得了）。 */
-const EVIL_HOST = "evil.test:8787";
 /** sec-fetch-site 的跨站取值（闸门与自家 isCrossOrigin 支共用的那一档）。 */
-const CROSS_SITE = "cross-site";
 /** 带会话查询位的 context URL（handler 只读 query，路由匹配在 dispatcher 侧，path 随意）。 */
 const CONTEXT_QUERY_URL = "/c?sessionId=s";
 /** 三类允许根之外的绝对路径（策略必须默认拒绝的那一类）。 */
 const OUTSIDE_IMPORT_PATH = "/etc/passwd.md";
 /** per-apply CSRF 令牌夹具值（下发面与回填面必须同一个串才验得出闸门真在比对）。 */
-const CSRF_TOKEN = "secret-token";
 
 /** context 的正常查询请求（sessionId=s1）。 */
 const getCtxQuery = { method: "GET", url: `${CONTEXT_PATH}?sessionId=s1` };
@@ -502,47 +625,6 @@ function routeOf(env: Harness, suffix: string): RouteRecord {
   const found = env.routes.find((route) => route.path.endsWith(suffix));
   assert.ok(found, `路由 ${suffix} 已注册`);
   return found;
-}
-
-// ── 绑定地址夹具（信任闸门的非回环档只有装配面走得到，见下面三条）──────────────
-// TEST-NET-1（RFC 5737 的文档地址段）不会被真网卡占到，所以替换 networkInterfaces 之后
-// 判据是确定的，不随跑测试的机器变。
-const LAN_BIND_HOST = "192.0.2.7";
-
-/** 给替身 webServer 补上官方那枚 `host` getter 的位（不补即"服务不报绑定地址"）。 */
-function setBindHost(env: Harness, host: string): void {
-  (env.serviceRegistry["webServer"] as { host?: string }).host = host;
-}
-
-/** 把 `os.networkInterfaces()` 换成只报 LAN_BIND_HOST 一枚地址（闸门的本机地址面现读它）。 */
-async function withOnlyLanInterface<TResult>(run: () => Promise<TResult>): Promise<TResult> {
-  const lan: os.NetworkInterfaceInfo = {
-    address: LAN_BIND_HOST,
-    family: "IPv4",
-    netmask: "255.255.255.0",
-    mac: "00:00:00:00:00:00",
-    internal: false,
-    cidr: `${LAN_BIND_HOST}/24`,
-  };
-  const original = os.networkInterfaces;
-  os.networkInterfaces = () => ({ eth0: [lan] });
-  try {
-    return await run();
-  } finally {
-    os.networkInterfaces = original;
-  }
-}
-
-/** 以本机网卡地址为 Host 权威驱动一次 context GET。 */
-async function driveFromLanAuthority(env: Harness): Promise<FakeResponse> {
-  return driveRoute(
-    routeOf(env, "context"),
-    makeReq({
-      method: "GET",
-      url: CONTEXT_PATH,
-      headers: { host: LAN_BIND_HOST, "sec-fetch-site": "same-origin" },
-    }),
-  );
 }
 
 /** importAgent 的 POST 调用（该端点不校 CSRF）。 */
@@ -573,26 +655,6 @@ function sessionsWithMessages(
 }
 
 describe("defaults 端点（内置精选角色表的按需读面）", () => {
-  it("非 GET → 405 + Allow: GET + JSON 体", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.defaults(makeReq({ method: "POST", url: DEFAULTS_PATH }), res);
-    assert.equal(out.statusCode, 405);
-    assert.equal(out.headers["Allow"], "GET");
-    assert.match(out.body, /"error":"GET only"/u, "F1-3：405 也回 JSON 体");
-  });
-
-  it("闸门在方法判定之前：恶意 Host 的 POST 回 403 而不是 405", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.defaults(
-      makeReq({ method: "POST", url: DEFAULTS_PATH, headers: { host: EVIL_HOST } }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-  });
-
   it("GET → ok:true，且下发的就是 host 侧那份表（单源，不在 client 复制）", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
@@ -653,25 +715,6 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
 });
 
 describe("context 端点", () => {
-  it("非 GET → 405 + Allow: GET", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.context(makeReq({ method: "POST", url: "/_dsh/dir-prep/context" }), res);
-    assert.equal(out.statusCode, 405);
-    assert.equal(out.headers["Allow"], "GET");
-  });
-
-  it("跨域（sec-fetch-site=cross-site）→ 403", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.context(
-      makeReq({ method: "GET", url: "/c", headers: { "sec-fetch-site": CROSS_SITE } }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /cross-origin/u);
-  });
-
   it("fs 服务缺失 → ok:false", async () => {
     const handlers = createRouteHandlers(depsOf({ sessions: () => sessionsReturningNone }), "t");
     const { res, out } = makeRes();
@@ -686,7 +729,7 @@ describe("context 端点", () => {
     assert.match(String(parsed(out)["error"]), /cwd/u);
   });
 
-  it("正常路径：csrf/cwd/entries/skipped 齐全", async () => {
+  it("正常路径：cwd/entries/skipped 齐全", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "dirprep-ctx-"));
     await writeFile(path.join(root, "a.ts"), "export const x = 1\n");
     await mkdir(path.join(root, "sub"));
@@ -698,7 +741,6 @@ describe("context 端点", () => {
     await handlers.context(makeReq({ method: "GET", url: "/c?sessionId=s1" }), res);
     const body = parsed(out);
     assert.equal(body["ok"], true);
-    assert.equal(body["csrf"], "test-csrf");
     assert.equal(body["cwd"], root);
     assert.equal(body["truncated"], false);
     assert.equal(fieldArray(body["entries"]).length, 2, "a.ts + sub 两条");
@@ -751,23 +793,6 @@ describe("context 端点", () => {
 });
 
 describe("model 端点", () => {
-  it("非 GET → 405", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    handlers.model(makeReq({ method: "POST", url: "/m" }), res);
-    assert.equal(out.headers["Allow"], "GET");
-  });
-
-  it("跨域 → 403", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    handlers.model(
-      makeReq({ method: "GET", url: "/m", headers: { "sec-fetch-site": CROSS_SITE } }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-  });
-
   it("服务缺失 → ok:false", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
@@ -775,7 +800,7 @@ describe("model 端点", () => {
     assert.match(String(parsed(out)["error"]), /agentDefaultModel/u);
   });
 
-  it("正常：csrf/provider/model/reasoningEffort", async () => {
+  it("正常：provider/model/reasoningEffort", async () => {
     const handlers = createRouteHandlers(
       depsOf({
         agentDefaultModel: () => ({
@@ -788,7 +813,6 @@ describe("model 端点", () => {
     handlers.model(makeReq({ method: "GET", url: "/m" }), res);
     const body = parsed(out) as Record<string, string>;
     assert.equal(body["ok"], true);
-    assert.equal(body["csrf"], "csrf-m");
     assert.equal(body["reasoningEffort"], "high");
   });
 
@@ -813,37 +837,6 @@ describe("organize 端点", () => {
   const csrfHeaders = { "x-dir-prep-csrf": "tok" };
   const csrfHeadersOf = (): Record<string, unknown> => csrfHeaders;
 
-  it("非 POST → 405 + Allow: POST", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.organize(makeReq({ method: "GET", url: "/o" }), res);
-    assert.equal(out.headers["Allow"], "POST");
-  });
-
-  it("跨域 → 403（guardBody 先拒，不读 body）", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const out = await callOrganize(
-      handlers,
-      makeReq({
-        method: "POST",
-        url: "/o",
-        headers: { "sec-fetch-site": CROSS_SITE },
-        body: "{}",
-      }),
-    );
-    assert.equal(out.statusCode, 403);
-  });
-
-  it("CSRF 缺失/错误 → 403 invalid csrf token", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "right-token");
-    const out = await callOrganize(
-      handlers,
-      makeReq({ method: "POST", url: "/o", headers: { "x-dir-prep-csrf": "wrong" }, body: "{}" }),
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /csrf/u);
-  });
-
   it("模型服务缺失（getter 返回 undefined）→ 当前无可用模型选择", async () => {
     const handlers = createRouteHandlers(
       depsOf({ llm: () => okStream, sessions: () => sessionsReturning({ header: { cwd: "/w" } }) }),
@@ -859,45 +852,6 @@ describe("organize 端点", () => {
       }),
     );
     assert.equal(String(parsed(out)["error"]), "当前无可用模型选择");
-  });
-
-  it("content-length 超限 → 413（不再被糊成 JSON 错误）", async () => {
-    const handlers = createRouteHandlers(depsOf({ llm: () => okStream }), "tok");
-    const out = await callOrganize(
-      handlers,
-      makeReq({ method: "POST", url: "/o", headers: csrfHeaders, declareLength: BODY_MAX + 1 }),
-    );
-    assert.equal(out.statusCode, 413);
-    assert.match(String(parsed(out)["error"]), /too large/u);
-  });
-
-  it("流中断（读 body 抛错）→ 400 request body unreadable", async () => {
-    const handlers = createRouteHandlers(depsOf({ llm: () => okStream }), "tok");
-    const out = await callOrganize(
-      handlers,
-      makeReq({ method: "POST", url: "/o", headers: csrfHeaders, failStream: true }),
-    );
-    assert.equal(out.statusCode, 400);
-    assert.match(String(parsed(out)["error"]), /unreadable/u);
-  });
-
-  it("读到 body 但非 JSON → 400（与超限分路）", async () => {
-    const handlers = createRouteHandlers(depsOf({ llm: () => okStream }), "tok");
-    const out = await callOrganize(
-      handlers,
-      makeReq({ method: "POST", url: "/o", headers: csrfHeaders, body: "not-json{{{" }),
-    );
-    assert.equal(out.statusCode, 400);
-    assert.match(String(parsed(out)["error"]), /合法 JSON/u);
-  });
-
-  it("body 是数组（非对象）→ 按空 body 处理，回 cwd 错误", async () => {
-    const handlers = createRouteHandlers(depsOf({ llm: () => okStream }), "tok");
-    const out = await callOrganize(
-      handlers,
-      makeReq({ method: "POST", url: "/o", headers: csrfHeaders, body: "[1,2]" }),
-    );
-    assert.match(String(parsed(out)["error"]), /cwd/u);
   });
 
   it("llm 服务缺失 → ok:false（不调流）", async () => {
@@ -1025,45 +979,6 @@ describe("organize 端点", () => {
 });
 
 describe("importAgent 端点", () => {
-  it("非 POST → 405", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.importAgent(makeReq({ method: "GET", url: "/i" }), res);
-    assert.equal(out.headers["Allow"], "POST");
-  });
-
-  it("跨域 → 403", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.importAgent(
-      makeReq({
-        method: "POST",
-        url: "/i",
-        headers: { "sec-fetch-site": CROSS_SITE },
-        body: "{}",
-      }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-  });
-
-  it("body 超限 → 413", async () => {
-    const handlers = createRouteHandlers(depsOf({ fs: () => realFsService() }), "t");
-    const { res, out } = makeRes();
-    await handlers.importAgent(
-      makeReq({ method: "POST", url: "/i", declareLength: BODY_MAX + 1 }),
-      res,
-    );
-    assert.equal(out.statusCode, 413);
-  });
-
-  it("非法 JSON → 400", async () => {
-    const handlers = createRouteHandlers(depsOf({ fs: () => realFsService() }), "t");
-    const { res, out } = makeRes();
-    await handlers.importAgent(makeReq({ method: "POST", url: "/i", body: "nope" }), res);
-    assert.equal(out.statusCode, 400);
-  });
-
   it("fs 服务缺失 → ok:false", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
@@ -1160,8 +1075,8 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     applyTo(env);
     assert.deepEqual(
       env.injected,
-      [["settings"], ["webServer"]],
-      "页面策略经 inject(['settings'])，四条路由经 inject(['webServer']) 子 fiber",
+      [["settings"], []],
+      "页面策略经 inject(['settings'])，读面经空的注入子上下文注册",
     );
     assert.equal(env.configureCalls.length, 1, "configure 恰好一次（重复登记会被宿主抛）");
     assert.deepEqual(env.configureCalls.at(0)?.presentation, { auto: false });
@@ -1171,10 +1086,10 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
       "owner 必须显式是本插件 fiber（缺省是 settings 服务自己的 fiber，传错等于给别人的页面定策略）",
     );
     assert.equal(env.routes.length, 5);
+    assert.notEqual(env.serviceRegistry["dirPrepOrganize"], undefined, "读面服务已注册到根上下文");
     for (const dispose of disposers) {
       dispose();
     }
-    assert.equal(env.routes.length, 0, "路由 effect 的 disposer 注销 5 条路由");
   });
 
   it("注册的 handler 可直接驱动（四个惰性 getter 全部命中形状守卫）", async () => {
@@ -1185,22 +1100,8 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.equal(outs.length, 5, "五条路由都拿到了回执");
   });
 
-  it("服务全部形状不符（settings 只有 register / webServer 只有 register）→ 守卫不认，跳过且不抛", () => {
-    const env = harness({
-      settings: { register: () => ({}) },
-      webServer: { register: () => returnsNothing },
-      sessions: { notGet: 1 },
-      fs: { notResolve: 1 },
-      llm: { notStream: 1 },
-      agentDefaultModel: { notSelection: 1 },
-    });
-    applyTo(env);
-    assert.equal(env.configureCalls.length, 0, "settings 形状不认（无 describe）→ 不登记页面策略");
-    assert.equal(env.routes.length, 0, "webServer 形状不认 → 不注册路由");
-  });
-
   // 上面那条只覆盖到「装配期什么都不注册」。host.ts 的 `localeMessages` 里那枚三元
-  // （installed 视角见 host.ts:2068）还有一支在**请求期**：
+  // 还有一支在**请求期**：
   // localeMessages() 每次取表都要 getService("settings") 再过 isSettingsService，
   // 假支（缺席 / 形状不符）此前从没被执行过——因为那两条用例的 webServer 也是坏的，
   // 路由一条没注册，取表路径压根没跑起来。真宿主少装/换形 settings 时走的就是这支，
@@ -1261,28 +1162,6 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.deepEqual(env.describeCalls, [], "形状不符也不给 describe 机会");
   });
 
-  it("settings 缺席时两个效应仍各回一个 disposer：占位那个调用不抛、不误注销，路由那个才是真注销", () => {
-    // 0.1.7 起 apply 期唯一的 settings 动作挂在注入效应上，缺席时它回的是
-    // host.ts:2036 的占位 noopDisposer。此前没人调用过它（函数覆盖 99.56% 的缺项就是
-    // 这一处）：cordis 要求每个效应可回收，占位实现若被顺手改成会抛的东西，卸载即炸宿主。
-    const env = harness({ settings: undefined });
-    applyTo(env);
-    assert.equal(env.effects.length, 2, "页面策略效应 + 路由效应");
-    assert.equal(env.disposers.length, 2, "两个效应都回了 disposer（缺席也不许回 undefined）");
-    const [presentationDispose, routesDispose] = env.disposers;
-    assert.equal(typeof presentationDispose, "function");
-    assert.equal(typeof routesDispose, "function");
-    assert.doesNotThrow(() => {
-      presentationDispose?.();
-    }, "占位 disposer 必须可调用且不抛");
-    assert.equal(env.routes.length, 5, "占位 disposer 什么都不做：不得顺手拆掉路由");
-    assert.equal(env.configureCalls.length, 0);
-    assert.doesNotThrow(() => {
-      routesDispose?.();
-    });
-    assert.equal(env.routes.length, 0, "路由效应那条才是真注销");
-  });
-
   it("ctx 无 get 面 → getService 一律 undefined（缺服务分支）", () => {
     const effects: (() => (() => void) | undefined)[] = [];
     const ctx: Record<string, unknown> = {
@@ -1300,9 +1179,23 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
       ctx as unknown as Parameters<typeof apply>[0],
       configOf({ templates: undefined, importAllowRoots: [] }),
     );
-    assert.equal(effects.length, 2);
+    assert.equal(effects.length, 1, "settings 注入回调仍挂上页面策略效应");
     for (const factory of effects) {
-      assert.equal(typeof factory(), "function", "两个 effect 都返回 disposer");
+      assert.equal(typeof factory(), "function", "effect 都返回 disposer");
+    }
+  });
+
+  it("settings 缺席：页面策略效应仍交回可调用的占位 disposer", () => {
+    const env = harness({ settings: undefined });
+    const warns = captureWarnings("warn", () => {
+      applyTo(env);
+    });
+    assert.equal(warns.length, 1, "缺席大声警告一次");
+    assert.equal(env.effects.length, 1, "settings 注入回调仍是唯一效应");
+    for (const dispose of env.disposers) {
+      assert.doesNotThrow(() => {
+        dispose();
+      });
     }
   });
 
@@ -1643,162 +1536,5 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
       makeReq({ method: "GET", url: "/c?sessionId=z" }),
     );
     assert.match(String(parsed(out)["error"]), /cwd/u);
-  });
-});
-
-describe("信任闸门：/_dsh/dir-prep/* 的五条路由", () => {
-  /** DNS 重绑定的真实形状：Host 是外域、Origin 与 sec-fetch-site 都自洽 ⇒ 只有 Host 腿拒得了。 */
-  const REBINDING: Record<string, unknown> = {
-    host: EVIL_HOST,
-    origin: "http://evil.test:8787",
-    "sec-fetch-site": "same-origin",
-  };
-
-  it("token 下发的 context GET 被重绑定时：403 且响应里不许带出 csrf", async () => {
-    const handlers = createRouteHandlers(depsOf({}), CSRF_TOKEN);
-    const { res, out } = makeRes();
-    await handlers.context(makeReq({ method: "GET", url: "/c", headers: REBINDING }), res);
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-    assert.doesNotMatch(out.body, /secret-token/u, "被拒的体里泄露 token 等于闸门白装");
-  });
-
-  it("写端点 organize 同样先过闸门（恶意 Host 即便带对 csrf 也拒）", async () => {
-    const handlers = createRouteHandlers(depsOf({}), CSRF_TOKEN);
-    const { res, out } = makeRes();
-    await handlers.organize(
-      makeReq({
-        method: "POST",
-        url: "/o",
-        body: JSON.stringify({ cwd: "/tmp/x", entries: [] }),
-        headers: { ...REBINDING, "x-dir-prep-csrf": CSRF_TOKEN },
-      }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-  });
-
-  it("判据次序：恶意 Host 与 cross-site 同现时报 Host 腿那句", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.context(
-      makeReq({
-        method: "GET",
-        url: "/c",
-        headers: { host: EVIL_HOST, "sec-fetch-site": CROSS_SITE },
-      }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-  });
-
-  it("缺 Host 是本地 CLI 面（既有 60 个手搓构造点的常态）⇒ 闸门不插手", async () => {
-    // 只钉"没被闸门拒"这一件事：成功路径的 csrf 字段由上面「正常路径：csrf/cwd/entries/skipped
-    // 齐全」那条用例覆盖（它要喂满 deps），这里 `depsOf({})` 拿到的是本 handler 自己的降级答复。
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.context(makeReq({ method: "GET", url: "/c" }), res);
-    assert.equal(out.statusCode, 200);
-    assert.doesNotMatch(out.body, /untrusted host|cross-origin/u);
-  });
-
-  it("/import 这唯一无 CSRF token 的端点：闸门落地后它是第一道也是唯一一道防线", async () => {
-    // host.ts 里那条例外注释（"import 由本地代理发起，不校 CSRF"）在闸门落地之前意味着这条路由
-    // 对浏览器侧请求**毫无**判据；现在它至少要求权威是本机的。这条用例钉的就是这个差集。
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.importAgent(
-      makeReq({ method: "POST", url: "/i", body: "{}", headers: REBINDING }),
-      res,
-    );
-    assert.equal(out.statusCode, 403);
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-  });
-
-  // 绑定地址这条腿只有装配面走得通：createRouteHandlers 的第 4 位由 apply 从 webServer 取，
-  // 手搓构造点不传即是保守档。宿主把 `Config.host` 收成任意本机接口 IP 字面量、并在载入时拒掉
-  // 通配地址之后，`host === "0.0.0.0"` 那种写法恒为 false——局域网那一面被闸门整片拒成 403，
-  // 而类型检查、构建、其余用例全照绿。下面这两条钉的是「网卡地址确实流到了闸门」这件事本身
-  // （夹具见文件头的 setBindHost / withOnlyLanInterface / driveFromLanAuthority）。
-  it("webServer.host 是本机网卡地址：局域网 Host 权威被放行（比字面量恒 false 的那类回归）", async () => {
-    const env = harness();
-    setBindHost(env, LAN_BIND_HOST);
-    applyTo(env);
-    const out = await withOnlyLanInterface(() => driveFromLanAuthority(env));
-    assert.notEqual(out.statusCode, 403, "绑的就是这枚网卡地址，闸门不该拒本机接口自己的 Host");
-    assert.equal(out.statusCode, 200);
-  });
-
-  it("同一枚 Host、webServer 却不报 host 位：闸门回到只认回环的保守档并拒成 403", async () => {
-    const env = harness();
-    applyTo(env);
-    const out = await withOnlyLanInterface(() => driveFromLanAuthority(env));
-    assert.equal(out.statusCode, 403, "读不到绑定地址就当只绑回环，这是保守档");
-    assert.match(String(parsed(out)["error"]), /untrusted host/u);
-  });
-});
-
-describe("405 的统一回执", () => {
-  it("methodNotAllowed 现在也回 JSON 体（原先是空体）", async () => {
-    const handlers = createRouteHandlers(depsOf({}), "t");
-    const { res, out } = makeRes();
-    await handlers.organize(makeReq({ method: "GET", url: "/o" }), res);
-    assert.equal(out.statusCode, 405);
-    assert.equal(out.headers["Allow"], "POST");
-    assert.match(out.body, /"error":"POST only"/u);
-  });
-});
-
-/** 断开后即抛的假流：signal 一旦 aborted 就不该再产出任何 chunk。 */
-async function* abortedAwareStream(signal: AbortSignal | undefined): AsyncGenerator<StreamChunk> {
-  if (signal?.aborted === true) {
-    throw new Error("aborted by client disconnect");
-  }
-  yield { type: TEXT_DELTA, index: 0, text: "不该出现" };
-  yield FINISH_STOP;
-}
-
-describe("客户端断开即取消整理", () => {
-  it("close 事件 → 取消信号传到 llm.stream，本次整理中止而不是跑完", async () => {
-    const req = makeReq({
-      method: "POST",
-      url: "/o",
-      headers: { "x-dir-prep-csrf": "tok" },
-      body: JSON.stringify({ prompt: "帮我整理", sessionId: "s1" }),
-    });
-    const signal = await (async () => {
-      let captured: AbortSignal | undefined;
-      const llm = {
-        stream(options: LlmStreamOptions): AsyncIterable<StreamChunk> {
-          captured = options.signal;
-          // 真实场景是 socket 关掉；这里在拿到 options 后立刻发 close
-          (req as unknown as { emit: (event: string) => void }).emit("close");
-          return abortedAwareStream(captured);
-          /* 旧写法（内联匿名生成器）见下方 abortedAwareStream：
-          if (captured?.aborted === true) {
-              throw new Error("aborted by client disconnect");
-            }
-            yield { type: TEXT_DELTA, index: 0, text: "不该出现" };
-            yield { type: "finish", reason: { kind: "stop" } };
-          });*/
-        },
-      } satisfies LlmService;
-      const handlers = createRouteHandlers(
-        depsOf({
-          llm: () => llm,
-          sessions: () => sessionsWithMessages("/w", []),
-          agentDefaultModel: () => ({
-            currentSelection: () => ({ provider: "p", model: "m" }),
-          }),
-        }),
-        "tok",
-      );
-      const out = parsed(await callOrganize(handlers, req));
-      assert.equal(out["ok"], false, "断开后应回失败而非成功");
-      return captured;
-    })();
-    assert.equal(signal?.aborted, true, "close 必须真的把 signal 置为 aborted");
   });
 });

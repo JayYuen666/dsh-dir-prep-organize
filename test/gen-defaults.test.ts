@@ -1,12 +1,12 @@
-// 生成脚本 ↔ src/templates.ts 的全量漂移锁（替代旧的"抽样 6 条"）。
+// 生成脚本 ↔ src/templates.ts 的全量漂移锁。
 //
 // 为什么必须有：DEFAULT_TEMPLATES 是**生成物**（scripts/gen-defaults.mjs 用一份
 // 镜像实现解析 agents/ 角色库），而镜像与真实实现只在人眼里一致——没有机器锁时，
-// 改了 templates.ts 忘了脚本，生成的默认集就静默失真，且 85 条里只抽 6 条比对，
+// 改了 templates.ts 忘了脚本，生成的默认集就静默失真，且只抽样比对若干条时，
 // 漂移几乎不可能被抓到。这里锁四件事：
 //   1. 两张镜像常量表（AGENT_DIR_GROUP_LABELS / CURATED_SLUGS）与 templates.ts
-//      及生成文件的**键序 + 值**逐项一致（顺序 = 下拉展示顺序，旧版完全不比）；
-//   2. 全部 85 条精选逐字段与源文件重算结果一致；
+//      及生成文件的**键序 + 值**逐项一致（顺序 = 下拉展示顺序）；
+//   2. 全部精选条目逐字段与源文件重算结果一致；
 //   3. 镜像函数（parse/condense/groupLabel）与 templates.ts 真函数对每个源文件
 //      输出逐字节相同 —— 这才是"两份实现没分叉"的证明；
 //   4. 生成器 formatGenerated(renderGenerated()) 的输出（即含 oxfmt 排版步骤的完整生成链路）

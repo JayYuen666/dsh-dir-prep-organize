@@ -1,7 +1,7 @@
 // src/client-styles.ts —— 插件注入的样式表（apply 时以 <style> 挂进 document.head）。
 //
 // 为什么单独成文件：这是一份**纯数据**，与逻辑面零耦合，且它是本包里体量最大的单块
-// 非逻辑内容（57 条规则）。混在 client-entry.ts 里既让那份文件长期顶在 eslint/max-lines
+// 非逻辑内容。混在 client-entry.ts 里既让那份文件长期顶在 eslint/max-lines
 // 的红线上（该规则 max=2000 且 skipComments/skipBlankLines 都为 false ⇒ 纯数据行照样计数），
 // 也让「改样式要翻逻辑」变得容易。apply 侧只 import CARD_STYLES 一处。
 //

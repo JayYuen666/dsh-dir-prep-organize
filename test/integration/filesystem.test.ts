@@ -4,7 +4,7 @@
 // 罕见错误）；这里换成真磁盘 + 真抽象类子类（test/integration/real-fs.ts，语义逐条对齐宿主
 // fs-local，行号写在那份文件头），于是三类只在真件上才会露面的东西被纳入判据：
 //   ① listDir 交来的 `size`/`type` 是不是真的（桩里 `size` 随手一给就"测得出绿"，而
-//      readSnippetBounded 整条取舍都挂在它上面：host.ts:647-650）；
+//      readSnippetBounded 整条取舍都挂在它上面）；
 //   ② 软链的 targetKey 身份（宿主 fsio.ts:165 realpath 派生）在 contains/去重上是否一致；
 //   ③ 真错误（FS_NOT_TEXT / FS_NOT_DIRECTORY / FS_TOO_LARGE）经本包降级后计到哪一格。
 //
@@ -18,8 +18,8 @@
 //    里只能以"跟随后的真身"露面（断链落 'other'），本文件那两条软链用例判的就是这件事。
 //  · 错误码词汇表：packages/fs/fs/src/types.ts:175-189（FS_NOT_TEXT / FS_TOO_LARGE /
 //    FS_NOT_DIRECTORY / FS_NOT_FOUND / FS_NOT_REGULAR_FILE …）。
-//  · 本包消费面：`FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "contains">`
-//    （host.ts:309），collectDirContext 只取前三位（host.ts:713-718）。
+//  · 本包消费面：`FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" |
+//    "contains" | "stat">`（host.ts），`collectDirContext` 的形参只取其中不带 `stat` 的几位。
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { strict as assert } from "node:assert";
 import { chmod, mkdtemp, mkdir, rm, symlink, truncate, writeFile } from "node:fs/promises";
@@ -192,7 +192,7 @@ describe("真实 FileSystem 抽象类：装配与身份", () => {
       entries.map((item) => [item.name, item.type]),
       [["broken.md", "other"]],
     );
-    // 'other' 无 size：本包的摘要取舍必须把"没有 size"当成跳过而不是 0 字节读（host.ts:647-650）
+    // 'other' 无 size：本包的摘要取舍必须把"没有 size"当成跳过而不是 0 字节读（host.ts 的 readSnippetBounded）
     assert.equal(entries[0]?.size, undefined);
   });
 });
@@ -209,7 +209,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     ]);
     const result = await collectDirContext(fs, root, MESSAGES);
     assert.equal(result.error, undefined);
-    // listDir 的名序**直传**到回执（host.ts:732/755 不重排）。这里把宿主的排序口径钉住：
+    // listDir 的名序**直传**到回执（collectDirContext 不重排）。这里把宿主的排序口径钉住：
     // fs-local 用 `localeCompare`（fsio.ts:325）而不是码位序，于是 en-US collation 下
     // `package.json` 排在 `README.md` **之前**（p<r，大小写只作次级权重）。若哪天改成
     // 码位序，README.md 会跳到前面来，这条断言当场红——而不是让界面顺序悄悄变样。
@@ -224,7 +224,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     assert.ok(src !== undefined, "src 目录必须列出");
     assert.equal(src.isDir, true);
     assert.equal(src.snippet, undefined, "目录永不带摘要（host.ts:759）");
-    // SECRET_PATTERN 优先于扩展名：.env 就算改成 .json 也不许被摘（host.ts:522-524）
+    // SECRET_PATTERN 优先于扩展名：.env 就算改成 .json 也不许被摘
     assert.equal(result.entries.find((item) => item.name === ".env")?.snippet, undefined);
     assert.equal(result.truncated, false);
   });
@@ -313,7 +313,7 @@ describe("collectDirContext 在真实磁盘上", () => {
 });
 
 describe("collectAgentTemplates 在真实磁盘上", () => {
-  /** 一枚最小角色 .md（parseAgentFrontmatter 要非空 name，host.ts:1019-1020）。 */
+  /** 一枚最小角色 .md（parseAgentFrontmatter 要非空 name）。 */
 
   it("顶层 + 一层子目录都收，第三层只清点并计入 skipped.deeper", async () => {
     const { fs, root } = tree();
@@ -420,7 +420,7 @@ describe("collectAgentTemplates 在真实磁盘上", () => {
 // ── 符号链接逃逸的四条钉（写在本包修复之前，全部实测为红）──────────────────────
 //
 // 为什么单独立一段：`importPathError` 判的是**字符串段**，`readText` 读的是**真实对象**，
-// 两者之间只有后端的 `contains` 能收口（host.ts:986-996 那条注释讲的就是这件事）。
+// 两者之间只有后端的 `contains` 能收口（host.ts 的 escapesAllRoots 那段注释讲的就是这件事）。
 // 手搓桩里 contains 是「parent.key 前缀 == child.key」的同义反复——桩永远配合被测代码，
 // 于是「单文件分支没走 contains」「按直接父目录而不是导入根判」两处缺口在单元测试里
 // 全绿。只有真磁盘 + 真 realpath 才让它们露面。

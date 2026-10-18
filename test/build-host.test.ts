@@ -1,7 +1,7 @@
 // host.js 构建冒烟 + 防回归锁（产物落「包根」这条不变式是本包的生命线）。
 //
 // 为什么锁得这么死：host.ts 用 `path.join(import.meta.dirname, "agents")` 定位内置
-// 角色库（host.ts:132），而 `import.meta.dirname` 取的是**运行期模块自身所在目录**。
+// 角色库（host.ts 的 `AGENTS_DIR`），而 `import.meta.dirname` 取的是**运行期模块自身所在目录**。
 // 产物一旦挪进 dist/，AGENTS_DIR 就静默指向 <pkg>/dist/agents（不存在），「导入内置
 // 全部」直接空集——不报错、只是没有角色。故这里同时锁三件事：
 //   1. 跨包依赖在产物里保持 external（内联会把 shared 的模块级状态复制成多份）；
@@ -55,10 +55,10 @@ describe("dir-prep-organize host 构建", () => {
 
   it("产物里跨包依赖保持 external（含 shared 子路径说明符）", async () => {
     const text = artifactText(await buildHost(), "host.js");
-    // 子路径：external 判据必须按「包名段」匹配，字符串项精确匹配不到 `/lib/http`。
-    // 本条由"只查包名前缀"升级为逐个列名——前缀断言会被 lib/http 一条满足，
-    // 看不见 lib/record 哪天被内联（该批评见 zvec-grep/test/build-host.test.ts:36 的注释）。
-    for (const subpath of ["lib/http", "lib/locale", "lib/record", "lib/errors"]) {
+    // 子路径：external 判据必须按「包名段」匹配，字符串项精确匹配不到 `/lib/record` 这种子路径。
+    // 本条由"只查包名前缀"升级为逐个列名——前缀断言会被任意一条 shared 子路径满足，
+    // 看不见 lib/record 哪天被内联（该批评见 zvec-grep 的 test/build-host.test.ts 注释）。
+    for (const subpath of ["lib/locale", "lib/record", "lib/errors"]) {
       assert.ok(
         text.includes(`from "@jayyuen66/dsh-plugin-shared/${subpath}"`),
         `shared/${subpath} 必须留在产物里（内联 = shared 单例被复制）`,
@@ -94,7 +94,7 @@ describe("dir-prep-organize host 构建", () => {
   });
 
   it("内置模板表不在 host.js 里，改由 templates.data.mjs 按需 import", async () => {
-    // 这条锁的是「按需」本身。表有 85 条、生成物约 640 KB 源码，一旦被静态导入打回
+    // 这条锁的是「按需」本身。整张精选表约 640 KB 源码，一旦被静态导入打回
     // host.js，宿主载入插件就替所有用户把内存占了——而它只有一个消费者，且客户端本来
     // 就是首次打开下拉才拉。所以两头都必须按需。
     const artifacts = await buildHost();
@@ -150,15 +150,13 @@ describe("dir-prep-organize host 构建", () => {
   });
 });
 
-describe("闸门的外部化面（shared/lib/trust）", () => {
-  it("lib/trust 子路径保持裸说明符，且 guardTrust 的实现未被内联", async () => {
-    // 这些包原先只钉了 http/project-key/record/jsonl 几枚子路径，`lib/trust` 是新增的第四个坑位：
-    // external 的字符串项是精确匹配，子路径一旦漏掉就把整份判据复制进本包产物（判据分叉的起点）。
+describe("读面基座的外部化面（dsh-typert-protocol）", () => {
+  it("remote 标记与服务基类保持裸说明符，不被复制进本包产物", async () => {
     const out = artifactText(await buildHost(), "host.js");
     assert.ok(
-      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/trust"'),
-      "shared/trust 必须外部化",
+      out.includes('from "@deepseek-ai/dsh-typert-protocol"'),
+      "dsh-typert-protocol 必须外部化",
     );
-    assert.ok(!/^function guardTrust\(/mu.test(out), "产物不得内联 guardTrust 的函数体");
+    assert.ok(!/^class TypertRemoteService\b/mu.test(out), "产物不得内联 TypertRemoteService");
   });
 });

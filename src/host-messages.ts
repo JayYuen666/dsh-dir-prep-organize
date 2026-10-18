@@ -105,8 +105,6 @@ export interface HostMessages {
   readonly noModelSelected: string;
   /** 模型返回空白。 */
   readonly emptyOrganizeResult: string;
-  /** 请求体读到了但不是 JSON。 */
-  readonly invalidJsonBody: string;
   /** fs 服务未就绪。 */
   readonly fsUnavailable: string;
   /** sessions 里查不到该会话。 */
@@ -172,7 +170,6 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     emptyPrompt: "用户要求为空，无法整理",
     noModelSelected: "当前无可用模型选择",
     emptyOrganizeResult: "模型整理结果为空",
-    invalidJsonBody: "请求体不是合法 JSON",
     fsUnavailable: "fs 服务不可用",
     cwdUnknown: "无法确定会话 cwd（sessionId 缺失或会话不存在）",
     modelServiceUnavailable: "agentDefaultModel 服务不可用",
@@ -238,7 +235,6 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     emptyPrompt: "The request is empty: nothing to refine",
     noModelSelected: "No model selection is available",
     emptyOrganizeResult: "The model returned an empty result",
-    invalidJsonBody: "Request body is not valid JSON",
     fsUnavailable: "fs service unavailable",
     cwdUnknown: "Cannot determine the session cwd (sessionId missing or session unknown)",
     modelServiceUnavailable: "agentDefaultModel service unavailable",

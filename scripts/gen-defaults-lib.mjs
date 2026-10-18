@@ -7,7 +7,7 @@
 // 与 src/templates.ts 的单源约束：以下 parseFrontmatterFields / stripPairQuotes /
 // parseAgentFrontmatter / condenseRoleBody / groupLabelOf / AGENT_DIR_GROUP_LABELS /
 // CURATED_SLUGS 都是 templates.ts 的镜像实现/镜像常量表。test/gen-defaults.test.ts
-// 会全量比对（85 条逐字段 + 两张表的键序 + 生成文件字节级一致），漂移即红。
+// 会全量比对（全表逐字段 + 两张表的键序 + 生成文件字节级一致），漂移即红。
 
 /// <reference types="node" />
 import { execFileSync } from "node:child_process";
@@ -326,7 +326,7 @@ export async function scanAgentFiles() {
 }
 
 /** 精选 slug 列表 → 模板条目（顺序即展示顺序）。
- *  读源文件并行发起（85 个本地文件之间无依赖，串行只是把 IO 延迟累加）：Promise.all
+ *  读源文件并行发起（各本地文件之间无依赖，串行只是把 IO 延迟累加）：Promise.all
  *  保序 ⇒ texts 与 CURATED_SLUGS 同位，下面的解析/提炼/校验循环因此与串行版逐条一致，
  *  包括「第一个坏 slug 先报错」的 CLI 语义。唯一差别：若某文件**读**失败（缺权限等），
  *  并行下报出的可能是任一坏文件——缺失 slug 早已由调用方挡掉，不影响产物。
@@ -417,9 +417,9 @@ function runOxfmt(args) {
  *
  * 为什么这一步属于生成器而不是"人记得跑一次格式化"：`fmt:check: oxfmt --check src test scripts`
  * 把 `src` 下两份 `.generated.ts` 也算在排版面上（根 `~/.dsh/oxfmt.config.ts` 只排 markdown 一类），
- * 而 test/gen-defaults.test.ts 第 4 条锁的是"磁盘生成物 = 生成器输出"的字节级相等。
+ * 而 test/gen-defaults.test.ts 里那条"磁盘生成物 = 生成器输出"锁的是字节级相等。
  * 两边不共享同一套规范形态时，只能二选一红：实测在仓根跑 `oxfmt .` 就把
- * `default-templates.generated.ts` 改 out 了 758 行，字节锁当场红。
+ * `default-templates.generated.ts` 整片重排，字节锁当场红。
  * 排版因此并入生成链路（排除面一条都没加）。
  *
  * 临时文件落在 `tmpdir()`：本仓的 oxfmt 配置只提供 `ignorePatterns`、不提供任何排版选项，

@@ -1,5 +1,5 @@
 // dir-prep-organize host 半单测（vitest，node 环境）。
-// 契约（webServer 重写后；不截断）：
+// 契约（Typert Remote 迁移后；不截断）：
 //   collectDirContext(fs, cwd)  注入假 fs 服务：目录枚举+关键文件全文摘要+错误降级
 //   runOrganize(llm, input)     注入假 llm stream：text-delta 聚合 / 非 stop 终态报错
 //   buildOrganizeSystem         system 提示含 cwd 与目录摘要
@@ -75,7 +75,7 @@ const FAKE_VERSION = "fake";
 const MEM_VERSION = "mem";
 
 async function collectDirContext(
-  // contains 现在是 collectDirContext 的必读取面（软链逃逸由后端复判，见 host.ts:737-746），
+  // contains 是 collectDirContext 的必读取面（软链逃逸由后端复判，见 host.ts 的 contains 复判段），
   // 这一层薄包装的签名要跟着官方 Pick 走，否则「测试注入的替身没有 contains」也能过。
   fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   cwd: string | undefined,
@@ -701,6 +701,8 @@ describe("importPathError", () => {
   it("绝 `..` / `.` 段（归一前拦截）→ 拒绝", () => {
     assert.match(importPathError("/a/b/../c.md", undefined, []) ?? "", /非法段/u);
     assert.match(importPathError("/a/./b.md", undefined, []) ?? "", /非法段/u);
+    // 反斜杠形状只按 `/` 拆会把整条当一段：win32 的 `..\` 与 `\` 分隔都必须命中。
+    assert.match(importPathError(String.raw`a\..\b.md`, SESSION_CWD, []) ?? "", /非法段/u);
   });
 
   it("隐藏段（.ssh / .hidden）在允许根以内 → 仍拒绝", () => {
@@ -806,7 +808,7 @@ describe("0.1.7 隐式注册验收", () => {
   /** 设置卡该能编辑的字段：模板列表 + 导入允许根，一个都不该漏。 */
   // organizeTimeoutMs volatile 上卡（客户端 fetch 超时同源位）；另两位部署值非 volatile。
   const EDITABLE = ["importAllowRoots", "organizeTimeoutMs", "templates"];
-  const NON_VOLATILE = ["importBodyMaxBytes", "maxSnippetBytes", "readConcurrency"];
+  const NON_VOLATILE = ["maxSnippetBytes", "readConcurrency"];
 
   it("volatileForm(Config) 的字段集恰为三项可编辑字段（含 organizeTimeoutMs）", () => {
     const schema = Config as unknown as SchemaNode;
@@ -816,7 +818,7 @@ describe("0.1.7 隐式注册验收", () => {
     assert.deepEqual(
       Object.keys(schema.dict ?? {}).toSorted(),
       [...EDITABLE, ...NON_VOLATILE].toSorted(),
-      "schema 字段全集 = 投影可编辑集 + 非 volatile 部署值（importBodyMaxBytes/maxSnippetBytes/readConcurrency）。" +
+      "schema 字段全集 = 投影可编辑集 + 非 volatile 部署值（maxSnippetBytes/readConcurrency）。" +
         "漏标 .volatile() 会让那一项从设置卡上静默消失，新增字段要同步这两张清单",
     );
   });
@@ -1042,8 +1044,8 @@ describe("collectAgentTemplates", () => {
       result.entries.some((entry) => entry.group === "工程"),
       "含工程分组",
     );
-    // 审计修复：只扫两层 → 第三层（game-development/<engine>/*.md、integrations/*
-    // /README.md 共 40 个）以前静默丢失，现在必须计数回报且 truncated 反映事实。
+    // 只扫两层 → 第三层（game-development/<engine>/*.md、integrations/*/README.md
+    // 一类）会静默丢失，所以这里必须计数回报且 truncated 反映事实。
     assert.equal(result.truncated, true, "内置库确有更深层未扫描");
     assert.ok(result.skipped.deeper > 0, `deeper 计数 > 0，实际 ${String(result.skipped.deeper)}`);
   });
@@ -1379,6 +1381,23 @@ describe("collectAgentTemplates 分类计数", () => {
       result.entries.map((entry) => entry.id).toSorted(),
       ["x", "x-2"],
       "第二个同名条目按 collided.size+1 改写",
+    );
+  });
+
+  it("改写候选恰好被占用时仍须推进（不得无限循环）", async () => {
+    // 读出顺序：根层按名排序 a-3 → a，子层最后一份 a。此时 collided.size=2，
+    // 旧实现候选恒为 a-3（已占用），while 永不退出、同步阻塞宿主事件循环。
+    const fs = memFs({
+      "/roles/a-3.md": roleDoc("甲"),
+      "/roles/a.md": roleDoc("乙"),
+      "/roles/sub/a.md": roleDoc("丙"),
+    });
+    const result = await collectAgentTemplates(fs, "/roles", undefined, {
+      allowRoots: [IMPORT_ROLES_ROOT],
+    });
+    assert.deepEqual(
+      result.entries.map((entry) => entry.id),
+      ["a-3", "a", "a-4"],
     );
   });
 
@@ -1718,7 +1737,6 @@ describe("sanitizeLimits", () => {
     organizeTimeoutMs: 120_000,
     maxSnippetBytes: 262_144,
     readConcurrency: 8,
-    importBodyMaxBytes: 8 * 1024 * 1024,
   };
 
   it("readConcurrency 夹进 [1,64]（0 会让宿主进程被 OOM 杀掉）", () => {
@@ -1748,9 +1766,8 @@ describe("sanitizeLimits", () => {
   });
 
   it("另两项原样透传：0 有确定且已记账的行为，属用户显式意图", () => {
-    const zeroed = sanitizeLimits({ ...base, maxSnippetBytes: 0, importBodyMaxBytes: 0 });
+    const zeroed = sanitizeLimits({ ...base, maxSnippetBytes: 0 });
     assert.equal(zeroed.maxSnippetBytes, 0);
-    assert.equal(zeroed.importBodyMaxBytes, 0);
   });
 });
 

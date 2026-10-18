@@ -549,7 +549,16 @@ const CODE_SKIP_DIRS = new Set(["node_modules", "coverage", "_env", "dist", ".gi
  * 每条都必须是**可复查的事实**，不是习惯。加一条就等于承认这道门在这一处不成立，所以
  * 宁可留空也要先按实证办法（摘掉→跑 typecheck+test）试一遍。
  */
-const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {};
+const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {
+  "@deepseek-ai/cordis-plugin-include":
+    "dsh-config-editor 的必填 peer（settings-boot 起真 Loader 时由它 import）：本仓 autoInstallPeers 为 false，peer 不会被自动装，缺它即整个套件在 import 阶段失败。",
+  "@deepseek-ai/dsh-scope":
+    "dsh-session 的必填 peer：本仓 autoInstallPeers 为 false，pnpm 不替我们装 peer，集成层起真 SessionStore 时缺它即 import 失败（roundtrip）。",
+  "@deepseek-ai/dsh-home-paths":
+    "dsh-app-boot 的必填 peer：同上，autoInstallPeers 为 false 时不会被自动装；settings-boot 用真 Loader 启动时缺它即 import 失败。",
+  "@deepseek-ai/dsh-launch-environment":
+    "dsh-app-boot 的必填 peer：同上；补上 home-paths 之后紧接着缺的就是它，app-boot 一被 import 就要。",
+};
 
 /**
  * 去掉整行注释与块注释：注释里的包名不算引用面。
@@ -567,7 +576,7 @@ function stripComments(text: string): string {
  * 扫一棵目录里**非注释文本**里出现的引号串，收成包名。
  *
  * 为什么按引号串而不是只按 `from "…"`：构建脚本的 externalNames 是一张裸字符串表
- * （build-host.mjs:47），那同样是「代码按名字引用了这枚包」。为什么先去注释：本仓注释里
+ * （build-host.mjs 里那张），那同样是「代码按名字引用了这枚包」。为什么先去注释：本仓注释里
  * 大量讨论宿主包名（`peer 面`、`第二份实例` 的成因就写在注释里），留着注释等于让门禁自己
  * 判定自己——注释提一句就算引用，那道门就空转了。
  *
@@ -626,9 +635,13 @@ describe("声明产物的可解析性（升级防线）", () => {
     // 这一条是「为填 peer 而加依赖」的防线。事故形态很具体：给集成层装真宿主时，有人把
     // `@deepseek-ai/dsh-app-boot` 的 5 枚 peer（cordis-plugin-group / cordis-plugin-include /
     // dsh-home-paths / dsh-launch-environment / dsh-system-prompt）逐一写进 devDependencies，
-    // 而 pnpm 的 auto-install-peers 本就会装它们，仓库里没有任何文件按名字引用过它们一次。
-    // 后果不在发布物（宿主包一律不进 dependencies，见上面那条门禁），而在依赖树：多装 5 枚
-    // 真实目录，升级时人人都得替它们做版本决定，而没人读它们。
+    // 仓库里没有任何文件按名字引用过它们一次。后果不在发布物（宿主包一律不进 dependencies，
+    // 见上面那条门禁），而在依赖树：多装 5 枚真实目录，升级时人人都得替它们做版本决定。
+    //
+    // 那条判据的原始前提是「pnpm 的 auto-install-peers 本就会装 peer」。本仓 pnpm-workspace.yaml
+    // 里 autoInstallPeers 是 false，前提不成立：peer 一枚都不会被自动装。伞根那次安装走的是 pnpm
+    // 默认值（true），所以 dev 态 check 一直绿、而仓自己的 CI 装完就缺这几枚。例外表里那几条因此
+    // 不是「为填 peer 而加」的重演，是 autoInstallPeers: false 下必须由本仓自己声明的 peer 闭包。
     // 判据取两处并集：代码里的引号串（import 说明符 + 构建脚本的 external 名单），以及
     // types/ 点名的裸说明符（type-only 面，见下面那条 peer 门禁的同一份读法）。
     // 剩下的缺口是「有引用但引用面是死代码」——那归覆盖率与 lint 管，不在本门禁扩面。

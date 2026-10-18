@@ -1,18 +1,18 @@
 // dir-prep-organize host 半：对话输入框"整理"按钮的后端。
 //
-// 架构（全量源码复核后重写；此前 harness.handle/host.call 方案作废——
-// 那是动态插件的闭包 RPC，loader 行插件的 Client 半没有该通道）：
-//   Client 半（src/client-entry.ts）→ fetch('/_dsh/dir-prep/*') → 本文件
-//   注册的 webServer 路由（session-rescue / memory-insight 同款已验证模式）。
+// 架构：Client 半（src/client-entry.ts）经官方 Typert Remote 的 `dirPrepOrganize`
+// 命名空间调用本文件的五个方法。认证、Host/DNS 重绑定/Origin 判据与 body 上限由
+// 宿主 `/api` 网关承担，本包不注册 HTTP 路由。
 //
-// 三个端点：
-//   GET  /_dsh/dir-prep/context?sessionId=…   目录上下文（文件名+大小+关键文件摘要）
-//   GET  /_dsh/dir-prep/model?sessionId=…      当前默认模型（provider/model/effort）
-//   POST /_dsh/dir-prep/organize               用该模型整理优化草稿（LLM 流式聚合）
-//   POST /_dsh/dir-prep/import                 角色 .md 导入 → 模板条目（只读，见下方导入节）
+// 五个方法：
+//   defaults()                                  内置精选模板表（按需载入）
+//   context({ sessionId })                      目录上下文（文件名+大小+关键文件摘要）
+//   model({ sessionId })                        当前默认模型（provider/model/effort）
+//   organize({ sessionId, prompt, … })          用该模型整理优化草稿（LLM 流式聚合）
+//   importTemplates({ path, sessionId })        角色 .md 导入 → 模板条目（只读，见导入节）
 //
 // 文案双语：本文件产出的固定文案（①「整理」的 system prompt，面向模型；②会回显到设置卡
-// 与整理按钮的导入/端点回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
+// 与整理按钮的导入/读面回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
 // 的偏好现读取表（见 apply 的 localeMessages）；纯函数一律以字典为**入参**、不读设置。
 // console.* 日志与注释不随界面语言切换，故留中文；agents/ 角色库与
 // src/default-templates.generated.ts 是用户可编辑的数据，不做机翻。
@@ -22,7 +22,7 @@
 // 目录；越界回 403 + {ok:false,error}（错误文本点名允许区并回显解析后的路径），
 // path 字段非字符串/纯空白回 400，不再静默降级成"导入内置全部"。
 //
-// 数据源（全部 ctx.get 可选读取，缺服务时端点报 error 而非炸插件）：
+// 数据源（全部 ctx.get 可选读取，缺服务时读面报 error 而非炸插件）：
 //   sessions.get(sessionId).header.cwd   会话 cwd（目录源，用户拍板）
 //   fs.resolve/listDir/readText          目录枚举与关键文件首段
 //   agentDefaultModel.currentSelection   当前默认模型（composer 选择落此处）
@@ -31,24 +31,22 @@
 // 目录粒度：文件名+大小+关键文本文件全文。条目数不设上限（上下文完整性优先），
 // 但**单个文件按字节上限整份跳过**：readWholeText 在 harness 侧无上限，一个顶层
 // 巨型 .md/.json 就能撑爆响应并把半份内容当"全量摘要"回投，宁可少喂一条并如实
-// 计数，也不静默拖垮端点。摘要/导入读取一律走有界并发（fd 打满时 EMFILE 会让
+// 计数，也不静默拖垮读面。摘要/导入读取一律走有界并发（fd 打满时 EMFILE 会让
 // 片段被静默丢掉而仍报 ok:true）。
-// 失败语义（用户拍板）：端点返回 {ok:false,error}，Client 隐藏面板并显示错误。
-// 超限/坏流的 HTTP 语义（审计修复）：读 body 与 JSON.parse 分开处理——
-// 413（body 超字节上限）/ 400（流中断）/ 400（非法 JSON），不再把超限糊成
-// "请求体不是合法 JSON" 的 200 回执。body 读取收敛到 shared/lib/http（本包原
-// 自研 readBody 已删）。
+// 失败语义（用户拍板）：读面返回 {ok:false,error}，Client 隐藏面板并显示错误。
+// 传输层已交给官方 Typert Remote：认证、body 上限与方法分派由宿主 /api 网关负责，
+// 本文件不再解析请求体，也没有自建的信任闸门或 CSRF 令牌。
 //
 // 模板设置（0.1.7 起为**隐式注册**）
 // 宿主移除了 settings.register/get/installSection：命名空间 = 本包 cordis.patch.yml 里的
 // 裸条目 id（dir-prep-organize），可编辑字段 = 下面 Config 上标了 `.volatile()` 的字段。
 // 一个 volatile 字段都没有的条目会被宿主 describe() 整条跳过
-// （packages/settings/settings/src/index.ts:308-309），写入则抛 `has no volatile fields`（:386），
-// 所以「哪些项出现在设置卡上」现在是 schema 自己的事（test/host.test.ts 用宿主同一判据回看）。
+// （packages/settings/settings/src/index.ts），写入则抛 `has no volatile fields`，
+// 所以「哪些项出现在设置卡上」由 schema 自己决定（test/host.test.ts 用宿主同一判据回看）。
 // 旧 register 的 `base` 底座也随之取消，逐字段落到 `.default(...)`（见 configSchema 上方注释）：
 // importAllowRoots 落 `.default([])`，而 templates **不给默认**——src/default-templates.generated.ts
 // 那份精选集（scripts/gen-defaults.mjs 从 agents/ 角色库生成）由 **client 半**持有并作回落，
-// host 半不再读它，也不再有把 289 KB 列表当底座交进 settings 的那一步。
+// host 半不再读它，也没有把整份精选集当底座交进 settings 的那一步。
 // client（设置卡/下拉）直读本条目的配置表单 `ctx.configForms.get(entryId)`（0.1.7 起取代
 // 已随宿主移除的 settingsScope），不经 HTTP、零 LLM。数组 set 语义
 // 已按 dsh-settings 源码取证：applyPathOp 字段级整体替换 + cloneJsonShaped
@@ -58,8 +56,6 @@
 // 过 Config schema 之后按 volatile 引用交进 apply，取当前值一律 config.<field>.get()——
 // 「存量配置坏一段」在装载期就抛、由宿主报装配失败，插件侧不再有可兜的那条 try/catch。
 
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import Schema from "@deepseek-ai/schemastery";
 import type { Context, Volatile } from "@deepseek-ai/cordis";
@@ -74,21 +70,18 @@ import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-mod
 // session-rescue 的 `brandString` 同一处、同一理由。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { FsDirEntry, FsTarget, FileSystem } from "@deepseek-ai/dsh-fs";
-import type { WebServer } from "@deepseek-ai/dsh-host-webserver";
 import type {
   FinishReason,
   GenerateOptions,
   LlmRuntime,
   Message,
+  ReasoningEffortId,
   RequestUserInput,
   StreamChunk,
 } from "@deepseek-ai/dsh-llm";
 import type { SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-import { guardBody, queryParam, sendJson } from "@jayyuen66/dsh-plugin-shared/lib/http";
-// 信任闸门：四条路由 handler 的第一条语句。`isNonLoopbackBindHost` 是它的绑定地址判据，
-// 与本文件的路由注册同属一处，见下面 servingNonLoopback 的取法。
-import { guardTrust, isNonLoopbackBindHost } from "@jayyuen66/dsh-plugin-shared/lib/trust";
+import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 字典本身在 src/host-messages.ts（纯数据），本文件只负责取表与注入。
 import {
@@ -104,15 +97,15 @@ import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
 /** 本包送进 `llm.stream({ messages })` 的整理请求帧是 **request-only 输入**：它从不落
- *  任何持久消息位（`runOrganize` 只回 `{ content }`，路由也不把帧身份回投给卡片），所以
+ *  任何持久消息位（`runOrganize` 只回 `{ content }`，读面也不把帧身份回投给卡片），所以
  *  按 0.1.7 它既不需要 `id` 也不带 `source`——证据三条：
- *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts:468-473` 的 `RequestUserInput`
+ *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts` 的 `RequestUserInput`
  *     把两面都标成 `?: never`（`readonly id?: never` / `readonly source?: never`），
  *     `GenerateOptions.messages` 收的是 `RequestMessage[] = Message | RequestUserInput`
- *     （同文件 :475，字段注记 "a hand-built one-shot may include identity-free user
+ *     （`GenerateOptions` 的字段注记 "a hand-built one-shot may include identity-free user
  *     inputs"）；
  *  2. 持久那半边 `Message` 要的 `source.kind` 必须是**已声明**进 `MessageSourceMap` 的
- *     kind（installed `dsh-llm/lib/types/message.d.ts:101-133`），本包的
+ *     kind（installed `dsh-llm/lib/types/message.d.ts`），本包的
  *     `plugin:dir-prep-organize` 不在其中——旧代码同时带上 `id` 与该 kind，造的正是宿主
  *     没有的第三种形状；
  *  3. 宿主的持久化归属策略是「request-only 输入不需要持久身份」：把一次性提示构造成
@@ -122,12 +115,7 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
  *  故旧的 `ORGANIZE_SOURCE_KIND` 常量（连同只被它和帧 id 用到的 `PLUGIN_NAME`）一并撤下。
  *  本包没有读回侧需要它：`extractRecentTurns` 只认真人 `kind === 'user'` 与模型
  *  `kind === 'model'`，从不按本包 kind 去重或断链，所以删除它不牵动任何 dedupe 配对。
- *  同款 request-only 先例：harness `packages/compaction/compaction-basic/src/summarizer.ts:146-150`。 */
-const CONTEXT_PATH = "/_dsh/dir-prep/context";
-const MODEL_PATH = "/_dsh/dir-prep/model";
-const ORGANIZE_PATH = "/_dsh/dir-prep/organize";
-const IMPORT_PATH = "/_dsh/dir-prep/import";
-const DEFAULTS_PATH = "/_dsh/dir-prep/default-templates";
+ *  同款 request-only 先例：harness `packages/compaction/compaction-basic/src/summarizer.ts`。 */
 /** 插件自带角色库目录（agency-agents-zh 部门目录移入）。导入路径留空 = 全量导入此目录。 */
 const AGENTS_DIR = path.join(import.meta.dirname, "agents");
 
@@ -151,7 +139,7 @@ let defaultTemplatesPromise: Promise<readonly TemplateEntry[]> | undefined;
 /**
  * 产物导出值的守卫：只认「是数组」这一条。
  *
- * 元素级校验刻意不在这一层做——端点把这张表原样 JSON 序列化下发，渲染侧的兜底在 client
+ * 元素级校验刻意不在这一层做——读面把这张表原样 JSON 序列化下发，渲染侧的兜底在 client
  * 半；在这里逐条断言字段只会让守卫和生成脚本的字段集耦在一起，改一个字段要动两处。
  * `Array.isArray` 本身会把 unknown 收窄成 `any[]`，经类型谓词再收一次，返回值才不是
  * 不安全返回（no-unsafe-return）。
@@ -186,10 +174,10 @@ async function importDefaultTemplates(): Promise<readonly TemplateEntry[]> {
 }
 
 /**
- * 内置精选模板表（85 条）：按需载入，永不静态导入。
+ * 内置精选模板表：按需载入，永不静态导入。
  *
- * 静态导入会让这 85 条模板随宿主载入插件一起进内存，而它们只有一个消费者——default-templates
- * 端点，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一口径。
+ * 静态导入会让整张精选表随宿主载入插件一起进内存，而它们只有一个消费者——default-templates
+ * 读面，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一口径。
  *
  * @returns 内置精选模板表
  */
@@ -236,10 +224,6 @@ const SECRET_PATTERN =
 /** LLM 整理超时。 */
 /** schema .default() 的单源（host 消费走 config 字段，不再直读常量）。 */
 const ORGANIZE_TIMEOUT_MS = 120_000;
-/** organize/import POST body 物理上限的 schema .default()（内存防爆纵深防御，非功能
- *  截断：两条路由提交的都是整理草稿与模板产物，不是大文件本体；超大输入产物由模型
- *  context 报错反馈用户自行处理）。部署间需要更宽的走 `importBodyMaxBytes` 配置字段。 */
-const DEFAULT_IMPORT_BODY_MAX_BYTES = 8 * 1024 * 1024;
 /** 单个关键文件的摘要字节上限。harness 的 readWholeText 无上限，超限文件整份
  *  跳过（不截半份——半份摘要会以"全量"的名义喂给模型，比没有更误导），
  *  并计入 skipped.tooLarge 回报。 */
@@ -247,13 +231,12 @@ const MAX_SNIPPET_BYTES = 256 * 1024;
 /** 单次整理带进模型的全部摘要的**总量**上限。
  *
  *  为什么需要总量而单文件上限不够：`maxSnippetBytes` 只管每个文件，而条目数不设上界
- *  （用户拍板）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，那条
- *  POST 的 body 上限是 8 MiB——实测 80 个 200 KiB 的文件就能造出 15.6 MiB，结果是
- *  context 端点成功、UI 正常列出文件树，用户点「整理」才撞 413，且错误是英文
- *  `request body too large`。这里给总量封顶，让「context 成功」不再意味着
- *  「organize 必然失败」。留足余量：JSON 转义与 client 侧的拼接还会再放大一截。 */
+ *  （用户拍板）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，请求
+ *  仍要过宿主 /api 网关的请求体上限，摘要一多就顶得过它，结果是 context 读面成功、
+ *  UI 正常列出文件树，用户点「整理」才在网关处失败。这里给总量封顶，让「context 成功」
+ *  不再意味着「organize 必然失败」。留足余量：JSON 转义与 client 侧的拼接还会再放大一截。 */
 const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
-/** 文件读取并发上限：Promise.all 一次铺开会在导入内置库（266 个文件）时打满
+/** 文件读取并发上限：Promise.all 一次铺开会在导入内置角色库（整棵 agents/）时打满
  *  fd，EMFILE 抛错被单文件 catch 吞掉 → 条目静默丢失而仍报 ok:true。 */
 const READ_CONCURRENCY = 8;
 /** `readConcurrency` 的上界。再往上只是更快撞上 fd 上限——而那正是这个字段存在的
@@ -283,14 +266,11 @@ export function clampInt(value: number, min: number, max: number, fallback: numb
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-/** organize 回填的 CSRF 头名（与 client-entry 侧一致）。 */
-const CSRF_HEADER = "x-dir-prep-csrf";
-
 // ── host 服务面（全部绑官方声明，不再本地镜像）────────────────────────────
 // 这一族此前是「按源码逐字段核对的最小 interface」——本包当时不声明 @deepseek-ai/dsh-fs /
 // dsh-llm / dsh-session 依赖，只能手抄。手抄的代价在这批里最重的一处是 `FsTarget.targetKey`：
 // 官方它是品牌串 `FsTargetKey = Branded<'FsTargetKey'>`（installed
-// @deepseek-ai/dsh-fs/lib/types/types.d.ts:14 与 :52-60），抄成裸 `string` 之后品牌信息在
+// @deepseek-ai/dsh-fs/lib/types/types.d.ts），抄成裸 `string` 之后品牌信息在
 // 整条 stream/摘要链上永久丢失（编译器不再拦得住"拿错 targetKey"）。现在本包声明这些官方包为
 // devDependency（type-only，运行时仍由 ctx 注入），每个服务面都改成官方成员的 `Pick` 投影：
 // 入参、返回、可选性、品牌一律由官方交出，上游改名/加必填位即在此编译不过。
@@ -301,13 +281,13 @@ const CSRF_HEADER = "x-dir-prep-csrf";
 export type { FsDirEntry, FsTarget } from "@deepseek-ai/dsh-fs";
 
 /**
- * 官方 `FileSystem`（installed @deepseek-ai/dsh-fs/lib/types/index.d.ts:61，cordis `Service`
- * 子类 → 名义比较）的方法面投影：本包用 `resolve`(:94) / `listDir`(:208) / `readText`(:162)
- * / `contains`(:173) / `stat`(:181)。旧镜像漏抄了官方那几位的可选 `signal?: AbortSignal`
+ * 官方 `FileSystem`（installed @deepseek-ai/dsh-fs/lib/types/index.d.ts，cordis `Service`
+ * 子类 → 名义比较）的方法面投影：本包用 `resolve` / `listDir` / `readText`
+ * / `contains` / `stat`。旧镜像漏抄了官方那几位的可选 `signal?: AbortSignal`
  * 形参（抄本里没有的形参在 TS 里是"少收一个参数"，调用点不会报错，但真实宿主多一档取消
  * 语义）；投影之后它回到官方形状。
  *
- * `stat`（installed index.d.ts:181-187，返回 `{version,type,size?}`）是**单文件导入**那条
+ * `stat`（installed `@deepseek-ai/dsh-fs/lib/types/index.d.ts`，返回 `{version,type,size?}`）是**单文件导入**那条
  * 路径唯一的字节上限来源：目录分支的每个候选都自带 `listDir` 给的 `size`，而单文件导入
  * 只有一个 `resolve` 出来的 target，不 stat 就无从判断该不该读——而官方 `readText`
  * 自述"读整份文本"、**没有任何上限**。缺了它，一个几 MB 的 .md 就能把整份读进宿主内存。
@@ -316,18 +296,18 @@ export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "c
 
 /**
  * 本包从会话消息史的读取面 = **官方 `Message` 的键名投影**（installed
- * @deepseek-ai/dsh-llm/lib/types/message.d.ts:124-133 `MessageBase` 与各变体的 `role`），
+ * @deepseek-ai/dsh-llm/lib/types/message.d.ts `MessageBase` 与各变体的 `role`），
  * 三位各自取到"本包能凭运行时守卫负责的那一档"：
  * - `role` 就此是官方 `Message['role']` 的字面量联合（上游加/改角色即在此编译不过，
  *   下面 `role === "user" || role === "assistant"` 的判定跟着动）。
- * - `content` 官方是 `readonly ContentBlock[]`（message.d.ts:128），但本包的职责是
+ * - `content` 官方是 `readonly ContentBlock[]`（message.d.ts），但本包的职责是
  *   **逐块自证**：只认 `type==='text'` 且 `text` 是字符串的块（`isTextBlock`），其余
  *   （tool-call / reasoning / image / 宿主新版本才有的块）一律跳过。这里留 `unknown`
  *   不是"抹平官方形状"，而是本包**不假设交付**：`Array.isArray(msg.content)` 那道判据
  *   断言的正是"交来的可能根本不是数组"，test/host.test.ts 的「坏形状」用例钉的就是
  *   非数组 content（字符串）与数组里的裸字符串/null 项。把值域收成官方联合等于宣称
  *   "块形状可信"，那几条用例便无法表达，而为了过类型删用例是本仓红线。
- * - `source.kind` 官方是 `MessageSourceMap` 的值联合（installed message.d.ts:101-108 只有
+ * - `source.kind` 官方是 `MessageSourceMap` 的值联合（installed message.d.ts 只有
  *   `user`/`model`/`tool`/`system-prompt`，宿主安装里另有 `model-selection` 一枚由
  *   dsh-agent 自己 merge）。**本包要读的恰是这张表里没有的 kind**：真人过滤之外的
  *   `agent-instructions` / `skill-catalog` / `memory-recall-step` / `plugin:<name>` 全是
@@ -345,10 +325,10 @@ export interface DerivedMessageView {
 
 /**
  * 本包读到的会话面 = 官方 `Session` 两位成员的**边界投影**（installed
- * @deepseek-ai/dsh-session/lib/types/index.d.ts：`readonly header: SessionHeader` :150、
- * `deriveMessages(): Message[]` :347）。
+ * @deepseek-ai/dsh-session/lib/types/index.d.ts：`readonly header: SessionHeader`、
+ * `deriveMessages(): Message[]`）。
  * 键名一律借自官方（`header` 借 `Session`、`cwd` 借 `SessionHeader`，installed
- * @deepseek-ai/dsh-session 域内 types.d.ts:69 `readonly cwd?: string`），值域收成"本包真的读的那位
+ * @deepseek-ai/dsh-session 域内 types.d.ts `readonly cwd?: string`），值域收成"本包真的读的那位
  * + 可缺失"：官方把 header/deriveMessages 记成必选成员，但那句承诺说的是宿主自己 `new`
  * 出来的 Session；跨进程递来的会话是否具备某位只能运行时判（见 `extractSessionConversation`
  * 的 `typeof session.deriveMessages !== "function"` 与 `cwdOfSession` 的 `typeof === "string"`
@@ -361,10 +341,10 @@ export interface SessionLike {
 
 /**
  * `Context.sessions`（官方 `SessionStore`，installed @deepseek-ai/dsh-session/lib/types/
- * index.d.ts:26-28）的 `get` 一位（:491 `get(id: SessionId): Session | undefined`）在本包的
+ * index.d.ts）的 `get` 一位（`Sessions.get(id: SessionId)`）在本包的
  * 读法：入参就此是官方品牌的 `SessionId`（边界上递来的是裸 string，构造口只有文件头那枚
  * `brandString<SessionId>`），返回值域换成上面的 `SessionLike` 投影——直接取官方返回的整枚
- * `Session` 类会把名义类一路渗进本包（`private log`/`surfaceManager`，:137-139），那三道运行时
+ * `Session` 类会把名义类一路渗进本包（`private log`/`surfaceManager`），那三道运行时
  * 守卫当场在编译器眼里变成死代码，而它们挡的是真实输入。返回 `undefined` 与官方一致。
  * 口径同 danger-guard/host.ts 的 `GuardExecution`（借键名、值域换投影）。
  */
@@ -379,15 +359,21 @@ const sessionIdOf = (value: string): SessionId => brandString<SessionId>(value);
  *  键不同名即不同型，宿主真值塞不进来、任何带该属性的字符串反倒能通过，注释里那句
  *  「转换点为 0」并不成立。取官方类型后模型选择与 stream 入参两侧共用同一真值。 */
 export type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-/** 默认模型选择直接取官方成员的返回形状（`AgentDefaultModelConfig.currentSelection()`
- *  的返回类型，installed @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:42）。
- *  旧镜像自己抄了 `{ provider, model, reasoningEffort? }` 三位——其中 `reasoningEffort` 是
- *  `ReasoningEffortId` 品牌（本文件上面已按官方 re-export），抄本一旦与官方漂开，
- *  品牌值塞不进 stream 入参就是静默丢字段。取 ReturnType 之后本包不再裁定它的形状。 */
-export type ModelSelection = ReturnType<AgentDefaultModelConfig["currentSelection"]>;
+/** 默认模型选择的三位形状：与官方 `ModelSelection`（`@deepseek-ai/dsh-agent` 的
+ *  model-selection.d.ts）同形。`reasoningEffort` 用官方真品牌 `ReasoningEffortId`（上面已按
+ *  dsh-llm 的 peer 面 re-export），品牌值塞不进 stream 入参的静默丢字段风险仍在类型面上。
+ *
+ *  为什么不直接 import/re-export 官方类型：那会在 `types/host.d.ts` 里留下裸说明符
+ *  `@deepseek-ai/dsh-agent`，按本仓门禁它只能落进 peer 表，而本包运行期并不 import 它——
+ *  为此扩一条 peer 是发布契约变更，归用户裁决；在此之前用结构等价类型。 */
+export interface ModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: ReasoningEffortId;
+}
 
-/** 官方 `AgentDefaultModelConfig`（同文件 :24，cordis `Service` 子类 → 名义比较）的
- *  方法面投影：本包只 `currentSelection()`（:41），不写回（`saveSelection` :48 归 composer）。 */
+/** 官方 `AgentDefaultModelConfig`（同文件，cordis `Service` 子类 → 名义比较）的
+ *  方法面投影：本包只 `currentSelection()`，不写回（`saveSelection` 归 composer）。 */
 export type AgentDefaultModel = Pick<AgentDefaultModelConfig, "currentSelection">;
 /** 文本块与 request-only user 输入均取官方声明：`TextBlock` 与 `RequestUserInput`
  *  （后者的 `content` 真值是 `UserMessage["content"]` 全块集，`id`/`source` 是
@@ -398,37 +384,20 @@ export type { RequestUserInput, TextBlock } from "@deepseek-ai/dsh-llm";
  *  裸 `string` + 全可选成员）。 */
 export type { FinishReason, StreamChunk } from "@deepseek-ai/dsh-llm";
 
-/** stream 入参：官方 `GenerateOptions` 的本包用到的子集。此前这里在 `Pick` 之外**另加**
- *  了一枚 `signal?: AbortSignal`，注释写着"本包附加的取消位"——官方其实**就有**这一位
- *  （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:519），另写一次等于凭空多出一个
- *  与官方并行的形状声明；现在连同 `signal` 一起 `Pick`，一处来源。 */
+/** stream 入参：官方 `GenerateOptions` 的本包用到的子集。在 `Pick` 之外**另加**
+ *  一枚 `signal?: AbortSignal` 是不行的——官方本来**就有**这一位
+ *  （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts），另写一次等于凭空多出一个
+ *  与官方并行的形状声明；连同 `signal` 一起 `Pick`，一处来源。 */
 export type LlmStreamOptions = Pick<
   GenerateOptions,
   "provider" | "model" | "reasoningEffort" | "messages" | "system" | "signal"
 >;
 
 /** 官方 `LlmRuntime`（`Context.llm` 的类型，installed @deepseek-ai/dsh-llm/lib/types/
- *  index.d.ts:29-31）的方法面投影：本包只 `stream`。旧镜像把返回抄成
+ *  index.d.ts）的方法面投影：本包只 `stream`。旧镜像把返回抄成
  *  `AsyncIterable<StreamChunk>`——官方那一位的真实返回域由成员自己交出，重述一次就多一处
  *  会漂移的判决（`stream` 在 installed index.d.ts 上有数枚同名成员，本包用的是 runtime 那枚）。 */
 export type LlmService = Pick<LlmRuntime, "stream">;
-/**
- * 官方 `WebServer`（@deepseek-ai/dsh-host-webserver，installed
- * `lib/types/index.d.ts:119` 起：cordis `Service` 子类 + 一整套 private 路由表字段
- * `exact`/`prefixes`/`upgrades`/`fallback`/`server`… → TS 对类按名义比，测试替身永远满足
- * 不了整类型）的**方法面投影**：本包只调 `register()`（installed `:157`），路由字面量因此
- * 受官方 `WebRoute`（installed `:34-40`）约束——旧镜像自己抄了一份 `WebRoute`，`kind` 的
- * `"exact" | "prefix"` 联合与 handler 的 `(IncomingMessage, ServerResponse)` 形参都是手抄
- * 的，现在全部由官方交出，disposer 亦按官方 `() => void` 收。
- * ⚠ 本包 `register` 之外仍镜像了 `registerFallback`（installed `:173`）吗：**没有**，类型上
- * 只剩 `register` 加一枚**可选**的 `host` 读位。但 `isWebServerService` 的**运行时**判据仍是
- * 两条（register + registerFallback），理由与旧注释一致：只看 `register` 就分不出 webServer
- * 与 settings，服务装错会静默通过。守卫入参是 `unknown`，故第二条判据不依赖类型里有这个成员。
- * `host` 写成 `Partial`：它是官方实例上的 getter（installed `:144`），本包只读它挑信任闸门的
- * 非回环档，读不到就按只绑回环的保守档走——所以这条投影不主张宿主一定给得出这一位。
- */
-type WebServerService = Pick<WebServer, "register"> & Partial<Pick<WebServer, "host">>;
-
 // ── 守卫（session-rescue 同款防御：typeof 收窄为 Record / 具名方法，不经 as 断言）────
 
 /** 服务形状守卫：value 是对象且具名成员是函数（绕开 `as Service` 断言）。 */
@@ -441,14 +410,13 @@ function hasFnMember(value: unknown, member: string): boolean {
 }
 
 // 各服务的最小形状守卫（apply 里从 ctx 取出后投影，替代 `svc.get(name) as X`）。
-// 0.1.7 起 settings 不再暴露 register，与 webServer 的判据天然分家：本包只用
-// describe（跨命名空间读）与 configure（页面策略），probe 宿主独有的 describe 即可；
-// webServer 仍用「register + 独有成员 registerFallback」两条。
+// 0.1.7 起 settings 不再暴露 register：本包只用 describe（跨命名空间读）与
+// configure（页面策略），probe 宿主独有的 describe 即可。
 /**
- * 官方 `SettingsForms`（installed @deepseek-ai/dsh-settings/lib/types/index.d.ts:62，
+ * 官方 `SettingsForms`（installed @deepseek-ai/dsh-settings/lib/types/index.d.ts，
  * `Service` 子类 + private `ownerContext/revisions/closed/scheduled/presentations` → 名义
- * 比较）的方法面投影：本包只用 `describe`（跨命名空间读官方 locale 偏好，:96）与 `configure`
- * （页面策略，:80）。此前守卫的谓词类型写的是**整个类**，那是一条对本包需求的过度声明——
+ * 比较）的方法面投影：本包只用 `describe`（跨命名空间读官方 locale 偏好）与 `configure`
+ * （页面策略）。守卫的谓词类型若写成**整个类**，那是一条对本包需求的过度声明——
  * 它宣称「宿主必须给我一枚完整的 settings 服务」，而下面每个服务守卫都只点名自己用到的成员。
  */
 type SettingsFormsService = Pick<SettingsForms, "describe" | "configure">;
@@ -456,15 +424,12 @@ type SettingsFormsService = Pick<SettingsForms, "describe" | "configure">;
 function isSettingsService(value: unknown): value is SettingsFormsService {
   return hasFnMember(value, "describe");
 }
-function isWebServerService(value: unknown): value is WebServerService {
-  return hasFnMember(value, "register") && hasFnMember(value, "registerFallback");
-}
 function isSessionsService(value: unknown): value is SessionsService {
   return hasFnMember(value, "get");
 }
 // stat 与 resolve 同为硬依赖：单文件导入的字节上限只有 stat 能给（见 FsService 注释）。
 // 守卫漏掉它，缺 stat 的服务会以 "resolve is not a function" 的形态炸在请求中途，
-// 而不是端点回一句「fs 服务不可用」。
+// 而不是读面回一句「fs 服务不可用」。
 function isFsService(value: unknown): value is FsService {
   return hasFnMember(value, "resolve") && hasFnMember(value, "stat");
 }
@@ -499,7 +464,7 @@ function fillTemplate(template: string, tokens: readonly (readonly [string, stri
 }
 
 /** 有界并发的 map：批内并行、批间串行等待，从而把同时在打开的文件数压在 limit 以内。
- *  不用 `Promise.all(items.map(...))` 一次铺开——导入内置库（266 个 .md）会把
+ *  不用 `Promise.all(items.map(...))` 一次铺开——导入内置库（整棵 agents/ 的 .md）会把
  *  进程 fd 打满，EMFILE 抛错被单文件 catch 吞掉 → 条目静默丢失而仍报 ok:true。
  *  分片用**递归**而非 for+await：批间等待是并发上限的实现手段，而 await-in-loop
  *  在本包严格档里是 error（不用 disable 注释换取绿灯）。
@@ -618,15 +583,15 @@ export interface DirEntry {
 }
 
 /** 静默丢数据的记账（审计修复：原先"读失败即 undefined、超限即忽略"完全没有
- *  回执，界面与 host 都显示成功）。dir context 与 import 两端点共用此形状。 */
+ *  回执，界面与 host 都显示成功）。dir context 与 import 两个读面共用此形状。 */
 export interface SkipCounts {
   /** 字节超限、整份跳过的文件数。 */
   tooLarge: number;
   /** 读取失败（含 EMFILE / 权限 / 非 UTF-8）的文件数。 */
   unreadable: number;
-  /** 只在更深一层、被扫描深度限制造漏掉的 .md 数（仅导入端点用）。 */
+  /** 只在更深一层、被扫描深度限制造漏掉的 .md 数（仅导入读面用）。 */
   deeper: number;
-  /** 读到了但解析不出角色 name（非角色文件）而被跳过的文件数（仅导入端点用）。 */
+  /** 读到了但解析不出角色 name（非角色文件）而被跳过的文件数（仅导入读面用）。 */
   unnamed: number;
   /** 真实目标落在允许根之外（符号链接指向根外文件）而被策略排除的文件数。
    *  必须单列：它既不是读失败也不是超限，把「凭据文件被链接进工作目录」这类事
@@ -674,7 +639,7 @@ async function readSnippetBounded(
   }
 }
 
-/** host 路由实际用的收集函数：fs 服务 → DirEntry[]（含关键文件全文摘要）。
+/** 读面实际用的收集函数：fs 服务 → DirEntry[]（含关键文件全文摘要）。
  *  条目数不设上限（用户拍板），但单文件按 MAX_SNIPPET_BYTES 整份跳过、
  *  读取按 READ_CONCURRENCY 有界并发；跳过项计入 skipped 并让 truncated 反映事实。
  *  回执文案取自注入的字典（纯函数不读设置）。 */
@@ -692,17 +657,16 @@ const DEFAULT_LIMITS = {
   organizeTimeoutMs: ORGANIZE_TIMEOUT_MS,
   maxSnippetBytes: MAX_SNIPPET_BYTES,
   readConcurrency: READ_CONCURRENCY,
-  importBodyMaxBytes: DEFAULT_IMPORT_BODY_MAX_BYTES,
 };
 
-/** 路由层实际用的 limits 全集。 */
-type RouteLimits = DirScanLimits & { organizeTimeoutMs: number; importBodyMaxBytes: number };
+/** 读面实际用的 limits 全集。 */
+type RouteLimits = DirScanLimits & { organizeTimeoutMs: number };
 
 /**
- * 部署值的唯一收口：把会致命的几个数夹进安全区间，再交给路由。
+ * 部署值的唯一收口：把会致命的几个数夹进安全区间，再交给读面。
  *
- * 为什么放在这里而不是各消费点：`limitsOf()` 是全部五个路由读 limits 的**唯一入口**
- * （context/organize/importAgent 都经它），一处收口就不会漏掉将来新增的路由；而散在
+ * 为什么放在这里而不是各消费点：`limitsOf()` 是 context/organize/importTemplates
+ * 三个读面读 limits 的**唯一入口**，一处收口就不会漏掉将来新增的读面；而散在
  * 各消费点夹，哪天新增一个调用点就等于新增一个漏洞。
  *
  * 夹哪两个、为什么：
@@ -712,9 +676,9 @@ type RouteLimits = DirScanLimits & { organizeTimeoutMs: number; importBodyMaxByt
  * - `organizeTimeoutMs` → `[1, 2^31-1]`。上界超了会被 `setTimeout` 静默夹成 1 ms，
  *   「调大超时」变成「立刻失败」。
  *
- * 另外两个（`maxSnippetBytes`/`importBodyMaxBytes`）**故意不夹**：schema 已经挡住
- *   NaN/±Infinity/负数/小数，唯一还能配出来的越界值 `0` 各自有确定且已记账的行为
- *   （前者「全跳过且计 tooLarge」，后者「413」），那是用户的显式意图，不该被悄悄改写。
+ * 剩下 `maxSnippetBytes` **故意不夹**：schema 已经挡住 NaN/±Infinity/负数/小数，
+ *  唯一还能配出来的越界值 `0` 有确定且已记账的行为（全跳过并计 tooLarge），那是用户
+ *  的显式意图，不该被悄悄改写。
  *
  * @param limits - 未经夹位的部署值
  * @returns 两项关键值已夹位、其余原样透传的新对象
@@ -813,7 +777,7 @@ export interface ImportResult {
 }
 
 /**
- * 导入路径安全策略（只读端点，无副作用：不调 LLM、不写盘，返回给同源页面）。
+ * 导入路径安全策略（只读读面，无副作用：不调 LLM、不写盘，结果回给设置卡）。
  * 规则名：「cwd 内 + 内置角色目录 allowlist」。
  *
  * 允许根只有三类（除此之外**一律拒绝**，含所有绝对路径）：
@@ -822,7 +786,7 @@ export interface ImportResult {
  * - 用户在设置 `importAllowRoots` 里逐条登记的目录。
  *
  * 拒绝规则（确定性，测试锁死）：
- * - 空串/纯空白不是路径 → 拒（路由把「精确空串」当作"导入内置库"的哨兵并在调用前
+ * - 空串/纯空白不是路径 → 拒（读面把「精确空串」当作"导入内置库"的哨兵并在调用前
  *   拦掉，走到这里说明调用方没做归一，绝不静默降级成"全量导入"）；
  * - **先查原始串的段**再查解析结果：path.resolve 会把 `..` 归一掉，只查解析后的
  *   绝对路径等于放行 `../../etc/passwd.md`（审计复现）；原始串只判 `.` / `..`，
@@ -840,6 +804,14 @@ export interface ImportResult {
  * 门禁后仍要求每个文件能解析出非空 frontmatter name（parseAgentFrontmatter），
  * 否则跳过并计数——绝不返回任意文件原文，只产出模板条目形状。
  */
+/** 路径拆段（**逐段**比较而非字符串前缀：`/home/dev/project-two/x.md` 会骗过
+ *  `startsWith("/home/dev/project")`，前缀式包含判断等于放行兄弟目录）。
+ *  两种分隔符都拆：win32 的 `path.resolve`/`path.relative` 产出 `\`，只按 `/` 拆会
+ *  把整条路径当成一段，于是合法子路径被判成越界、`..\` 也漏过逐段校验。 */
+function pathSegments(absolute: string): string[] {
+  return absolute.split(/[\\/]/u).filter((token) => token.length > 0);
+}
+
 /** 逐段校验：段为 "." / ".." 一律拒（归一前必须先拦，否则 path.resolve 吃掉 `..`）；
  *  checkHidden=true 时额外拒隐藏段（凭据/敏感目录，如 `.ssh`）。 */
 function pathTokensError(
@@ -849,11 +821,8 @@ function pathTokensError(
 ): string | undefined {
   // 单 return 满足 consistent-return；命中非法段只记错误并 break。
   let errorMessage: string | undefined;
-  for (const token of absolute.split("/")) {
-    if (
-      token.length > 0 &&
-      (token === "." || token === ".." || (checkHidden && token.startsWith(".")))
-    ) {
+  for (const token of pathSegments(absolute)) {
+    if (token === "." || token === ".." || (checkHidden && token.startsWith("."))) {
       errorMessage = messages.illegalPathSegment;
       break;
     }
@@ -861,27 +830,26 @@ function pathTokensError(
   return errorMessage;
 }
 
-/** 路径拆段（**逐段**比较而非字符串前缀：`/home/dev/project-two/x.md` 会骗过
- *  `startsWith("/home/dev/project")`，前缀式包含判断等于放行兄弟目录）。 */
-function pathSegments(absolute: string): string[] {
-  return absolute.split("/").filter((token) => token.length > 0);
+/** child 是否落在 root 之内（含"child 就是 root 本身"= 导入根目录）。
+ *  包含关系交给 `path.relative`：win32 的盘符大小写由它的平台语义收口
+ *  （实测 `path.win32.relative("C:\\Users\\Me\\Roles", "c:\\users\\me\\roles\\x.md")`
+ *  给出 `x.md`），而兄弟目录仍以 `..` 开头被拒。 */
+function isWithinRoot(root: string, child: string): boolean {
+  const relative = path.relative(root, child);
+  if (relative === "") {
+    return true;
+  }
+  return !path.isAbsolute(relative) && pathSegments(relative)[0] !== "..";
 }
 
-/** child 段序列是否落在 root 之内（含"child 就是 root 本身"= 导入根目录）。 */
-function withinRoot(child: readonly string[], root: readonly string[]): boolean {
-  return child.length >= root.length && root.every((token, index) => child[index] === token);
-}
-
-/** 一个允许根：解析后的绝对路径 + 段序列（比较用）+ 人话标签（越界回执用）。 */
+/** 一个允许根：解析后的绝对路径 + 人话标签（越界回执用）。 */
 interface ImportRoot {
   readonly absolute: string;
-  readonly segments: readonly string[];
   readonly label: string;
 }
 
 function toImportRoot(rawPath: string, label: string): ImportRoot {
-  const absolute = path.resolve(rawPath);
-  return { absolute, segments: pathSegments(absolute), label };
+  return { absolute: path.resolve(rawPath), label };
 }
 
 /** 本次请求的允许根集合：会话 cwd（有则算）+ 内置角色库 + 设置登记的允许目录。
@@ -938,7 +906,7 @@ export function importPathError(
   messages: HostMessages,
 ): string | undefined {
   const trimmed = requested.trim();
-  // ① 空串/纯空白不是路径（留空的语义由路由按"导入内置库"处理，不经本函数）
+  // ① 空串/纯空白不是路径（留空的语义由读面按"导入内置库"处理，不经本函数）
   if (trimmed.length === 0) {
     return messages.emptyImportPath;
   }
@@ -954,8 +922,7 @@ export function importPathError(
   }
   const absolute = path.resolve(cwd ?? "", trimmed);
   const roots = importRootsOf(cwd, allowRoots, messages);
-  const child = pathSegments(absolute);
-  const matched = roots.find((root) => withinRoot(child, root.segments));
+  const matched = roots.find((root) => isWithinRoot(root.absolute, absolute));
   if (matched === undefined) {
     return outsideRootsError(absolute, roots, messages);
   }
@@ -976,9 +943,13 @@ function agentEntryFromFile(
   const text = condenseRoleBody(info.body);
   let result: TemplateEntry | undefined;
   if (text.length > 0) {
+    // 后缀必须在本循环里自增：拿 collided.size 当唯一输入时，候选一旦恰好已被占用
+    // （先读到 a-3.md、再读到两份 a.md），每轮算出的都是同一个串，while 永不退出。
+    let suffix = collided.size;
     let id = slug;
     while (collided.has(id)) {
-      id = `${slug}-${String(collided.size + 1)}`;
+      suffix += 1;
+      id = `${slug}-${String(suffix)}`;
     }
     collided.add(id);
     result = {
@@ -1106,7 +1077,7 @@ async function fileBytesWithin(
   // stat 出来」与「stat 出来了但没报 size」是两件事，只是都导向不读。
   const info = await fs.stat(target).catch(() => null);
   // 官方签名为 `stat(target): Promise<FsInfo>`（**不**含 undefined），而缺席路径的
-  // 文档语义是「返回 undefined」（installed dsh-fs/lib/types/index.d.ts:181-187：
+  // 文档语义是「返回 undefined」（installed dsh-fs/lib/types/index.d.ts：
   // "or undefined when the target does not exist"）。声明面比实现面窄——跨进程
   // 递来的后端未必守得住——所以这里的 `?.` 是运行时兜底，不是给类型擦补丁：
   // 缺席与「报不出 size」同档处理（都不读）。
@@ -1246,7 +1217,7 @@ async function importFromDirectory(
     .filter((child) => isVisibleDirectory(child))
     .map((child) => child.target)
     .toSorted((left, right) => left.displayPath.localeCompare(right.displayPath));
-  // 子目录 listDir 有界并发（避免 await-in-loop，也避免 266 个并发打开打满 fd）：
+  // 子目录 listDir 有界并发（避免 await-in-loop，也避免整库一次性打开打满 fd）：
   // 一次遍历同时产出「该层 .md 候选」与「更深一层的目录」（后者只清点不读）。
   // 逐个降级：列不出来的子目录只自己计 unreadable，不牵连同批已读完的结果。
   const subScans = await mapBounded(subDirs, limits.readConcurrency, async (sub) => {
@@ -1283,7 +1254,7 @@ async function importFromDirectory(
  *  truncated 反映"确实有东西没进来"，不再硬编码 false。
  *  skipPolicy 用于内置角色库自检（AGENTS_DIR 是策略里的允许根，用户输入路径正常
  *  不需要它；保留这个开关只为让"内置全量导入"不依赖安装位置是否命中隐藏段判断）。
- *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由路由注入）。 */
+ *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由读面注入）。 */
 export async function collectAgentTemplates(
   fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains" | "stat">,
   requested: string,
@@ -1310,7 +1281,7 @@ export async function collectAgentTemplates(
     // ⚠ 真实目标必须在允许根之内——**单文件与目录两条分支都要过这道**，判据交给后端。
     //
     // 为什么不能只判字符串：`importPathError` 走的是 `path.resolve()` 出来的**字符串段**，
-    // 而 `fs.resolve` 给的 targetKey 是 realpath 之后的**真实对象**（installed fsio.ts:165）。
+    // 而 `fs.resolve` 给的 targetKey 是 realpath 之后的**真实对象**（installed fsio.ts）。
     // 于是 cwd 里一个 `roles -> /Users/me/.aws/credentials` 的软链目录，
     // 字符串形状「就在 cwd 之内」而真身在所有允许根之外。
     //
@@ -1524,18 +1495,18 @@ export async function drainStreamToText(
   return text.trim();
 }
 
-/** 整理入口（host 路由调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
+/** 整理入口（读面调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
  *  注入的字典，本函数不读设置。 */
 export async function runOrganize(
   llm: LlmService,
   input: OrganizeInput,
   messages: HostMessages,
   timeoutMs: number = ORGANIZE_TIMEOUT_MS,
-  // 调用方（HTTP 路由）的取消信号：客户端断开时用它中止流。
+  // 调用方的可选取消信号（当前读面不传；保留给直接调用方）。
   callerSignal?: AbortSignal,
 ): Promise<{ content: string }> {
   const { prompt } = input;
-  // prompt 在 OrganizeInput 里是必选 string（organize 路由已用 `typeof === "string"` 收敛成
+  // prompt 在 OrganizeInput 里是必选 string（organize 读面已用 `typeof === "string"` 收敛成
   // 字符串再传入），故无需可选链；空判用显式比较而非真值折叠。
   if (prompt.trim() === "") {
     throw new Error(messages.emptyPrompt);
@@ -1545,8 +1516,8 @@ export async function runOrganize(
   if (model === undefined || model.provider === "" || model.model === "") {
     throw new Error(messages.noModelSelected);
   }
-  // request-only 输入：不带 id / source（见文件上方那条注释的三条证据）。曾经的
-  // `id: dir-prep-organize-<timestamp>` 是自造身份，宿主侧无人读回。
+  // request-only 输入：不带 id / source（见文件上方那条注释的三条证据）。自造身份
+  // （如 `id: dir-prep-organize-<timestamp>`）宿主侧无人读回。
   const llmMessages: RequestUserInput[] = [
     {
       role: "user",
@@ -1557,9 +1528,10 @@ export async function runOrganize(
   const timer = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
-  // 客户端断开也要中止：没有这条，一次「点了整理就关页面」会继续烧满整个超时窗口
-  // 和一份真实 token 账单，而响应反正没人收。abort 监听用 once + finally 里摘除，
+  // 调用方主动取消也要中止：没有这条，一次已放弃的整理会继续烧满整个超时窗口和
+  // 一份真实 token 账单，而响应反正没人收。abort 监听用 once + finally 里摘除，
   // 免得在长驻的宿主进程里给每次请求留一个悬挂监听。
+  // （当前读面不传 callerSignal：客户端超时只放弃等待，宿主仍由自己的 timer 收口。）
   const onCallerAbort = (): void => {
     controller.abort();
   };
@@ -1616,10 +1588,10 @@ const TemplateEntrySchema = Schema.object({
 /** settings 命名空间与 loader 行 config 共用同一 schema（单源，防漂移）。
  *  值名退避为 configSchema：避免与同名 interface Config 触发 no-redeclare；
  *  外部仍以 `Config` 名导入（export as），公开 API 不变。
- *  写入校验由 dsh-settings 在持久化前按此 schema 完成；两个字段都必须 `.volatile()`
+ *  写入校验由 dsh-settings 在持久化前按此 schema 完成；凡是要出现在卡上的字段都必须 `.volatile()`
  *  ——没有任何 volatile 字段的条目会被宿主 describe() 整条跳过
- *  （packages/settings/settings/src/index.ts:308-309），设置卡读不到、写入则抛
- *  `has no volatile fields`（:386）。
+ *  （packages/settings/settings/src/index.ts），设置卡读不到、写入则抛
+ *  `has no volatile fields`。
  *
  *  旧 `settings.register(ns, Config, { base })` 的 base 底座取消，逐字段落到 `.default(...)`：
  *  - importAllowRoots：`.default([])`。**空表是策略不是缺省占位**——登记目录是用户的
@@ -1627,14 +1599,14 @@ const TemplateEntrySchema = Schema.object({
  *    见 importPathError）；
  *  - templates：**标 volatile、不给默认**。内置精选集（scripts/gen-defaults.mjs 从
  *    agents/ 角色库生成的 src/default-templates.generated.ts，~640 KB）由 **host 半**
- *    持有、经 default-templates 端点按需下发，client 拉到后作回落：⚠ 不给默认**不等于**读回 undefined——schemastery 对 array 字段把缺失
+ *    持有、经 `dirPrepOrganize.defaults` 方法按需下发，client 拉到后作回落：⚠ 不给默认**不等于**读回 undefined——schemastery 对 array 字段把缺失
  *    值 cast 成 `[]`（实测 `configSchema["~standard"].validate({})` 之后 `templates` 引用
- *    `.get() === []`），宿主 describe() 又只丢 undefined 位（index.ts:141-147 projectForm），
+ *    `.get() === []`），宿主 describe() 又只丢 undefined 位（`SettingsForms.projectForm`），
  *    所以「未设置」递到客户端看到的就是一张空表。回落判据因此落在 client 半
  *    （client-entry.ts 的 `fromSettings`：空表按未设置处理），设置卡「恢复默认」=
  *    `unset("templates")` 且复读空值按已回落处理，故「缺失」「空表」「内置」三者同义。
- *    写成 `.default(...)` 会让宿主每次 describe() 都重新序列化这 640 KB（index.ts:313 对
- *    `JSON.stringify([uid, schema.toJSON(), entry.options.config])` 取指纹，schema.ts:24
+ *    写成 `.default(...)` 会让宿主每次 describe() 都重新序列化这 640 KB（index.ts 对
+ *    `JSON.stringify([uid, schema.toJSON(), entry.options.config])` 取指纹，schema.ts
  *    的 plainSchema 保留 meta.default），所以内置集不进 schema、由 host 半端点按需下发；而既然空表就是
  *    「未设置」的运行时形状，回落判据仍由 client 半出。 */
 const configShape = {
@@ -1647,7 +1619,6 @@ const configShape = {
   organizeTimeoutMs: Schema.natural().default(ORGANIZE_TIMEOUT_MS).volatile(),
   maxSnippetBytes: Schema.natural().default(MAX_SNIPPET_BYTES),
   readConcurrency: Schema.natural().default(READ_CONCURRENCY),
-  importBodyMaxBytes: Schema.natural().default(DEFAULT_IMPORT_BODY_MAX_BYTES),
 };
 
 // 注解写 `ReturnType<typeof Schema.object<typeof configShape>>` 而不是让它推断：schemastery 的
@@ -1672,8 +1643,6 @@ export interface Config {
   maxSnippetBytes: number;
   /** 目录扫描/读取的有界并发度。 */
   readConcurrency: number;
-  /** organize/import POST body 的物理字节上限（内存防爆纵深防御）。 */
-  importBodyMaxBytes: number;
 }
 
 export { configSchema as Config };
@@ -1695,7 +1664,7 @@ export function importAllowRootsOf(raw: unknown): string[] {
 
 // ── 插件主体 ───────────────────────────────────────────────────────────────
 
-/** 注入的服务面：webServer + settings 为硬依赖（cordis 等两者就绪才 apply）。
+/** 注入的服务面：settings 为硬依赖（cordis 等它就绪才 apply）。
  *  0.1.7 起命名空间是隐式的（= 本条目在 cordis.patch.yml 里的裸 id，可编辑字段取自
  *  导出的 Config），所以 settings 不再是「注册的前提」而是「页面策略（configure）与
  *  跨命名空间读（describe）」的载体；设置页只派发「host 已 serve 的命名空间 ∩
@@ -1703,9 +1672,8 @@ export function importAllowRootsOf(raw: unknown): string[] {
  *  发生在 apply 期，故仍硬注入。sessions/fs/llm/agentDefaultModel 仍可选读。 */
 export const inject = ["settings"];
 
-/** 路由处理器的可测提取：apply 用 ctx.get 的惰性 getter 调用（服务可能在
- *  路由注册后才就绪），测试直接注入静态假服务 + 假 req/res 驱动。
- *  csrf 为 per-apply 令牌：context/model GET 下发，organize POST 回填校验。 */
+/** 读面依赖的可测提取：apply 用 ctx.get 的惰性 getter 调用（服务可能在读面
+ *  注册后才就绪），测试可直接注入静态假服务。 */
 export interface RouteDeps {
   sessions?: () => SessionsService | undefined;
   fs?: () => FsService | undefined;
@@ -1721,33 +1689,9 @@ export interface RouteDeps {
   loadDefaultTemplates?: () => Promise<readonly TemplateEntry[]>;
 }
 
-/** 路由 handler 形状（本包自己的路由表投影）。官方 `WebRoute["handler"]` 的返回是
- *  `void | Promise<void>`（installed `@deepseek-ai/dsh-host-webserver/lib/types/index.d.ts:40`），
- *  dispatcher 侧写成 `await route.handler(req, res)`（installed lib/index.js:356）——
- *  await 对同步返回同样成立，而外层 `handle` 本身是 async，故同步抛与 reject 在调用方
- *  观察上等价：**没有调用方依赖 handler 返回 promise**。于是投影按实现拆成两枚，
- *  让 createRouteHandlers 的返回值继续自证——确有 await 的三枚是 AsyncRouteHandler，
- *  纯同步的两枚是 SyncRouteHandler，不再为凑类型套假 async。 */
-export type SyncRouteHandler = (req: IncomingMessage, res: ServerResponse) => void;
-export type AsyncRouteHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
-
 /** 回执字典的现读 getter：每个请求取一次，用户在「设置 → 常规」改语言后下一个请求即
  *  切文案（不重启、不加插件自己的 locale 设置项；与 importAllowRoots 的现读同构）。 */
 export type MessagesOf = () => HostMessages;
-
-/** 405 回执（四个端点同形，抽出来避免重复）。 */
-function methodNotAllowed(res: ServerResponse, allow: string): void {
-  res.setHeader("Allow", allow);
-  // 405 也回 JSON 体，与 zvec-grep/ocr-review 既有形态统一（原先"空体 405"是全仓最大的一族，
-  // 11 处；没有任何测试断过它的体，所以这一改动不会翻红任何既有断言——体本身由新针钉住）。
-  sendJson(res, 405, { ok: false, error: `${allow} only` });
-}
-
-/** JSON.parse 失败回执（读 body 与解析分离：超限/坏流由 guardBody 回 413/400，
- *  这里只对"确实读到了但不是 JSON"回 400）。文案取自字典，故由调用方现读后传入。 */
-function sendBadRequestJson(res: ServerResponse, error: string): void {
-  sendJson(res, 400, { ok: false, error });
-}
 
 /** 当前默认模型解析（缺服务/抛错 → undefined）。 */
 function resolveModel(deps: RouteDeps): ModelSelection | undefined {
@@ -1763,7 +1707,7 @@ function resolveModel(deps: RouteDeps): ModelSelection | undefined {
         ...(sel.reasoningEffort === undefined ? {} : { reasoningEffort: sel.reasoningEffort }),
       };
     } catch {
-      /* 读取模型选择失败 → 按未选模型处理（organize 路由会据此报错） */
+      /* 读取模型选择失败 → 按未选模型处理（organize 会据此报错） */
     }
   }
   return result;
@@ -1785,7 +1729,7 @@ function resolveRecentTurns(
   }
 }
 
-/** importAgent 请求体的输入面（纯函数，测试锁死）：坏输入的判别顺序与旧版逐守卫
+/** importTemplates 请求体的输入面（纯函数，测试锁死）：坏输入的判别顺序与旧版逐守卫
  *  完全一致——path 非字符串先于"纯空白 path"，两者各带自己的状态码与文案。 */
 type ImportRequest =
   | { readonly rejected: true; readonly status: number; readonly error: string }
@@ -1821,49 +1765,47 @@ function importRequestOf(parsed: unknown, messages: HostMessages): ImportRequest
   };
 }
 
-/** createRouteHandlers 五个 handler 体的共享面。handler 体按规模判据抽成模块级具名
- *  函数后，原来的自由变量（deps/csrf/现读取表与现读 limits）改为显式传入；每次请求
- *  现读的语义不变（scope 只持有 getter，不缓存值）。 */
-interface RouteScope {
+/** 读面每次调用的共享面：服务 getter 与现读文案/限额。 */
+interface RemoteScope {
   readonly deps: RouteDeps;
-  readonly csrf: string;
   readonly messagesOf: MessagesOf;
   readonly limitsOf: () => RouteLimits;
 }
 
-/** GET context 的正文（信任闸门之后）：缺 fs / 缺 cwd / 扫描报错各回一句，成功才下发条目表。 */
-async function sendContextResponse(
-  scope: RouteScope,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  const messages = scope.messagesOf();
-  if (req.method !== "GET") {
-    methodNotAllowed(res, "GET");
-    return;
+/** 内置精选模板表的读面。两头都按需：表在独立产物 templates.data.mjs 里，第一次被
+ *  调用时才 import；client 首次打开「模板」下拉时才拉这一发。 */
+async function defaultsPayload(scope: RemoteScope): Promise<Record<string, unknown>> {
+  try {
+    const loadTemplates = scope.deps.loadDefaultTemplates ?? loadDefaultTemplates;
+    return { ok: true, templates: await loadTemplates() };
+  } catch (error: unknown) {
+    // 载入失败只有一个成因：产物没跟着包发出去（files 漏了 templates.data.mjs，或
+    // 装了旧版本）。按本仓约定回 ok:false，理由原文带出去便于定位。
+    return { ok: false, error: errorText(error) };
   }
-  // 自家 isCrossOrigin 支在信任闸门之后不可达：trust 的 sec-fetch-site 白名单更严、错误文本同一句
-  // （既有的「跨域 → 403」用例仍然通过，拒它的是闸门）。
+}
+
+/** 目录上下文：缺 fs / 缺 cwd / 扫描报错各回一句，成功才下发条目表。 */
+async function contextPayload(
+  scope: RemoteScope,
+  sessionId: string | null,
+): Promise<Record<string, unknown>> {
+  const messages = scope.messagesOf();
   try {
     const fs = scope.deps.fs?.();
-    const sessionId = queryParam(req, "sessionId");
     const cwd = cwdOfSession(scope.deps.sessions?.(), sessionId);
     if (fs === undefined) {
-      sendJson(res, 200, { ok: false, error: messages.fsUnavailable });
-      return;
+      return { ok: false, error: messages.fsUnavailable };
     }
     if (cwd === undefined) {
-      sendJson(res, 200, { ok: false, error: messages.cwdUnknown });
-      return;
+      return { ok: false, error: messages.cwdUnknown };
     }
     const result = await collectDirContext(fs, cwd, messages, scope.limitsOf());
     if (result.error !== undefined) {
-      sendJson(res, 200, { ok: false, error: result.error });
-      return;
+      return { ok: false, error: result.error };
     }
-    sendJson(res, 200, {
+    return {
       ok: true,
-      csrf: scope.csrf,
       cwd: result.cwd,
       truncated: result.truncated,
       skipped: result.skipped,
@@ -1873,47 +1815,39 @@ async function sendContextResponse(
         sizeBytes: entry.sizeBytes,
         snippet: entry.snippet,
       })),
-    });
+    };
   } catch (error: unknown) {
-    sendJson(res, 200, {
+    return {
       ok: false,
       error: fillTemplate(messages.collectFailed, [["{reason}", errorText(error)]]),
-    });
+    };
   }
 }
 
-/** GET model 的正文（信任闸门之后）。 */
-function sendModelResponse(scope: RouteScope, req: IncomingMessage, res: ServerResponse): void {
+/** 当前默认模型（provider/model/effort）。 */
+function modelPayload(scope: RemoteScope): Record<string, unknown> {
   const messages = scope.messagesOf();
-  if (req.method !== "GET") {
-    methodNotAllowed(res, "GET");
-    return;
-  }
-  // 自家 isCrossOrigin 支在信任闸门之后不可达：trust 的 sec-fetch-site 白名单更严、错误文本同一句
-  // （既有的「跨域 → 403」用例仍然通过，拒它的是闸门）。
   const agentDefaultModel = scope.deps.agentDefaultModel?.();
   if (agentDefaultModel === undefined) {
-    sendJson(res, 200, { ok: false, error: messages.modelServiceUnavailable });
-    return;
+    return { ok: false, error: messages.modelServiceUnavailable };
   }
   try {
     const sel = agentDefaultModel.currentSelection();
-    sendJson(res, 200, {
+    return {
       ok: true,
-      csrf: scope.csrf,
       provider: sel.provider,
       model: sel.model,
       ...(sel.reasoningEffort === undefined ? {} : { reasoningEffort: sel.reasoningEffort }),
-    });
+    };
   } catch (error: unknown) {
-    sendJson(res, 200, {
+    return {
       ok: false,
       error: fillTemplate(messages.readModelFailed, [["{reason}", errorText(error)]]),
-    });
+    };
   }
 }
 
-/** organize 请求体的输入面：JSON.parse 已成功的 unknown → 整理入参（非字符串一律按空值处理）。 */
+/** organize 请求体的输入面：JSON 已解析的 unknown → 整理入参（非字符串一律按空值处理）。 */
 function organizeRequestOf(body: Record<string, unknown>): {
   readonly prompt: string;
   readonly entriesSummary: string;
@@ -1929,23 +1863,19 @@ function organizeRequestOf(body: Record<string, unknown>): {
   };
 }
 
-/** POST organize 的正文（信任闸门 + 405 + guardBody + JSON.parse 之后）：LLM 调用与两层
- *  错误回执。内层 catch 是「整理过程本身失败」（回裸 errorText），外层是「装配入参时炸」。
- *  `messages` 由 handler 现读后传入：字典取表仍是每请求一次，不在此处二次现读。 */
-async function sendOrganizeResponse(
-  scope: RouteScope,
-  res: ServerResponse,
-  messages: HostMessages,
+/** 整理：LLM 调用与两层错误回执。内层 catch 是「整理过程本身失败」（回裸 errorText），
+ *  外层是「装配入参时炸」。`messages` 每次调用现读一次，不在此处二次现读。 */
+async function organizePayload(
+  scope: RemoteScope,
   parsed: unknown,
-  callerSignal?: AbortSignal,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
+  const messages = scope.messagesOf();
   try {
     const llm = scope.deps.llm?.();
     if (llm === undefined) {
-      sendJson(res, 200, { ok: false, error: messages.llmUnavailable });
-      return;
+      return { ok: false, error: messages.llmUnavailable };
     }
-    // JSON.parse 返回 any：经 unknown 后用 isRecord 投影，不经 `as typeof body` 断言。
+    // JSON 返回 any：经 unknown 后用 isRecord 投影，不经 `as typeof body` 断言。
     const body: Record<string, unknown> = isRecord(parsed) ? parsed : {};
     const {
       prompt,
@@ -1960,8 +1890,7 @@ async function sendOrganizeResponse(
     const recentTurns = resolveRecentTurns(sessions, sessionIdText);
     const cwd = cwdOfSession(sessions, sessionIdText);
     if (cwd === undefined) {
-      sendJson(res, 200, { ok: false, error: messages.cwdUnknown });
-      return;
+      return { ok: false, error: messages.cwdUnknown };
     }
     const model = resolveModel(scope.deps);
     try {
@@ -1977,39 +1906,34 @@ async function sendOrganizeResponse(
         },
         messages,
         scope.limitsOf().organizeTimeoutMs,
-        callerSignal,
       );
-      sendJson(res, 200, { ok: true, content: result.content });
+      return { ok: true, content: result.content };
     } catch (error: unknown) {
-      sendJson(res, 200, { ok: false, error: errorText(error) });
+      return { ok: false, error: errorText(error) };
     }
   } catch (error: unknown) {
-    sendJson(res, 200, {
+    return {
       ok: false,
       error: fillTemplate(messages.organizeFailed, [["{reason}", errorText(error)]]),
-    });
+    };
   }
 }
 
-/** POST import 的正文（信任闸门 + 405 + guardBody + JSON.parse 之后）：路径策略拒绝单独回
- *  4xx，导入过程本身失败回 200 + {ok:false}（界面读同一句原因）。
- *  `messages` 同 organize：字典取表留在 handler，一次请求一次。 */
-async function sendImportResponse(
-  scope: RouteScope,
-  res: ServerResponse,
-  messages: HostMessages,
+/** 导入：路径策略拒绝单独回 4xx，导入过程本身失败回 ok:false（界面读同一句原因）。
+ *  `messages` 同 organize：字典取表一次调用一次。 */
+async function importPayload(
+  scope: RemoteScope,
   parsed: unknown,
-): Promise<void> {
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const messages = scope.messagesOf();
   try {
     const fs = scope.deps.fs?.();
     if (fs === undefined) {
-      sendJson(res, 200, { ok: false, error: messages.fsUnavailable });
-      return;
+      return { status: 200, body: { ok: false, error: messages.fsUnavailable } };
     }
     const request = importRequestOf(parsed, messages);
     if (request.rejected) {
-      sendJson(res, request.status, { ok: false, error: request.error });
-      return;
+      return { status: request.status, body: { ok: false, error: request.error } };
     }
     const allowRoots = scope.deps.importAllowRoots?.() ?? [];
     const cwd = cwdOfSession(scope.deps.sessions?.(), request.sessionId);
@@ -2018,8 +1942,7 @@ async function sendImportResponse(
     if (!request.isBuiltin) {
       const policyError = importPathError(request.requested, cwd, allowRoots, messages);
       if (policyError !== undefined) {
-        sendJson(res, 403, { ok: false, error: policyError });
-        return;
+        return { status: 403, body: { ok: false, error: policyError } };
       }
     }
     const result = await collectAgentTemplates(
@@ -2034,139 +1957,139 @@ async function sendImportResponse(
       },
     );
     if (result.error !== undefined) {
-      sendJson(res, 200, { ok: false, error: result.error });
-      return;
+      return { status: 200, body: { ok: false, error: result.error } };
     }
-    sendJson(res, 200, {
-      ok: true,
-      count: result.entries.length,
-      truncated: result.truncated,
-      skipped: result.skipped,
-      entries: result.entries,
-    });
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        count: result.entries.length,
+        truncated: result.truncated,
+        skipped: result.skipped,
+        entries: result.entries,
+      },
+    };
   } catch (error: unknown) {
-    sendJson(res, 200, {
-      ok: false,
-      error: fillTemplate(messages.importException, [["{reason}", errorText(error)]]),
-    });
+    return {
+      status: 200,
+      body: {
+        ok: false,
+        error: fillTemplate(messages.importException, [["{reason}", errorText(error)]]),
+      },
+    };
   }
 }
 
-export function createRouteHandlers(
+/** 五个读面的纯载荷入口（服务与测试共用）：不含任何传输层判定。 */
+export function createRemotePayloads(
   deps: RouteDeps,
-  csrf: string,
   messagesOf: MessagesOf,
-  // 信任闸门的非回环档：缺省 false（只认字面回环）。调用方从 webServer.host 取，
-  // 测试侧不传即是保守档——这也是"171 个手搓构造点不必改"的同一条口径。
-  servingNonLoopback = false,
 ): {
-  defaults: AsyncRouteHandler;
-  context: AsyncRouteHandler;
-  model: SyncRouteHandler;
-  organize: AsyncRouteHandler;
-  importAgent: AsyncRouteHandler;
+  defaults: () => Promise<Record<string, unknown>>;
+  context: (sessionId: string | null) => Promise<Record<string, unknown>>;
+  model: () => Record<string, unknown>;
+  organize: (parsed: unknown) => Promise<Record<string, unknown>>;
+  importTemplates: (parsed: unknown) => Promise<{ status: number; body: Record<string, unknown> }>;
 } {
-  // 每次请求现读（与 importAllowRoots 同一口径）：cordis 行 config 改了无须重启。
-  // sanitizeLimits 收口：这一处是全部路由读 limits 的唯一入口，致命值在这里夹一次即可。
-  const limitsOf = (): RouteLimits => sanitizeLimits(deps.limits?.() ?? DEFAULT_LIMITS);
-  const scope: RouteScope = { deps, csrf, messagesOf, limitsOf };
-
+  const scope: RemoteScope = {
+    deps,
+    messagesOf,
+    limitsOf: () => sanitizeLimits(deps.limits?.() ?? DEFAULT_LIMITS),
+  };
   return {
-    /** 内置精选角色表的按需读面。两头都按需：表在独立产物 templates.data.mjs 里，
-     *  这里第一次被请求时才 import；client 首次打开「模板」下拉时才拉这一发。
-     *  （早先把表打进 client 半，等于每次开页都传输+解析它，本包曾因此 711KB。） */
-    async defaults(req, res) {
-      // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
-      if (!guardTrust(req, res, { servingNonLoopback })) {
-        return;
-      }
-      if (req.method !== "GET") {
-        methodNotAllowed(res, "GET");
-        return;
-      }
-      try {
-        const loadTemplates = deps.loadDefaultTemplates ?? loadDefaultTemplates;
-        sendJson(res, 200, { ok: true, templates: await loadTemplates() });
-      } catch (error: unknown) {
-        // 载入失败只有一个成因：产物没跟着包发出去（files 漏了 templates.data.mjs，或
-        // 装了旧版本）。按本仓约定回 200 + ok:false，理由原文带出去便于定位。
-        sendJson(res, 200, { ok: false, error: errorText(error) });
-      }
-    },
-    async context(req, res) {
-      // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
-      if (!guardTrust(req, res, { servingNonLoopback })) {
-        return;
-      }
-      await sendContextResponse(scope, req, res);
-    },
-    model(req, res) {
-      // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
-      if (!guardTrust(req, res, { servingNonLoopback })) {
-        return;
-      }
-      sendModelResponse(scope, req, res);
-    },
-    async organize(req, res) {
-      // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
-      if (!guardTrust(req, res, { servingNonLoopback })) {
-        return;
-      }
-      const messages = messagesOf();
-      if (req.method !== "POST") {
-        methodNotAllowed(res, "POST");
-        return;
-      }
-      // 跨域 → CSRF → 读 body（413 超限 / 400 坏流由 guardBody 直接回执）
-      const raw = await guardBody(req, res, {
-        maxBytes: scope.limitsOf().importBodyMaxBytes,
-        csrf: { token: csrf, headerName: CSRF_HEADER },
-      });
-      if (raw === null) {
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        sendBadRequestJson(res, messages.invalidJsonBody);
-        return;
-      }
-      // 客户端断开 = 取消。`close` 在响应正常收尾时也会触发，但那时流已结束，
-      // 中止一个已完成的流是空操作，所以不必区分断开与正常完成。
-      const disconnected = new AbortController();
-      req.on("close", () => {
-        disconnected.abort();
-      });
-      await sendOrganizeResponse(scope, res, messages, parsed, disconnected.signal);
-    },
-    async importAgent(req, res) {
-      // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句。
-      if (!guardTrust(req, res, { servingNonLoopback })) {
-        return;
-      }
-      const messages = messagesOf();
-      if (req.method !== "POST") {
-        methodNotAllowed(res, "POST");
-        return;
-      }
-      // 只读端点（不调 LLM、不写盘、响应不可跨域读取）：同源 + 路径策略即最终防线，
-      // 不经 CSRF token——设置卡无会话上下文，无法像 organize 那样先拉 token
-      // （设计取舍：导入不产生副作用，跨站伪造无法读回结果，风险面为零）。
-      const raw = await guardBody(req, res, { maxBytes: scope.limitsOf().importBodyMaxBytes });
-      if (raw === null) {
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        sendBadRequestJson(res, messages.invalidJsonBody);
-        return;
-      }
-      await sendImportResponse(scope, res, messages, parsed);
+    defaults: () => defaultsPayload(scope),
+    context: (sessionId) => contextPayload(scope, sessionId),
+    model: () => modelPayload(scope),
+    organize: (parsed) => organizePayload(scope, parsed),
+    importTemplates: (parsed) => importPayload(scope, parsed),
+  };
+}
+
+/** 官方 Typert Remote 的服务键（= 线上命名空间）。 */
+export const DIR_PREP_REMOTE_NAMESPACE = "dirPrepOrganize";
+
+interface ContextRequest {
+  sessionId: string;
+}
+
+interface OrganizeRequest extends ContextRequest {
+  prompt: string;
+  entriesSummary: string;
+  roleText?: string;
+}
+
+interface ImportTemplatesRequest {
+  path: string;
+  sessionId: string;
+}
+
+/**
+ * 设置卡的宿主读面（官方 Typert Remote）：目录上下文、当前模型、整理、导入与内置模板。
+ * 取代原先的五条 HTTP 端点（旧数据面已删除）。
+ */
+export class DirPrepRemoteService extends TypertRemoteService {
+  private readonly scope: RemoteScope;
+
+  public constructor(ctx: Context, scope: RemoteScope) {
+    super(ctx, DIR_PREP_REMOTE_NAMESPACE);
+    this.scope = scope;
+  }
+
+  public async defaults(): Promise<Record<string, unknown>> {
+    return defaultsPayload(this.scope);
+  }
+
+  public async context(request: ContextRequest): Promise<Record<string, unknown>> {
+    const sessionId =
+      isRecord(request) && typeof request.sessionId === "string" ? request.sessionId : null;
+    return contextPayload(this.scope, sessionId);
+  }
+
+  public model(request: ContextRequest): Record<string, unknown> {
+    void request;
+    return modelPayload(this.scope);
+  }
+
+  public async organize(request: OrganizeRequest): Promise<Record<string, unknown>> {
+    return organizePayload(this.scope, request);
+  }
+
+  public async importTemplates(request: ImportTemplatesRequest): Promise<Record<string, unknown>> {
+    const result = await importPayload(this.scope, request);
+    return result.status === 200 ? result.body : { ...result.body, status: result.status };
+  }
+}
+
+/** 标准装饰器的程序化调用：标记落到真正的原型上，源码不引装饰器语法。 */
+function markRemote(prototype: DirPrepRemoteService, methodName: string): void {
+  const context = {
+    kind: "method",
+    name: methodName,
+    static: false,
+    private: false,
+    addInitializer: (initializer: (this: unknown) => void): void => {
+      Reflect.apply(initializer, Object.create(prototype), []);
     },
   };
+  // oxlint-disable-next-line eslint/new-cap -- `Remote(…)` 是装饰器工厂，不是大写开头的构造调用
+  const decorate = Remote(methodName);
+  Reflect.apply(decorate, undefined, [Reflect.get(prototype, methodName), context]);
+}
+
+markRemote(DirPrepRemoteService.prototype, "defaults");
+markRemote(DirPrepRemoteService.prototype, "context");
+markRemote(DirPrepRemoteService.prototype, "model");
+markRemote(DirPrepRemoteService.prototype, "organize");
+markRemote(DirPrepRemoteService.prototype, "importTemplates");
+
+/** 注册读面（构造即注册）；替身上下文没有注册口时只少掉这一栏。 */
+export function installDirPrepRemote(ctx: Context, scope: RemoteScope): boolean {
+  if (!isRecord(ctx) || !isRecord(ctx.reflect) || typeof ctx.reflect.provide !== "function") {
+    return false;
+  }
+  // oxlint-disable-next-line eslint/no-new -- 构造即注册；Service 构造只读 reflect/provide
+  new DirPrepRemoteService(ctx, scope);
+  return true;
 }
 
 /** settings 注册的占位清理（无额外拆卸动作，注册随插件生命周期存续）。 */
@@ -2174,7 +2097,7 @@ function noopDisposer(): void {
   /* 占位：无需清理 */
 }
 
-/** host apply：登记设置页策略 + 四个 webServer 路由（全在 effect 内，卸载即注销）。
+/** host apply：登记设置页策略 + 注册官方 Remote 读面（注入子上下文，卸载即撤）。
  *  0.1.7 起模板设置是**隐式注册**的（导出的 Config + 字段上的 .volatile()），本函数
  *  不再向 settings 注册任何东西；配置值由 cordis 校验并填过默认后按 volatile 引用交进来
  *  （第二参数 config），读当前值一律 `.get()`。 */
@@ -2231,89 +2154,45 @@ export function apply(ctx: Context, config: Config): void {
       return settings.configure({ auto: false }, ctx.fiber);
     }, "dir-prep-organize: settings presentation");
   });
-  // webServer 走子 fiber（inject 依赖），不写进插件级 inject：没有 webServer 的宿主
-  // （TUI、纯 SDK 嵌入）不该让整包失活——模板整理、目录整理、沉淀这些能力只需要
-  // settings 与 fs。依赖换实例时 cordis 先卸后装，disposer 随子 fiber 回收。
-  ctx.inject(["webServer"], (child) => {
-    child.effect(() => {
-      const rawWebServer = getService("webServer");
-      const webServer = isWebServerService(rawWebServer) ? rawWebServer : undefined;
-      if (webServer === undefined) {
-        return noopDisposer;
-      }
-      // per-apply 写操作令牌；context/model GET 下发，organize POST 回填校验
-      const csrf = randomUUID();
-      // 绑定地址读 webServer 自己的 `host` 位（官方 getter），判据走 shared 的
-      // `isNonLoopbackBindHost` 而不是比字面量：宿主的 `Config.host` 收的是任意本机接口 IP
-      // 字面量，通配地址在载入即拒，所以 `host === "0.0.0.0"` 这类写法恒为 false，
-      // 局域网那一面会被信任闸门整片拒成 403。读不到即按只绑回环的保守档。
-      const servingNonLoopback = isNonLoopbackBindHost(webServer.host);
-      // 惰性 getter：服务可能在路由注册之后才就绪（inject 只声明 webServer 硬依赖）
-      // 各服务经形状守卫投影（替代 `svc.get(...) as X` 断言）。
-      const deps: RouteDeps = {
-        sessions: () => {
-          const service = getService("sessions");
-          return isSessionsService(service) ? service : undefined;
-        },
-        fs: () => {
-          const service = getService("fs");
-          return isFsService(service) ? service : undefined;
-        },
-        llm: () => {
-          const service = getService("llm");
-          return isLlmService(service) ? service : undefined;
-        },
-        agentDefaultModel: () => {
-          const service = getService("agentDefaultModel");
-          return isAgentDefaultModel(service) ? service : undefined;
-        },
-        // 导入允许根：每次请求现读 volatile 引用（改设置不必重启插件）。引用背后仍可能
-        // 是存量脏配置，故过 importAllowRootsOf 收成字符串表——读不到就是空表，绝不因为
-        // 缺配置就放开绝对路径（只剩「会话 cwd + 内置角色库」两个根）。
-        importAllowRoots: () => importAllowRootsOf(config.importAllowRoots.get()),
-        // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
-        limits: () => ({
-          organizeTimeoutMs: config.organizeTimeoutMs.get(),
-          maxSnippetBytes: config.maxSnippetBytes,
-          readConcurrency: config.readConcurrency,
-          importBodyMaxBytes: config.importBodyMaxBytes,
-        }),
-      };
-      const handlers = createRouteHandlers(deps, csrf, localeMessages, servingNonLoopback);
-      const disposeDefaults = webServer.register({
-        kind: "exact",
-        path: DEFAULTS_PATH,
-        handler: (req, res) => handlers.defaults(req, res),
-      });
-      const disposeContext = webServer.register({
-        kind: "exact",
-        path: CONTEXT_PATH,
-        handler: (req, res) => handlers.context(req, res),
-      });
-      const disposeModel = webServer.register({
-        kind: "exact",
-        path: MODEL_PATH,
-        handler: (req, res) => {
-          handlers.model(req, res);
-        },
-      });
-      const disposeOrganize = webServer.register({
-        kind: "exact",
-        path: ORGANIZE_PATH,
-        handler: (req, res) => handlers.organize(req, res),
-      });
-      const disposeImport = webServer.register({
-        kind: "exact",
-        path: IMPORT_PATH,
-        handler: (req, res) => handlers.importAgent(req, res),
-      });
-      return () => {
-        disposeDefaults();
-        disposeContext();
-        disposeModel();
-        disposeOrganize();
-        disposeImport();
-      };
-    }, "dir-prep-organize: webServer routes");
+  // 读面走官方 Typert Remote：经注入子上下文注册。没有 remote 网关的宿主只是设置卡
+  // 读不到数据面，目录整理/模板/沉淀这些能力本身只依赖 settings 与 fs，照常可用。
+  // 各服务经惰性 getter + 形状守卫投影（服务可能晚于本条目就绪；替代 `svc.get(...) as X`）。
+  // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
+  const limitsOfConfig = (): RouteLimits => ({
+    organizeTimeoutMs: config.organizeTimeoutMs.get(),
+    maxSnippetBytes: config.maxSnippetBytes,
+    readConcurrency: config.readConcurrency,
+  });
+  const deps: RouteDeps = {
+    sessions: () => {
+      const service = getService("sessions");
+      return isSessionsService(service) ? service : undefined;
+    },
+    fs: () => {
+      const service = getService("fs");
+      return isFsService(service) ? service : undefined;
+    },
+    llm: () => {
+      const service = getService("llm");
+      return isLlmService(service) ? service : undefined;
+    },
+    agentDefaultModel: () => {
+      const service = getService("agentDefaultModel");
+      return isAgentDefaultModel(service) ? service : undefined;
+    },
+    // 导入允许根：每次请求现读 volatile 引用（改设置不必重启插件）。引用背后仍可能
+    // 是存量脏配置，故过 importAllowRootsOf 收成字符串表——读不到就是空表，绝不因为
+    // 缺配置就放开绝对路径（只剩「会话 cwd + 内置角色库」两个根）。
+    importAllowRoots: () => importAllowRootsOf(config.importAllowRoots.get()),
+    // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
+    limits: limitsOfConfig,
+  };
+  const scope: RemoteScope = {
+    deps,
+    messagesOf: localeMessages,
+    limitsOf: () => sanitizeLimits(limitsOfConfig()),
+  };
+  ctx.inject([], (child) => {
+    installDirPrepRemote(child, scope);
   });
 }

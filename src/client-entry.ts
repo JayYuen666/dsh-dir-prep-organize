@@ -17,16 +17,15 @@ import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+import { createDirPrepReader } from "./remote.ts";
+import type { DirPrepReader } from "./remote.ts";
 
 const NS: LocaleNs = "dir-prep-organize";
 const BUNDLE_PKG = "@jayyuen66/dsh-dir-prep-organize";
-const CONTEXT_URL = "/_dsh/dir-prep/context";
-const MODEL_URL = "/_dsh/dir-prep/model";
-const ORGANIZE_URL = "/_dsh/dir-prep/organize";
-const IMPORT_URL = "/_dsh/dir-prep/import";
 
-const FETCH_TIMEOUT_MS = 125_000;
 const ERROR_FLASH_MS = 4000;
+/** 非整理读面的等待上限（与迁移前 HTTP 读面的常量同值）。 */
+const REMOTE_TIMEOUT_MS = 125_000;
 const RESET_CONFIRM_MS = 4000;
 const EMOJI_PLACEHOLDER = "😀";
 const ROOT_PATH_PLACEHOLDER = "/Users/me/roles";
@@ -36,7 +35,7 @@ const CLASS_ROW_HEAD = "dpic-rowhead";
 const CLASS_IMPORT_PATH = "dpic-importpath";
 const SLOT_INPUT_RIGHT = "conversation.input.right";
 
-// ── 端点类型（与 host.ts 契约一致）────────────────────────────────────────
+// ── 读面载荷类型（与 host.ts 契约一致）────────────────────────────────────
 
 export interface DirEntryView {
   name: string;
@@ -57,7 +56,6 @@ export interface ImportSkips {
 export interface ContextResponse {
   ok: boolean;
   error?: string;
-  csrf?: string;
   cwd?: string;
   truncated?: boolean;
   entries?: DirEntryView[];
@@ -72,7 +70,6 @@ export interface OrganizeResponse {
 interface ModelResponse {
   ok: boolean;
   error?: string;
-  csrf?: string;
   provider?: string;
   model?: string;
   reasoningEffort?: string;
@@ -98,7 +95,7 @@ function parseDirEntry(raw: unknown): DirEntryView {
   };
 }
 
-/** 可选字符串位的窄化（`error`/`csrf`/`cwd`/`content` 等共用一条）。 */
+/** 可选字符串位的窄化（`error`/`cwd`/`content` 等共用一条）。 */
 function optionalString(rec: Record<string, unknown>, key: string): string | undefined {
   const value = rec[key];
   return typeof value === "string" ? value : undefined;
@@ -135,7 +132,6 @@ export function parseContextResponse(raw: unknown): ContextResponse {
   return {
     ok: ok === true,
     ...spreadIfDefined(optionalString(rec, "error"), "error"),
-    ...spreadIfDefined(optionalString(rec, "csrf"), "csrf"),
     ...spreadIfDefined(optionalString(rec, "cwd"), "cwd"),
     ...(truncated === true ? { truncated: true } : {}),
     ...(parsedEntries === undefined ? {} : { entries: parsedEntries }),
@@ -147,7 +143,6 @@ function parseModelResponse(raw: unknown): ModelResponse {
   return {
     ok: rec["ok"] === true,
     ...spreadIfDefined(optionalString(rec, "error"), "error"),
-    ...spreadIfDefined(optionalString(rec, "csrf"), "csrf"),
     ...spreadIfDefined(optionalString(rec, "provider"), "provider"),
     ...spreadIfDefined(optionalString(rec, "model"), "model"),
     ...spreadIfDefined(optionalString(rec, "reasoningEffort"), "reasoningEffort"),
@@ -232,59 +227,6 @@ export function formatContextSummary(resp: ContextResponse): string {
   return lines.join("\n");
 }
 
-async function httpErrorMessage(response: {
-  status: number;
-  json: () => Promise<unknown>;
-}): Promise<string> {
-  const fallback = `HTTP ${String(response.status)}`;
-  const body: unknown = await response.json().catch(() => null);
-  const rec = isRecord(body) ? body : {};
-  const { error } = rec;
-  return typeof error === "string" && error.length > 0 ? error : fallback;
-}
-
-/**
- * fetch + 超时 + JSON 解析：四个端点唯一的取数口。
- *
- * 超时用 AbortController（不是 Promise.race）：竞速只能让**调用方**提前放弃，
- * 底层请求仍在跑、连接与响应体照常被读进内存；abort 才真的把传输停掉。
- * 定时器在 finally 里清（成功/失败/超时三条路都过），否则每次请求在长驻页面里
- * 留一个悬挂的 timer。
- *
- * @param url - 端点路径（常量，见文件头那一组 URL）
- * @param init - fetch init（method/headers/body）
- * @param timeoutMs - 中止时限；越界值由调用方先夹好（见 client-timeouts.ts）
- * @returns 解析后的 JSON（unknown：形状交给各 parse* 判）
- */
-async function fetchJson(
-  url: string,
-  init?: RequestInit,
-  timeoutMs: number = FETCH_TIMEOUT_MS,
-): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-  try {
-    const headers = new Headers(init?.headers);
-    headers.set("accept", "application/json");
-    const response = await fetch(url, { ...init, signal: controller.signal, headers });
-    if (!response.ok) {
-      throw new Error(await httpErrorMessage(response));
-    }
-    return await response.json();
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("请求超时", { cause: error });
-    }
-    throw new Error(errorText(error), { cause: error });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const BUILTIN_TEMPLATES_URL = "/_dsh/dir-prep/default-templates";
-
 export type BuiltinPhase = "idle" | "loading" | "ready" | "error";
 
 export interface BuiltinState {
@@ -314,6 +256,33 @@ export function builtinTemplatesSnapshot(): BuiltinState {
   return builtinState;
 }
 
+let dirPrepReader: DirPrepReader | undefined;
+
+/** 导出仅供单测：不经过 apply 的纯读面用例直接注入替身。 */
+export function setDirPrepReader(reader: DirPrepReader | undefined): void {
+  dirPrepReader = reader;
+}
+
+function requireReader(): DirPrepReader {
+  if (dirPrepReader === undefined) {
+    throw new Error("远程读面不可用：宿主网关没有挂上 dirPrepOrganize");
+  }
+  return dirPrepReader;
+}
+
+/** 客户端超时只影响等待：宿主侧的整理超时仍由它自己的 AbortController 收口。 */
+async function within<Value>(pending: Promise<Value>, timeoutMs: number): Promise<Value> {
+  const gate = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
+    gate.reject(new Error("请求超时"));
+  }, timeoutMs);
+  try {
+    return await Promise.race([pending, gate.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function loadBuiltinTemplates(): Promise<BuiltinState> {
   if (builtinState.phase === "ready") {
     return builtinState;
@@ -326,7 +295,7 @@ export async function loadBuiltinTemplates(): Promise<BuiltinState> {
     setBuiltinState({ phase: "loading", list: builtinState.list, error: "" });
     let settled: BuiltinState;
     try {
-      const body = await fetchJson(BUILTIN_TEMPLATES_URL);
+      const body = await within(requireReader().defaults(), REMOTE_TIMEOUT_MS);
       const payload = isRecord(body) ? body : undefined;
       const okKey = "ok";
       const templatesKey = "templates";
@@ -399,7 +368,7 @@ function assertOrganizeReady(
   ctxRes: ContextResponse,
   modelRes: ModelResponse,
   prompt: string,
-): string {
+): void {
   if (!ctxRes.ok) {
     throw new Error(`目录上下文失败: ${ctxRes.error ?? "未知错误"}`);
   }
@@ -409,42 +378,27 @@ function assertOrganizeReady(
   if (prompt.trim().length === 0) {
     throw new Error("输入框为空，无内容可整理");
   }
-  const csrf = ctxRes.csrf ?? modelRes.csrf ?? "";
-  if (csrf === "") {
-    throw new Error(`整理令牌缺失：${ctxRes.error ?? modelRes.error ?? "请重试"}`);
-  }
-  return csrf;
 }
 
 async function requestOrganize(args: {
-  csrf: string;
   ctxRes: ContextResponse;
   prompt: string;
   sessionId: string;
   roleText?: string | undefined;
   timeoutMs: number;
 }): Promise<string> {
-  const { csrf, ctxRes, prompt, sessionId, roleText, timeoutMs } = args;
-  const body: Record<string, string> = {
-    prompt,
-    sessionId,
-    entriesSummary: formatContextSummary(ctxRes),
-  };
-  const roleKey = "roleText";
-  if (roleText !== undefined) {
-    body[roleKey] = roleText;
-  }
-  const orgRes = parseOrganizeResponse(
-    await fetchJson(
-      ORGANIZE_URL,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-dir-prep-csrf": csrf },
-        body: JSON.stringify(body),
-      },
-      timeoutMs,
-    ),
+  const { ctxRes, prompt, sessionId, roleText, timeoutMs } = args;
+  const entriesSummary = formatContextSummary(ctxRes);
+  const organized = await within(
+    requireReader().organize({
+      sessionId,
+      prompt,
+      entriesSummary,
+      ...(roleText === undefined ? {} : { roleText }),
+    }),
+    timeoutMs,
   );
+  const orgRes = parseOrganizeResponse(organized);
   if (!orgRes.ok || orgRes.content === undefined) {
     throw new Error(orgRes.error ?? "整理失败（未知错误）");
   }
@@ -457,15 +411,15 @@ async function runOrganizeFlow(args: {
   roleText?: string;
   timeoutMs: number;
 }): Promise<string> {
+  const reader = requireReader();
   const [ctxRaw, modelRaw] = await Promise.all([
-    fetchJson(`${CONTEXT_URL}?sessionId=${encodeURIComponent(args.sessionId)}`),
-    fetchJson(`${MODEL_URL}?sessionId=${encodeURIComponent(args.sessionId)}`),
+    within(reader.context(args.sessionId), REMOTE_TIMEOUT_MS),
+    within(reader.model(args.sessionId), REMOTE_TIMEOUT_MS),
   ]);
   const ctxRes = parseContextResponse(ctxRaw);
   const modelRes = parseModelResponse(modelRaw);
-  const csrf = assertOrganizeReady(ctxRes, modelRes, args.prompt);
+  assertOrganizeReady(ctxRes, modelRes, args.prompt);
   return requestOrganize({
-    csrf,
     ctxRes,
     prompt: args.prompt,
     sessionId: args.sessionId,
@@ -1374,11 +1328,10 @@ function ImportPanel(props: {
     setImportMsg("");
     try {
       const resp = parseImportResponse(
-        await fetchJson(IMPORT_URL, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path: target, sessionId: "" }),
-        }),
+        await within(
+          requireReader().importTemplates({ path: target, sessionId: "" }),
+          REMOTE_TIMEOUT_MS,
+        ),
       );
       if (!resp.ok || resp.entries === undefined) {
         throw new Error(resp.error ?? t("importFailedUnknown"));
@@ -1717,7 +1670,7 @@ function createDraftActions(
     ]);
   }
   function onImported(incoming: readonly TemplateEntry[]): void {
-    // 必须走**函数式**更新：`onImport` 要先 await 一整个网络往返（内置角色库 266 个
+    // 必须走**函数式**更新：`onImport` 要先 await 一整个网络往返（内置角色库整棵树的
     // 文件是秒级），回来时上面这个 `draft` 早已是点击那一刻的旧值。闭包直接用它，
     // 用户在这段时间里改的行 / 加的行 / 删的行会被整份旧草稿静默覆盖（实测：在途期间
     // 新增的一行被吃掉，界面还回显成导入结果的样子）。函数式更新把合并的基准换成
@@ -2061,6 +2014,8 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
 
 export interface ClientCtx {
   effect: Context["effect"];
+  /** 官方反射面：读面经 `get("remote")` 查出，不建立 inject 依赖（缺席只少一栏数据面）。 */
+  get: Context["get"];
   slots: Pick<SlotRegistry, "inject" | "register">;
   configForms: {
     get: (entryId: string) => EntryForm;
@@ -2138,6 +2093,19 @@ function injectCard(ctx: ClientCtx, store: TemplatesStore, t: Translate, scope: 
 }
 
 function apply(ctx: ClientCtx): void {
+  // 读面挂在模块级：卸载时必须随 effect 一起撤下，否则旧 ctx 与它的 remote 闭包
+  // 一直留在内存里（重挂载后没人用得到，却仍被这个全局引用钉住）。
+  // 身份比较防止「先卸旧、后装新」时旧 disposer 把新 reader 清掉。
+  const reader = createDirPrepReader(ctx);
+  dirPrepReader = reader;
+  ctx.effect(
+    () => () => {
+      if (dirPrepReader === reader) {
+        dirPrepReader = undefined;
+      }
+    },
+    "dir-prep-organize: remote reader",
+  );
   ctx.effect(() => {
     const tag = document.createElement("style");
     tag.id = "dir-prep-organize-css";

@@ -73,7 +73,7 @@ const isExternal = (id) => externalNames.has(packageNameOf(id));
  * 本包的产物表：源码入口 → 落盘文件名。
  *
  * 为什么拆成两个产物：内置精选模板表（src/default-templates.generated.ts，生成物约 640 KB
- * 源码）原本被静态导入打进 host.js，于是**宿主载入插件的那一刻**这 85 条模板就已经占住内存，
+ * 源码）原本被静态导入打进 host.js，于是**宿主载入插件的那一刻**整张精选表就已经占住内存，
  * 哪怕用户从不开「模板」下拉。改成独立产物后，host.ts 只在 default-templates 端点第一次
  * 被请求时 import 它——客户端那一侧本来就是按需拉的（走该端点），这一步只是把宿主侧对齐。
  *

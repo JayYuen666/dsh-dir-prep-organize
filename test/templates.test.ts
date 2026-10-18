@@ -1,6 +1,6 @@
 // dir-prep-organize 模板功能单测（vitest，node 环境）。
 // 契约：
-//   DEFAULT_TEMPLATES     20 条内置模板（8 通用 + 12 精选角色），id 唯一、
+//   DEFAULT_TEMPLATES     精选角色内置表（scripts/gen-defaults.mjs 从 agents/ 生成），id 唯一、
 //                         name/text 非空、description/group/emoji 可空字符串、
 //                         正文不含反引号（插入输入框不破坏 markdown 围栏）
 //   sanitizeTemplateList  设置快照/设置卡来的任意值 → 合法 TemplateEntry[]

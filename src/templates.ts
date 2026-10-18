@@ -8,13 +8,13 @@
 //     全量角色可经设置页「导入角色」一键导入（路径留空 = 导入内置 agents/ 全部；
 //     填路径按「cwd 内 + 内置角色目录 allowlist」策略放行，绝对路径默认拒绝，见 host）。
 //   - 角色文件解析（parseAgentFrontmatter）/ 正文提炼（condenseRoleBody）纯函数共享
-//     host（导入端点）与 client（「以该角色整理」的角色上下文），单源防两份副本漂移；
+//     host（导入读面）与 client（「以该角色整理」的角色上下文），单源防两份副本漂移；
 //     生成脚本为镜像实现，测试锁「生成结果与真实文件一致」（漂移即红）。
 //   - 不设字符上限（用户拍板）：正文提炼只做叙述主干/代码围栏清洗，
 //     不做长度截断——上下文完整性优先，模型 context 超限由模型报错提示用户自行处理。
 //
-// 单源约束：host.ts（settings base 默认值）与 src/client-entry.ts（下拉兜底 + 设置卡）
-// 都 import 本文件/生成文件，杜绝"两份默认副本漂移"。
+// 单源约束：host 半的精选表产物（templates.data.mjs，build-host.mjs 从同一份生成物打出）
+// 与 src/client-entry.ts（下拉兜底 + 设置卡）都源自本文件/生成文件，杜绝"两份默认副本漂移"。
 //
 // 正文形状约束：所有模板正文不含反引号（插入输入框不破坏 markdown 围栏，测试锁死）；
 // 导入/提炼时围栏行与行内反引号一律剔除（condenseRoleBody），保证该不变式对导入物同样成立。
@@ -46,8 +46,8 @@ export interface TemplateEntry {
  *  scripts/gen-defaults-lib.mjs，键序 = 下拉分组展示序），本文件不再同名 re-export：
  *  实测同名两处导出正是 fallow `duplicate_export`（severity=error）报出来的那一条，
  *  而"两份名字保持同步"的纪律并不由 re-export 保证。表体仍是生成物；host 半引本文件的
- *  groupLabelOf/parseAgentFrontmatter，精选集（现 640KB）也由 host 半引走、经
- *  default-templates 端点按需下发，client 半不打包它。 */
+ *  groupLabelOf/parseAgentFrontmatter，精选集（生成物）也由 host 半引走、经
+ *  `dirPrepOrganize.defaults` 方法按需下发，client 半不打包它。 */
 
 /** 仓库目录名 → 分组标签（groupLabelOf(engineering) === "工程"；未收录回落目录名）。
  *  必须只认**自有属性**：`AGENT_DIR_GROUP_LABELS["constructor"]` 会命中原型上的
@@ -231,8 +231,8 @@ export function mergeImportedTemplates(
 // ── 内置默认模板（精选角色，由 scripts/gen-defaults.mjs 从 agents/ 生成）──────────
 
 /** 内置默认模板（独立开发者精选角色集，生成自插件内置 agents/ 目录）。
- *  host 作为 settings base 下发；client 在快照缺 templates 字段时兜底使用
- * （不猜测快照是否合并 base，两种语义下行为都正确）。
+ *  client 在快照缺 templates 字段时用它兜底；host 半的下发走 build-host.mjs 打出的
+ *  templates.data.mjs（同一份生成物的另一产物），不再经 settings base 下发。
  * 全量角色可经设置页「导入角色」导入（路径留空 = 导入内置 agents/ 全部；显式路径
  * 受 host 的「cwd 内 + 内置角色目录 allowlist」策略约束）。 */
 export { DEFAULT_TEMPLATES } from "./default-templates.generated.ts";

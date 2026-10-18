@@ -203,7 +203,24 @@ export interface BootOptions {
 }
 
 /** 装配一台真 HTTP 台（不 it()：共享夹具自带用例会让结构类 lint 规则落到夹具头上）。 */
+// 宿主 alpha.3 的 dsh-app-boot 在模块顶层静态 import 这枚 peer，而本仓的 pnpm 配置是
+// `autoInstallPeers: false`——没人装它时，失败会落在 boot 链深处一句 Cannot find package 上。
+// 夹具先在这里点名解析一次：缺件就在这里说清缺的是谁，而不是让十几层栈去猜。
+const HOST_BOOT_PEER = "@deepseek-ai/cordis-plugin-group";
+
+function requireHostBootPeer(): void {
+  try {
+    import.meta.resolve(HOST_BOOT_PEER);
+  } catch (error) {
+    throw new Error(
+      `集成夹具起不了宿主的 boot 链：peer ${HOST_BOOT_PEER} 解析不到（${String(error)}）`,
+      { cause: error },
+    );
+  }
+}
+
 export async function bootHostStack(options: BootOptions = {}): Promise<HostStack> {
+  requireHostBootPeer();
   const ctx = new Context();
   const configured: { presentation: { auto?: boolean }; owner: unknown }[] = [];
   const stub: SettingsStub = {
@@ -244,6 +261,9 @@ export async function bootHostStack(options: BootOptions = {}): Promise<HostStac
   );
 
   const { port } = ctx.webServer;
+  if (port === undefined) {
+    throw new Error("宿主还没绑定端口就取到了 webServer.port——夹具无法继续，这里不用 ! 抹平");
+  }
   const origin = `http://127.0.0.1:${String(port)}`;
 
   const urlOf = (route: string, query?: Record<string, string>): string => {

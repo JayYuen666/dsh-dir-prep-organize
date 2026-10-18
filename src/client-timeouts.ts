@@ -1,4 +1,4 @@
-// src/client-timeouts.ts —— 卡片侧 fetch 超时的取值与夹位（单源，client 半内部用）。
+// src/client-timeouts.ts —— 卡片侧读面超时的取值与夹位（单源，client 半内部用）。
 //
 // 为什么单独成文件：这两条规则全在 `setTimeout` 的**静默失败**上——延时超过 2^31-1 ms
 // 时 V8 只往 stderr 打一条 TimeoutOverflowWarning，然后把延时夹成 1 ms，于是「把超时
@@ -27,7 +27,7 @@ export const ORGANIZE_TIMEOUT_SLACK_MS = 5000;
  * `organizeTimeoutMs` 的前端取表。
  *
  * 上界与 host 同为 `[1, MAX_TIMER_MS]`：host 自己夹了上界正是为了躲开上面那个静默夹断，
- * 而这一侧是**唯一**发起 fetch 的地方，它要是没夹，host 夹得再对也没用。
+ * 而这一侧是**唯一**发起整理读面调用的地方，它要是没夹，host 夹得再对也没用。
  *
  * @param value - 配置表单投影值
  * @returns `[1, MAX_TIMER_MS]` 区间内的整数；不合法时 undefined（回落默认）

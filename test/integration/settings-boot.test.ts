@@ -16,8 +16,8 @@
 //    revision 取 JSON.stringify([fiber.uid, schema.toJSON(), entry.options.config]) 的指纹（:311-315），
 //    变化即 `settings/document-updated`（:316-318）。
 //  · volatile 选取规则：`volatileForm` 递归取"最近一个 volatile 祖先"（schema.ts:37-47），
-//    `plainSchema` 保留 meta.default 但删掉 volatile 标记（:19-31）——这正是本包不把 640 KB
-//    内置表写进 .default 的理由（host.ts:1477-1487 那段注释的判据在此处得到实证）。
+//    `plainSchema` 保留 meta.default 但删掉 volatile 标记（:19-31）——这正是本包不把整张
+//    内置精选表写进 .default 的理由（host.ts 的 configShape 上方那段注释在此处得到实证）。
 //  · 写入面：`update` 合并、`replace` 整段、`mutate` 逐路径（:347-375）；三者在持久化前
 //    先过 `cloneJsonShaped`（只放 JSON 形：Date/Map/BigInt/环都拒，:134-166）与
 //    `isVolatilePath` 校验（非 volatile → `Config field "x" is not volatile`，:388/:406）；
@@ -36,7 +36,6 @@ import type { ProfileContext } from "@deepseek-ai/dsh-app-boot";
 import { ConfigEditor } from "@deepseek-ai/dsh-config-editor";
 import Settings from "@deepseek-ai/dsh-settings";
 import type { SettingsDescriptor } from "@deepseek-ai/dsh-settings";
-import { WebServer } from "@deepseek-ai/dsh-host-webserver";
 import Schema from "@deepseek-ai/schemastery";
 import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
@@ -54,8 +53,17 @@ const PATCH_YML = "cordis.patch.yml";
 const CORDIS_YML = "cordis.yml";
 /** 临时 profile 里那枚 bundle 的名字（铺盘、patch 行、startedBundles 三处共用同一枚）。 */
 const TEST_BUNDLE = "test-bundle";
-/** 跨命名空间 locale 读的那条路由（真监听上打一次即可看出语言来自哪一位）。 */
-const CONTEXT_ROUTE = "/_dsh/dir-prep/context?sessionId=none";
+/** 本包 Remote 读面的最小投影（服务经真 ctx.get 取出）。 */
+interface DirPrepRemoteShape {
+  context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
+}
+
+function remoteOf(ctx: { get: (name: string) => unknown }): DirPrepRemoteShape {
+  const service = ctx.get("dirPrepOrganize") as DirPrepRemoteShape | undefined;
+  assert.ok(service !== undefined, "Remote 服务没注册到上下文");
+  return service;
+}
+
 /** 设置里登记的允许导入目录（行 config、写面、门禁三处指同一枚路径）。 */
 const ALLOWED_DIR = "/opt/roles";
 
@@ -65,9 +73,7 @@ interface BootOptions {
   localePreference?: string;
   /** 本包行 config（走 patch 的 config 位，与真实安装同形）。 */
   row?: Record<string, unknown>;
-  /** 再挂真 WebServer（路由面只有真监听才算数）。 */
-  withWebServer?: boolean;
-  /** 再挂真磁盘 fs：本包 context 路由先判 fs 再判 cwd（host.ts:1714-1720），
+  /** 再挂真磁盘 fs：本包 context 路由先判 fs 再判 cwd（host.ts 的 context handler），
    *  想让回执落到 cwdUnknown 就必须给它一位 fs。 */
   withFs?: boolean;
 }
@@ -94,7 +100,7 @@ const LocaleEntry = {
 /** 装一台真 profile + 真 Loader + 真 SettingsForms + 本包条目。
  * @param options.localePreference locale 行 config（决定宿主文案语言那一条真读数）
  * @param options.row 本包行 config（走 patch 的 config 位，与真实安装同形）
- * @param options.withWebServer 是否再挂真 HTTP（跨命名空间 locale 读要用路由验一次） */
+ */
 async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
   const made = await mkdtemp(path.join(os.tmpdir(), "organize-settings-"));
   // macOS 的 /var → /private/var 是软链：profile 的落点一律用 realpath 后的拼写，
@@ -180,9 +186,6 @@ async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
       });
     },
   );
-  if (options.withWebServer === true) {
-    await ctx.plugin(WebServer, { host: "127.0.0.1", port: 0 });
-  }
   if (options.withFs === true) {
     /* oxlint-disable-next-line no-new -- FileSystem 的构造即注册（Service 超类把自己
        provide 到 ctx 的服务名上），本用例要的就是这个副作用；赋给变量再丢弃反而是假动作。 */
@@ -228,19 +231,6 @@ afterEach(async () => {
 });
 /* oxlint-enable vitest/require-top-level-describe, no-await-in-loop */
 
-/** 真监听上的路由 URL（port 由 OS 分配，故只能现取）。 */
-function routeUrl(ctx: Context, route: string): string {
-  return `http://127.0.0.1:${String(ctx.webServer.port)}${route}`;
-}
-
-/** `Response.json()` 的声明返回 any：先收成 unknown 再投影成记录，断言才有机读位。 */
-async function jsonOf(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(url);
-  const parsed: unknown = await response.json();
-  assert.ok(typeof parsed === "object" && parsed !== null, `回执应是 JSON 对象：${url}`);
-  return parsed as Record<string, unknown>;
-}
-
 /** 取某命名空间的 descriptor，缺席即红：有了这一道显式判据，后面逐位访问不必再挂 `?.`。 */
 function describeEntry(
   ctx: Awaited<ReturnType<typeof boot>>,
@@ -249,7 +239,7 @@ function describeEntry(
   return ctx.settings.describe().find((row) => row.ns === ns);
 }
 
-/** profile 条目 id 的命名空间轴（describe() 的 ns 位即它，host.ts:1567 的 inject 也指它）。 */
+/** profile 条目 id 的命名空间轴（describe() 的 ns 位即它，host.ts 的 inject 也指它）。 */
 function requireRow(ctx: Context, ns: string): SettingsDescriptor {
   const row = describeEntry(ctx, ns);
   assert.ok(row !== undefined, `describe() 里找不到 ${ns}`);
@@ -294,8 +284,8 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     const schema = describeEntry(ctx, ENTRY_ID)?.schema;
     assert.equal(typeof schema, "object");
     const form = JSON.stringify(schema);
-    // 非 volatile 的三位（maxSnippetBytes/readConcurrency/importBodyMaxBytes）连 schema 都不出
-    for (const hidden of ["maxSnippetBytes", "readConcurrency", "importBodyMaxBytes"]) {
+    // 非 volatile 的两位（maxSnippetBytes/readConcurrency）连 schema 都不出
+    for (const hidden of ["maxSnippetBytes", "readConcurrency"]) {
       assert.equal(form.includes(hidden), false, `${hidden} 不该出现在设置表单里`);
     }
   });
@@ -330,7 +320,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     assert.deepEqual(config.templates.get(), [
       { id: "t1", name: "评审官", description: "", text: "正文", group: "", emoji: "" },
     ]);
-    // 缺省 array 位在"未设置"时读回 []，不是 undefined（host.ts:1490-1499 的回落判据据此成立）
+    // 缺省 array 位在"未设置"时读回 []，不是 undefined（client 半的回落判据据此成立）
     assert.deepEqual(config.importAllowRoots.get(), []);
   });
 
@@ -393,28 +383,28 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     ]);
     assert.deepEqual(config.importAllowRoots.get(), [ALLOWED_DIR]);
     assert.equal(config.organizeTimeoutMs.get(), 5000);
-    // 写空表即 fail-closed：登记目录是用户的显式动作，清空后绝对路径一律不放（host.ts:1482-1486）
+    // 写空表即 fail-closed：登记目录是用户的显式动作，清空后绝对路径一律不放
     await ctx.settings.update(ENTRY_ID, { importAllowRoots: [] });
     assert.deepEqual(config.importAllowRoots.get(), []);
   });
 
   it("跨命名空间 locale 读：宿主 locale 偏好经真 describe() 决定 host 回执语言", async () => {
     // 这一条把「本包只读 locale 那一位」的实现放到真件上跑：文案表来自真 SettingsForms.describe()
-    // 的投影结果，而不是手搓的 rows。路由只在 HTTP 层能证明，故这里连真 WebServer 一起装。
-    const zh = await start({ withWebServer: true, withFs: true });
-    const zhRow = await fetch(routeUrl(zh.ctx, "/_dsh/dir-prep/model"), { method: "POST" });
-    assert.equal(zhRow.status, 405, "路由在真监听上");
-    const zhContext = await jsonOf(routeUrl(zh.ctx, CONTEXT_ROUTE));
+    // 的投影结果，而不是手搓的 rows。读面是官方 Remote 服务，直接在真 ctx 上调用。
+    const zh = await start({ withFs: true });
+    const zhRemote = remoteOf(zh.ctx);
+    const zhContext = await zhRemote.context({ sessionId: "none" });
     assert.equal(zhContext["error"], HOST_MESSAGES.zh.cwdUnknown);
 
-    const en = await start({ localePreference: "en", withWebServer: true, withFs: true });
+    const en = await start({ localePreference: "en", withFs: true });
     // locale 条目自己的 volatile 位读得出，且与本包 ns 同处一张 describe() 表
     assert.equal(sectionOf(describeEntry(en.ctx, LOCALE_SETTINGS_NAMESPACE))["preference"], "en");
-    const enContext = await jsonOf(routeUrl(en.ctx, CONTEXT_ROUTE));
+    const enRemote = remoteOf(en.ctx);
+    const enContext = await enRemote.context({ sessionId: "none" });
     assert.equal(enContext["error"], HOST_MESSAGES.en.cwdUnknown);
     // 改偏好即切语言（现读、不重启）：写 locale 而不是写本包
     await en.ctx.settings.update(LOCALE_SETTINGS_NAMESPACE, { preference: "zh" });
-    const backToZh = await jsonOf(routeUrl(en.ctx, CONTEXT_ROUTE));
+    const backToZh = await enRemote.context({ sessionId: "none" });
     assert.equal(
       backToZh["error"],
       HOST_MESSAGES.zh.cwdUnknown,

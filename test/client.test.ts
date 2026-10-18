@@ -7,7 +7,8 @@
 //   · 组件走 apply(ctx) 装配出来的真实 slot 组件树挂载，按 DOM 断言；
 //     交互优先直调 React props（happy-dom 合成事件到不了 React 19 root 监听器，
 //     已在前一个包里实证），button.click() 在真实链路上可用；
-//   · 一切网络都经 fetch 桩；模型/设置服务都是假对象 —— 绝不打真实模型。
+//   · 读面一律经 setDirPrepReader 注入测试替身（fetchReader 只是替身的一种实现），
+//     模型/设置服务都是假对象 —— 绝不打真实模型。
 //
 // 审计修复的锁死点：
 //   · 「以角色视角整理」POST 必须带 roleText（host 侧已修，这里是客户端半程）；
@@ -30,11 +31,12 @@ import {
   formatImportSkips,
   loadBuiltinTemplates,
   persistError,
-  rootsPersistError,
   resetBuiltinTemplates,
+  setDirPrepReader,
   subscribeBuiltinTemplates,
   inject as clientInject,
 } from "../src/client-entry.ts";
+import type { DirPrepReader } from "../src/remote.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { Translate, UiMessages } from "../src/ui-messages.ts";
 import {
@@ -46,7 +48,7 @@ import { DEFAULT_TEMPLATES } from "../src/templates.ts";
 import type { TemplateEntry } from "../src/templates.ts";
 import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
 
-/** 官方快照面（7 位全必选）。桩件与全部 fixture 都用它，不再是本包自抄的四位形状：
+/** 官方快照面（6 位全必选）。桩件与全部 fixture 都用它，不再是本包自抄的四位形状：
  *  官方面加一位（base/user/mode 这类）这里就编译失败，而不是等真宿主来告诉测试。 */
 type FormSnapshot = ConfigFormSnapshot<Record<string, unknown>>;
 
@@ -67,7 +69,6 @@ function snap(over: Partial<FormSnapshot> = {}): FormSnapshot {
     user: {},
     revision: 3,
     writable: true,
-    mode: "host",
     ...over,
   };
 }
@@ -81,7 +82,7 @@ const PKG_DIR = path.join(import.meta.dirname, "..");
  * dsh-client-ui-plugin-manager/lib/client.js:1821，pkg.name = bundle.name：:306/:320；槽契约
  * slot-contract.d.ts:96-100「keyed by the bundle's package name」；匹配是逐字相等：
  * dsh-client-ui-renderer/lib/client.js:1154 → 写成裸条目 id 就是整张卡不渲染）。
- * **解析**而不是在测试里抄一份：抄一份同样的错值就一直绿，这正是此前漏掉的原因。
+ * **解析**而不是在测试里抄一份：抄一份同样的错值就一直绿，这正是会漏的原因。
  * 同时钉住 profile 的 link 目标就是本目录，避免比到另一份残留副本。
  */
 async function profileBundleName(): Promise<string> {
@@ -530,6 +531,7 @@ interface MockCtx {
     register: (desc: SlotReg, view: unknown) => () => void;
   };
   configForms: { get: (entryId: string) => FakeScope };
+  get: (name: string, strict?: boolean) => unknown;
   /** 生产 `apply` 的那一位原样引用：桩件实现一改形状即编译期红。 */
   locale: LocaleSeat;
 }
@@ -545,7 +547,7 @@ type LocaleSeat = ApplyCtx["locale"];
  *  用例不主动 drain 时，document.head 会随用例数堆出几十个同 id 的
  *  #dir-prep-organize-css，卸载用例的 querySelector 因此读到"上一个用例的标签"，
  *  断言失败 → node:assert 对 happy-dom 元素做深比较 diff（实测 createErrDiff
- *  指数级展开到 ~6GB，worker 被 SIGKILL，整个文件后半 15 个用例全丢）。
+ *  指数级展开到 ~6GB，worker 被 SIGKILL，整个文件后半的用例全丢）。
  *  故 afterEach 统一 drain：用例开始时 document 干净，卸载断言才只看得见自己的标签。 */
 const liveCtxs: MockCtx[] = [];
 
@@ -622,7 +624,51 @@ function useCardOf(store: StoreView): (selector: (snap: SnapshotView) => unknown
   };
 }
 
+async function fetchGet(url: string): Promise<unknown> {
+  const response = await fetch(url);
+  return response.json();
+}
+
+async function fetchPost(url: string, body: unknown): Promise<unknown> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return response.json();
+}
+
+function fetchReader(): DirPrepReader {
+  return {
+    defaults: async () => fetchGet(DEFAULTS_URL),
+    context: async (sessionId) =>
+      fetchGet(`${CONTEXT_URL}?sessionId=${encodeURIComponent(sessionId)}`),
+    model: async (sessionId) => fetchGet(`${MODEL_URL}?sessionId=${encodeURIComponent(sessionId)}`),
+    organize: async (args) => fetchPost(ORGANIZE_URL, args),
+    importTemplates: async (args) => fetchPost(IMPORT_URL, args),
+  };
+}
+
+async function wrapRemote(pending: Promise<unknown>): Promise<unknown> {
+  return { ok: true, value: await pending };
+}
+
+function remoteNamespace(): Record<string, unknown> {
+  const reader = fetchReader();
+  return {
+    defaults: async () => wrapRemote(reader.defaults()),
+    context: async (request: { sessionId: string }) =>
+      wrapRemote(reader.context(request.sessionId)),
+    model: async (request: { sessionId: string }) => wrapRemote(reader.model(request.sessionId)),
+    organize: async (request: Parameters<DirPrepReader["organize"]>[0]) =>
+      wrapRemote(reader.organize(request)),
+    importTemplates: async (request: Parameters<DirPrepReader["importTemplates"]>[0]) =>
+      wrapRemote(reader.importTemplates(request)),
+  };
+}
+
 function makeCtx(snapshot: FormSnapshot = READY, translator: Translate = tZh): MockCtx {
+  setDirPrepReader(fetchReader());
   const scope = makeScope(snapshot);
   const registers: SlotReg[] = [];
   const ctx: MockCtx = {
@@ -659,6 +705,12 @@ function makeCtx(snapshot: FormSnapshot = READY, translator: Translate = tZh): M
         ctx.formEntryIds.push(entryId);
         return scope;
       },
+    },
+    get(name) {
+      if (name === "remote") {
+        return { $mount: async (): Promise<undefined> => undefined };
+      }
+      return name === "remote.dirPrepOrganize" ? remoteNamespace() : undefined;
     },
     locale: {
       register(ns, dicts) {
@@ -881,7 +933,7 @@ async function clickViaProps(node: HTMLElement | null): Promise<void> {
  *  文件根上，require-hook 又不许套件体里出现裸的 setup 语句（把钩子登记藏在具名函数里
  *  再调用，同样算 setup 代码）⇒ 这里只导出**钩子体本身**，由每个顶层套件在体首用
  *  `beforeEach(domFixtureSetup)` / `afterEach(domFixtureTeardown)` 各登记一次。
- *  17 个套件登记的是同两个函数，效果与原文件级钩子逐字等价（每个用例前后各跑一遍、
+ *  各套件登记的是同两个函数，效果与原文件级钩子逐字等价（每个用例前后各跑一遍、
  *  顺序不变），打印出来的套件名也不受牵连。 */
 function domFixtureSetup(): void {
   container = document.createElement("div");
@@ -1276,7 +1328,6 @@ describe("OrganizeButton", () => {
     assert.deepEqual(writes, ["整理后的要求"], "成功后替换输入框");
     const post = fetchCalls.find((call) => call.init.method === "POST");
     assert.ok(post, "organize 是 POST");
-    assert.equal(post.init.headers?.get("x-dir-prep-csrf"), "tok-ctx", "回填 context 下发的令牌");
     const body = jsonRecordOf(post.init.body);
     assert.equal(body["prompt"], "原始草稿");
     assert.equal(body["sessionId"], "s1");
@@ -1478,7 +1529,7 @@ describe("OrganizeButton", () => {
         };
       }
       if (url.startsWith(MODEL_URL)) {
-        // host 的 /model 本来就会带 reasoningEffort（host.ts:840）：客户端投影必须
+        // host 的 /model 本来就会带 reasoningEffort（host.ts 的 model 回执构造）：客户端投影必须
         // 容忍这个多余字段，不能因为不消费它就整包判成坏形状。
         return {
           body: { ok: true, csrf: "tok-model", provider: "p", model: "m", reasoningEffort: "high" },
@@ -1502,14 +1553,6 @@ describe("OrganizeButton", () => {
     await mount(React.createElement(organize, kitProps({ useInput: undefined })));
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /输入框为空/u);
-  });
-
-  it("两个响应都没有 csrf → 令牌缺失错误", async () => {
-    stubFetch(() => ({ body: { ok: true, cwd: "/w", entries: [], provider: "p", model: "m" } }));
-    const { organize } = mountAll();
-    await mount(React.createElement(organize, kitProps()));
-    await press(buttonByField(FIELD_ORGANIZE_BTN));
-    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /整理令牌缺失/u);
   });
 
   it.each(["http", "network", "abort"] as const)(
@@ -1981,7 +2024,7 @@ describe("TemplatesCard 状态提示", () => {
   });
 
   it("首个快照受理前（value/revision 缺席）→ 未就绪 + 无值 + revision 0", async () => {
-    // 原用例喂的是「整个快照是 null」，官方快照面（7 位全必选）根本表示不出这种
+    // 原用例喂的是「整个快照是 null」，官方快照面（6 位全必选）根本表示不出这种
     // 形状，src 里那条 `isRecord(snap) ? snap : {}` 也随类型回归官方而删除。这里改钉
     // 官方真会送来的那一态：provider 还没接受任何 section → status loading、
     // value/revision 均为 undefined。
@@ -2306,7 +2349,10 @@ describe("TemplatesCard 恢复默认", () => {
 
 // ── 内置精选表按需下发（表体在 host 侧，不再打进每次开页的 combo）────────────
 describe("内置表按需下发", () => {
-  beforeEach(domFixtureSetup);
+  beforeEach(() => {
+    setDirPrepReader(fetchReader());
+    domFixtureSetup();
+  });
 
   afterEach(domFixtureTeardown);
 
@@ -2380,6 +2426,15 @@ describe("内置表按需下发", () => {
       "有自有模板 → 内置表一发都不发（计数取增量：fetchCalls 跨段累加）",
     );
     assert.equal(byFields(FIELD_TEMPLATE_ITEM).length, 1);
+  });
+
+  it("读面缺席 → 载入报「远程读面不可用」而不是静默空表", async () => {
+    setDirPrepReader(undefined);
+    const state = await loadBuiltinTemplates();
+    assert.equal(state.phase, "error");
+    assert.match(state.error, /远程读面不可用/u);
+    resetBuiltinTemplates();
+    setDirPrepReader(fetchReader());
   });
 
   it("在飞期间并发调用只发一发", async () => {
@@ -2821,96 +2876,19 @@ describe("AllowRootsPanel 导入允许目录", () => {
  *  并把那一行的文本交给用例——断言必须待在用例体内（expect-expect 只认体内直调）。
  *  三条各自一个用例：DOM 挂载不能在同一
  *  个循环里串起来跑（no-await-in-loop 之外，重挂同一次用例里也更容易互相污染）。 */
-async function importErrorTextFor(route: FetchRoute): Promise<string> {
-  stubFetch((url) => (url === IMPORT_URL ? route : { body: { ok: true } }));
-  await openCard();
-  await press(buttonWithText("导入角色"));
-  return errText();
-}
-describe("fetch 非 2xx 的错误原因必须带进界面", () => {
-  beforeEach(domFixtureSetup);
-
-  afterEach(domFixtureTeardown);
-
-  it("403 + {ok:false,error} → 界面显示 host 的越界原因（不是 HTTP 403）", async () => {
-    const shown = await importErrorTextFor({
-      ok: false,
-      status: 403,
-      body: { ok: false, error: "导入路径越界：仅允许「会话 cwd …」之内" },
-    });
-    assert.match(shown, /导入路径越界/u);
-    assert.ok(!shown.includes("HTTP 4"), "状态码不顶替原因文本");
-  });
-
-  it("非 2xx 且响应体不是 JSON → 回落 HTTP 状态码", async () => {
-    assert.match(
-      await importErrorTextFor({ ok: false, status: 403, jsonThrows: true }),
-      /HTTP 403/u,
-      "状态 403 回落状态码文本",
-    );
-  });
-
-  it("非 2xx 且响应体不是对象（网关 HTML）→ 回落 HTTP 状态码", async () => {
-    assert.match(
-      await importErrorTextFor({ ok: false, status: 502, body: "网关 HTML" }),
-      /HTTP 502/u,
-      "状态 502 回落状态码文本",
-    );
-  });
-
-  it("非 2xx 且 error 是空串 → 回落 HTTP 状态码（空原因不算原因）", async () => {
-    assert.match(
-      await importErrorTextFor({ ok: false, status: 500, body: { ok: false, error: "" } }),
-      /HTTP 500/u,
-      "状态 500 回落状态码文本",
-    );
-  });
-
-  it("rootsPersistError：未就绪 / 不一致 / 一致 三分支", () => {
-    assert.match(
-      rootsPersistError(tZh, { ready: false, revision: 0, allowRoots: [] }, ["/a"], tZh("save")) ??
-        "",
-      /保存结果不可确认：设置源未就绪/u,
-    );
-    assert.match(
-      rootsPersistError(
-        tZh,
-        { ready: true, revision: 9, allowRoots: ["/b"] },
-        ["/a"],
-        tZh("save"),
-      ) ?? "",
-      /保存未生效：宿主拒绝/u,
-    );
-    assert.equal(
-      rootsPersistError(tZh, { ready: true, revision: 9, allowRoots: ["/a"] }, ["/a"], tZh("save")),
-      undefined,
-    );
-  });
-});
 describe("客户端 fetch 超时与卸载清理", () => {
   beforeEach(domFixtureSetup);
 
   afterEach(domFixtureTeardown);
 
   it("整理请求 125 秒未完成 → 超时错误可见（客户端不悬挂）", async () => {
-    stubFetch(async (url: string, init: FetchInit) => {
+    stubFetch(async (url: string) => {
       if (!url.startsWith(ORGANIZE_URL)) {
-        return { body: { ok: true, csrf: "t", cwd: "/w", entries: [], provider: "p", model: "m" } };
+        return { body: { ok: true, cwd: "/w", entries: [], provider: "p", model: "m" } };
       }
-      const { signal } = init;
-      assert.ok(signal, "client 必须带 AbortSignal（超时靠它取消）");
-      const gate = Promise.withResolvers<undefined>();
-      signal.addEventListener(
-        "abort",
-        () => {
-          gate.resolve(undefined);
-        },
-        { once: true },
-      );
-      await gate.promise;
-      const error = new Error("The operation was aborted");
-      error.name = "AbortError";
-      throw error;
+      // 挂住不返回：客户端侧的 125s 闸门必须自己收口（网关不会替它超时）。
+      const gate = Promise.withResolvers<FetchRoute>();
+      return gate.promise;
     });
     const { organize } = mountAll();
     vi.useFakeTimers();
@@ -2932,7 +2910,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     clientApply(ctx as unknown as Parameters<typeof clientApply>[0]);
     assert.ok(document.querySelector("#dir-prep-organize-css"), "样式已注入");
     // 绊线在位（桩件的 dispose 一被调用就抛）→ 下面那句"清理不 dispose 表单"是实测而非声称：
-    // 0.1.7 的 `ConfigForm` 面里没有 dispose（installed config-form-types.d.ts:36-74），
+    // 0.1.7 的 `ConfigForm` 面里没有 dispose（installed config-form-types.d.ts 的 ConfigForm），
     // 把 scope.dispose() 写回 disposer 会当场炸在这里。
     assert.throws(() => {
       ctx.scope.dispose();
