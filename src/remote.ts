@@ -11,7 +11,9 @@ import type {
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
-const DIR_PREP_NAMESPACE = "dirPrepOrganize";
+/** Typert Remote 命名空间。**单源**：错误文案与宿主侧注册都用这一枚，
+ *  写死两处会让"网关挂的是 A、报错说的是 B"这种漂移没有任何运行期信号。 */
+export const DIR_PREP_NAMESPACE = "dirPrepOrganize";
 const DIR_PREP_SERVICE_KEY = `remote.${DIR_PREP_NAMESPACE}`;
 const PACKAGE_NAME = "@jayyuen66/dsh-dir-prep-organize";
 

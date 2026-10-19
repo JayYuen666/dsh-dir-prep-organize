@@ -37,6 +37,11 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 - 每枚 peer 都在 `devDependencies` 里以同一枚精确版本再写一份，本仓自己的 typecheck、build 与测试靠它解析。其余 `@deepseek-ai/*` 在源码里是 type-only，在声明产物里也不留说明符，所以只留在 `devDependencies`。
 - `dependencies` 剩下的确实是本包自己的运行期代码：`@jayyuen66/dsh-plugin-shared`。
 
+
+## shared 的版本下限
+
+如果你的 profile 用 pnpm `overrides` 把 `@jayyuen66/dsh-plugin-shared` 钉在某个版本，那个钉住的值必须不低于本包声明的 `@jayyuen66/dsh-plugin-shared` 版本。钉得更低就会装到一份缺少本包运行期所导入的名字的产物，宿主起来时报 `N entries did not activate` 加 `does not provide an export named ...`——包装得上、永远不生效，而各仓单仓 CI 看不见这一类。
+
 ## 在 dsh 里启用
 
 - 装包即由包内 bundle patch（`dsh.bundle.patch` 指向 `./cordis.patch.yml`）注入 `- id: dir-prep-organize`（`name` 为包名）。

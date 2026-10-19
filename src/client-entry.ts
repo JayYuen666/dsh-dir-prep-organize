@@ -17,7 +17,7 @@ import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { createDirPrepReader } from "./remote.ts";
+import { DIR_PREP_NAMESPACE, createDirPrepReader } from "./remote.ts";
 import type { DirPrepReader } from "./remote.ts";
 
 const NS: LocaleNs = "dir-prep-organize";
@@ -265,7 +265,7 @@ export function setDirPrepReader(reader: DirPrepReader | undefined): void {
 
 function requireReader(): DirPrepReader {
   if (dirPrepReader === undefined) {
-    throw new Error("远程读面不可用：宿主网关没有挂上 dirPrepOrganize");
+    throw new Error(`远程读面不可用：宿主网关没有挂上 ${DIR_PREP_NAMESPACE}`);
   }
   return dirPrepReader;
 }
