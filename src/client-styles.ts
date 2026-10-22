@@ -5,7 +5,8 @@
 // 的红线上（该规则 max=2000 且 skipComments/skipBlankLines 都为 false ⇒ 纯数据行照样计数），
 // 也让「改样式要翻逻辑」变得容易。apply 侧只 import CARD_STYLES 一处。
 //
-// 约束：只用宿主的设计别名（--dsw-*），不写死颜色/字号——自动跟随宿主明暗主题。
+// 约束：颜色一律走宿主的设计别名（--dsw-*），自动跟随明暗主题；字号没有对应的别名面，
+// 按「正文 / 副标题 / 卡片标题」的层次写成固定像素值，改主题不会跟着变。
 // 规则按「按钮 / 菜单 / 设置卡 / 行内输入」分组书写，顺序即层叠顺序。
 export const CARD_STYLES = [
   ".dpi-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1;border-radius:8px;padding:6px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background .16s,border-color .16s,color .16s}",
@@ -34,7 +35,7 @@ export const CARD_STYLES = [
   ".dpic-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}",
   ".dpic-head{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}",
   ".dpic-title{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}",
-  ".dpic-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}",
+  ".dpic-cardsub{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}",
   ".dpic-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}",
   ".dpic-chevron-open{transform:rotate(180deg)}",
   ".dpic-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:8px 0 12px;list-style:none}",
@@ -45,6 +46,7 @@ export const CARD_STYLES = [
   ".dpic-del{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;border-radius:6px;padding:4px 8px;cursor:pointer;flex:none}",
   ".dpic-del:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}",
   ".dpic-del:disabled{opacity:.55;cursor:not-allowed}",
+  ".dpic-header:focus-visible,.dpic-del:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}",
   ".dpic-text{width:100%;box-sizing:border-box;font:inherit;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:8px;margin-top:6px;min-height:96px;resize:vertical}",
   ".dpic-name:focus,.dpic-text:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}",
   ".dpic-emoji{width:44px;flex:none;box-sizing:border-box;font:inherit;font-size:13px;text-align:center;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 4px}",
@@ -60,6 +62,7 @@ export const CARD_STYLES = [
   ".dpic-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}",
   ".dpic-btn:disabled{opacity:.55;cursor:not-allowed}",
   ".dpic-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground)}",
+  ".dpic-btn-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}",
   ".dpic-btn-primary:disabled{opacity:.55;cursor:not-allowed}",
   ".dpic-btn-danger{color:var(--dsw-alias-state-error-primary)}",
   ".dpic-btn-danger:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary)}",

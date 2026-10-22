@@ -1,0 +1,41 @@
+# 依赖更新：action 与 npm 两条线各一条。
+#
+# action 侧覆盖本仓的 workflow 引用：其中一部分钉了 commit SHA，另一部分仍是可移动的 tag。
+# 钉 SHA 的那些，Dependabot 提的 PR 会把「换了哪个提交」变成一次可评审的 diff；仍按 tag
+# 引用的那些，同一个 PR 顺手把 tag 抬到新版本。
+#
+# npm 侧刻意用 allow 收窄到 @deepseek-ai/*：本仓其余工具链依赖写成 catalog:，
+# 那条范围的真源在伞根的 pnpm-workspace.yaml（由根上的 sync 投影），不归这里管。
+# 在这里放开会造出「Dependabot 改 catalog 协议」这种两边打架的 PR。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      # 本仓引用的 action 全部放进一组，避免每个 action 各占一个 PR 去抢同一个名额。
+      # 模式按 `<owner>/<repo>` 写：通配符覆盖该仓库下的全部条目（codeql-action 的 init、
+      # analyze、upload-sarif 就是三条不同的引用），跨仓库不会互相匹配，所以两个 owner 各列一条。
+      actions:
+        patterns:
+          - "actions/*"
+          - "pnpm/*"
+          - "github/codeql-action*"
+          - "ossf/scorecard-action*"
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    allow:
+      - dependency-name: "@deepseek-ai/*"
+    groups:
+      # 宿主族里的 dsh-* 大多跟同一版编译契约，拆开升会造出彼此不兼容的中间态；但其中也有
+      # 不跟这条线走的：cordis 一组、cosmokit 与 schemastery 各自钉正式版。分组只按前缀收，
+      # 所以那些也会进这一组——它们各自按自己的版本线升，互不牵制。
+      host-family:
+        patterns:
+          - "@deepseek-ai/*"

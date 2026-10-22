@@ -1,7 +1,15 @@
 {
   "name": "@jayyuen66/dsh-dir-prep-organize",
-  "version": "0.1.4",
-  "description": "dsh 插件：对话输入框「整理」按钮（主键直接整理/▾ 以角色视角整理，结合当前目录 + session 模型整理优化草稿）+「模板」下拉（内置精选角色集生成自插件 agents/ 角色库，可按部门分组；设置卡可增删改/一键导入内置全部/导入本地角色 .md）",
+  "version": "0.1.5",
+  "description": "dsh 插件：对话输入框「润色」按钮（主键直接润色/▾ 以角色风格润色，结合当前目录 + session 模型润色草稿）+「模板」下拉（内置精选角色集生成自插件 agents/ 角色库，可按部门分组；设置卡可增删改/一键导入内置全部/导入本地角色 .md）",
+  "keywords": [
+    "cordis",
+    "dsh",
+    "dsh-plugin",
+    "prompt-engineering",
+    "role-template",
+    "ui"
+  ],
   "homepage": "https://github.com/JayYuen666/dsh-dir-prep-organize#readme",
   "bugs": {
     "url": "https://github.com/JayYuen666/dsh-dir-prep-organize/issues"

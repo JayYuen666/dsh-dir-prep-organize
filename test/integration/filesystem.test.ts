@@ -2,21 +2,21 @@
 //
 // 与 test/routes.test.ts 的分工：那里用 `FsService` 形状的**手搓桩**跑回执分支（快、稳、可造
 // 罕见错误）；这里换成真磁盘 + 真抽象类子类（test/integration/real-fs.ts，语义逐条对齐宿主
-// fs-local，行号写在那份文件头），于是三类只在真件上才会露面的东西被纳入判据：
+// fs-local，契约证据写在那份文件头），于是三类只在真件上才会露面的东西被纳入判据：
 //   ① listDir 交来的 `size`/`type` 是不是真的（桩里 `size` 随手一给就"测得出绿"，而
 //      readSnippetBounded 整条取舍都挂在它上面）；
-//   ② 软链的 targetKey 身份（宿主 fsio.ts:165 realpath 派生）在 contains/去重上是否一致；
+//   ② 软链的 targetKey 身份（宿主 fsio.ts 的 realpath 派生）在 contains/去重上是否一致；
 //   ③ 真错误（FS_NOT_TEXT / FS_NOT_DIRECTORY / FS_TOO_LARGE）经本包降级后计到哪一格。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · `FileSystem` 抽象面 13 位：packages/fs/fs/src/index.ts:132(resolve),142(processPath),
-//    164(fileUrl),173(contains),181(stat),197(lstat),205(readText),216(streamText),
-//    228(readBytes),243(readByteRange),252(listDir),266(writeText),287(editText)；
-//    `declare module { interface Context { fs: FileSystem } }`：:45-48。
+//  · `FileSystem` 抽象面 13 位：packages/fs/fs/src/index.ts 的 resolve / processPath /
+//    fileUrl / contains / stat / lstat / readText / streamText / readBytes / readByteRange /
+//    listDir / writeText / editText；
+//    `declare module { interface Context { fs: FileSystem } }` 也在同一份声明里。
 //  · `FsDirEntry`：name/type('file'|'directory'|'other')/target/version?/size?
-//    packages/fs/fs/src/types.ts:104-115 —— 注意联合里**没有 'symlink'**，故软链在 listDir
+//    packages/fs/fs/src/types.ts —— 注意联合里**没有 'symlink'**，故软链在 listDir
 //    里只能以"跟随后的真身"露面（断链落 'other'），本文件那两条软链用例判的就是这件事。
-//  · 错误码词汇表：packages/fs/fs/src/types.ts:175-189（FS_NOT_TEXT / FS_TOO_LARGE /
+//  · 错误码词汇表：packages/fs/fs/src/types.ts（FS_NOT_TEXT / FS_TOO_LARGE /
 //    FS_NOT_DIRECTORY / FS_NOT_FOUND / FS_NOT_REGULAR_FILE …）。
 //  · 本包消费面：`FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" |
 //    "contains" | "stat">`（host.ts），`collectDirContext` 的形参只取其中不带 `stat` 的几位。
@@ -42,7 +42,7 @@ const README_BODY = "# 前端开发者 🎨\n\n第一行\n";
 /** 摘要面判的是 trim 之后的正文（host.ts 的 makeSnippet）。 */
 const README_SNIPPET = "# 前端开发者 🎨\n\n第一行";
 
-/** FsError 判别：错误码是宿主给消费方的**唯一**机读位（types.ts:169-189）。 */
+/** FsError 判别：错误码是宿主给消费方的**唯一**机读位（types.ts）。 */
 function isFsError(error: unknown, code: string): boolean {
   assert.ok(error instanceof FsError, `应抛 FsError，实际 ${String(error)}`);
   assert.equal(error.code, code);
@@ -126,17 +126,17 @@ describe("真实 FileSystem 抽象类：装配与身份", () => {
   it("挂进真实 Context 后就是官方 ctx.fs 那一位，且缺席/非法路径按 fs-local 语义抛", async () => {
     const { fs, ctx } = tree();
     // cordis 交出的是服务代理而不是实例本身，故"就是这一位"要看代理背后：实例同类 + 服务名 'fs'
-    // （packages/fs/fs/src/index.ts:87-90 的 `super(ctx, 'fs')` 就是注册点本身）。
+    // （packages/fs/fs/src/index.ts 的 `super(ctx, 'fs')` 就是注册点本身）。
     assert.ok(ctx.fs instanceof DiskFileSystem, "ctx.fs 解析到本类的实例");
     assert.equal(fs.name, "fs");
     // 同一 Context 上再注册一次 'fs' 当场撞名——这条失败正是"构造函数即注册点"的正面证据。
     assert.throws(() => new DiskFileSystem(ctx), /registered/u);
-    // fsio.ts:162：空/纯空白不是"当前目录"的别名，而是坏输入
+    // fsio.ts 的 resolve：空/纯空白不是"当前目录"的别名，而是坏输入
     await assert.rejects(
       () => fs.resolve("   "),
       (error: unknown) => isFsError(error, "FS_NOT_FOUND"),
     );
-    // 缺席目录列不得：FS_NOT_FOUND（fsio.ts:310）；拿文件当目录列：FS_NOT_DIRECTORY（:311）
+    // 缺席目录列不得：FS_NOT_FOUND（fsio.ts 的 listDir）；拿文件当目录列：FS_NOT_DIRECTORY（同上）
     const missing = await fs.resolve(path.join(tree().root, "nope"));
     await assert.rejects(
       () => fs.listDir(missing),
@@ -158,11 +158,11 @@ describe("真实 FileSystem 抽象类：装配与身份", () => {
     await symlink(real, link);
     const byReal = await fs.resolve(real);
     const byLink = await fs.resolve(link);
-    // resolve 跟随软链 → 同一身份（宿主 index.ts:133-138 + fsio.ts:161-167）
+    // resolve 跟随软链 → 同一身份（宿主 index.ts 的 resolve + fsio.ts 的 realpath 派生）
     assert.equal(String(byLink.targetKey), String(byReal.targetKey));
     // displayPath 保留各自拼写：给 UI 看的那一位不是身份
     assert.equal(path.basename(byLink.displayPath), "alias.ts");
-    // lstat 是唯一报得出 'symlink' 的那一位（fs/index.ts:184-197 的文档语义）
+    // lstat 是唯一报得出 'symlink' 的那一位（fs/index.ts 的文档语义）
     const pathInfo = await fs.lstat(link);
     assert.equal(pathInfo?.type, "symlink");
     // 而 stat（跟随）报的是真身
@@ -178,7 +178,7 @@ describe("真实 FileSystem 抽象类：装配与身份", () => {
     assert.equal(fs.contains(parent, inside), true);
     // 这正是本包「允许根」门禁要的判据（host.ts 注释里那条 /home/dev/project-two 审计复现）
     assert.equal(fs.contains(parent, sibling), false);
-    // 自身算容器内（fs-local index.ts:154 `path === ''`）
+    // 自身算容器内（fs-local index.ts 的 contains，`path === ''`）
     assert.equal(fs.contains(parent, parent), true);
   });
 
@@ -210,7 +210,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     const result = await collectDirContext(fs, root, MESSAGES);
     assert.equal(result.error, undefined);
     // listDir 的名序**直传**到回执（collectDirContext 不重排）。这里把宿主的排序口径钉住：
-    // fs-local 用 `localeCompare`（fsio.ts:325）而不是码位序，于是 en-US collation 下
+    // fs-local 用 `localeCompare`（fsio.ts 的 listDir）而不是码位序，于是 en-US collation 下
     // `package.json` 排在 `README.md` **之前**（p<r，大小写只作次级权重）。若哪天改成
     // 码位序，README.md 会跳到前面来，这条断言当场红——而不是让界面顺序悄悄变样。
     assert.deepEqual(shape(result.entries).slice(0, 4), [
@@ -241,7 +241,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     const { fs, root } = tree();
     // 走字节面写入（不是字符串），让「真件按 UTF-8 解码后原样交付」这一步有出处
     await disk(path.join(root, PKG_JSON), Buffer.from('{"a":1}', "utf8"));
-    // 第二枚带 NUL：真件在这里抛 FS_NOT_TEXT（fsio.ts:398-400），桩只能凭空造一个 catch
+    // 第二枚带 NUL：真件在这里抛 FS_NOT_TEXT（fsio.ts 的 readText），桩只能凭空造一个 catch
     await disk(path.join(root, "config.JSON"), new Uint8Array([0, 0, 0, 0]));
     const result = await collectDirContext(fs, root, MESSAGES);
     assert.equal(result.skipped.unreadable, 1, "只有带 NUL 的那枚算读失败");
@@ -261,7 +261,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     assert.equal(result.skipped.tooLarge, 1);
     assert.equal(result.entries[0]?.snippet, undefined);
     assert.equal(result.truncated, true);
-    // 总量预算夹掉的也算 tooLarge（classifyRead:574-576）：这里给一份 200 字节 + 预算 150
+    // 总量预算夹掉的也算 tooLarge（classifyRead）：这里给一份 200 字节 + 预算 150
     await rm(big);
     await disk(path.join(root, README_MD), "y".repeat(200));
     const overTotal = await collectDirContext(fs, root, MESSAGES, {
@@ -553,7 +553,7 @@ describe("导入根本身是越界软链：两条分支都必须过后端复判"
 
   it("合法地导入允许根本身（child 就是 parent）不得被这道门误伤", async () => {
     // contains 的官方语义是「child 是 parent **或其后代**为真」（installed
-    // dsh-fs/lib/types/index.d.ts:173-179）。只按 startsWith(parent+sep) 写的替身会把
+    // dsh-fs/lib/types/index.d.ts）。只按 startsWith(parent+sep) 写的替身会把
     // 「导入 cwd 本身」判成越界，于是这里锁住真后端下这条合法路径仍然放行。
     const { fs, cwd } = await linkDirToOutside();
     await writeFile(path.join(cwd, "mine.md"), roleFile("我的", "本地正文"), "utf8");

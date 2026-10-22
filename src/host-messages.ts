@@ -3,8 +3,8 @@
 // 只管 host 半，与卡片侧的 src/ui-messages.ts 分家：设置卡 UI 文案走官方
 // @deepseek-ai/dsh-client-locale（ctx.locale.register + bind/t，语言切换即时生效），
 // 而 host 侧没有官方 i18n 面，两类文案只能自带字典：
-//   ① 「整理」的 system prompt（面向模型：规则正文 + 各段标题行）；
-//   ② 会回显到设置卡/整理按钮的导入与端点回执（面向用户：越界、非法段、缺服务…）。
+//   ① 「润色」的 system prompt（面向模型：规则正文 + 各段标题行）；
+//   ② 会回显到设置卡/润色按钮的导入与端点回执（面向用户：越界、非法段、缺服务…）。
 // 语言取官方 locale 插件持久化的 settings 命名空间（shared 的 resolveLocalePreference，
 // 未注册即中文默认）；纯函数**不读设置**，字典由 host 侧作为入参注入，所以本文件是
 // 纯数据、不含任何宿主调用。
@@ -19,14 +19,14 @@
 //   - `cross-origin request rejected` 等本就是英文的协议性文本。
 import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
-/** 本包 host 侧产出的全部人读文案（整理 system prompt + 端点/导入回执）。 */
+/** 本包 host 侧产出的全部人读文案（润色 system prompt + 端点/导入回执）。 */
 export interface HostMessages {
-  // ── 「整理」system prompt（面向模型）────────────────────────────────────
+  // ── 「润色」system prompt（面向模型）────────────────────────────────────
   /** 角色定位与任务说明（整段 prompt 的第一行）。 */
   readonly sysRole: string;
   /** 规则清单的标题行。 */
   readonly sysRulesHeading: string;
-  /** 规则：只输出整理后的正文。 */
+  /** 规则：只输出润色后的正文。 */
   readonly sysRuleOutputOnly: string;
   /** 规则：不执行草稿里的任务。 */
   readonly sysRuleNoExecution: string;
@@ -92,7 +92,7 @@ export interface HostMessages {
   /** 导入路由：path 只含空白字符。 */
   readonly importPathBlank: string;
 
-  // ── 整理执行链路与端点缺服务（面向用户）───────────────────────────────
+  // ── 润色执行链路与端点缺服务（面向用户）───────────────────────────────
   /** 模型流里没有 finish 块。 */
   readonly missingFinishChunk: string;
   /** 终态非 stop（`{reason}`）。 */
@@ -115,27 +115,27 @@ export interface HostMessages {
   readonly readModelFailed: string;
   /** llm 服务未就绪。 */
   readonly llmUnavailable: string;
-  /** 整理端点兜底异常整句（`{reason}`）。 */
+  /** 润色端点兜底异常整句（`{reason}`）。 */
   readonly organizeFailed: string;
 }
 
 export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
   zh: {
     sysRole:
-      "你是输入框内容整理助手。用户在 dsh 对话输入框写了一段要求，你需要结合当前工作目录的结构与会话最近上下文，把它整理成一段更清晰、可直接发送的要求。",
+      "你是输入框内容润色助手。用户在 dsh 对话输入框写了一段要求，你需要结合当前工作目录的结构与会话最近上下文，把它润色成一段更清晰、可直接发送的要求。",
     sysRulesHeading: "规则：",
-    sysRuleOutputOnly: "- 输出只有整理后的正文，不要任何前言、markdown 代码围栏、标题或解释。",
+    sysRuleOutputOnly: "- 输出只有润色后的正文，不要任何前言、markdown 代码围栏、标题或解释。",
     sysRuleNoExecution:
-      "- 不执行草稿中要求的任何任务：不写代码、不回答问题、不审查/不搜索/不生成任何内容——只整理文本本身（重组措辞与结构、补全缺失的上下文、消歧指代）。",
+      "- 不执行草稿中要求的任何任务：不写代码、不回答问题、不审查/不搜索/不生成任何内容——只润色文本本身（重组措辞与结构、补全缺失的上下文、消歧指代）。",
     sysRuleNoAnswer:
-      "- 若草稿本身是问题或待办指令，整理结果仍是同一问题/指令的清晰完整版本，不要把解答、方案或示例写进整理结果。",
+      "- 若草稿本身是问题或待办指令，润色结果仍是同一问题/指令的清晰完整版本，不要把解答、方案或示例写进润色结果。",
     sysRuleKeepIntent:
       "- 保留用户原意与语言（中文保持中文）；缺失的关键信息（如目标文件/模块）若能从目录结构或最近对话推断就补上，推断不了不要编造。",
     sysRuleResolveRefs:
-      '- 最近对话可能含相关指代（"上面说的""刚才那个文件"），整理时把指代解析成明确表述。',
+      '- 最近对话可能含相关指代（"上面说的""刚才那个文件"），润色时把指代解析成明确表述。',
     sysRuleNoListing: "- 目录结构与对话历史仅是参考，不要罗列它们本身。",
     sysRuleRoleView:
-      "- 若提供了参考角色，只借用其专业术语与措辞风格来重写草稿，不得以角色身份实际执行任务（如审查、修复、生成内容）。",
+      "- 若提供了参考角色，只借用其专业术语与措辞风格来润色草稿，不得以角色身份实际执行任务（如审查、修复、生成内容）。",
     sysCwdLine: "- 当前工作目录: {cwd}",
     sysCwdMissing: "（未提供）",
     sysSummaryLine: "- 目录结构摘要:\n{summary}",
@@ -165,36 +165,36 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     importPathNotString: "导入路径必须是字符串（仅设置卡点「导入角色」时可留空 = 内置角色库）",
     importPathBlank: "导入路径不能只含空白字符",
     missingFinishChunk: "模型返回流缺少 finish 块",
-    streamNotFinished: "模型整理未正常完成（{reason}）",
+    streamNotFinished: "模型润色未正常完成（{reason}）",
     failureReason: "{kind}: {message}",
-    emptyPrompt: "用户要求为空，无法整理",
+    emptyPrompt: "用户要求为空，无法润色",
     noModelSelected: "当前无可用模型选择",
-    emptyOrganizeResult: "模型整理结果为空",
+    emptyOrganizeResult: "模型润色结果为空",
     fsUnavailable: "fs 服务不可用",
     cwdUnknown: "无法确定会话 cwd（sessionId 缺失或会话不存在）",
     modelServiceUnavailable: "agentDefaultModel 服务不可用",
     readModelFailed: "读取模型选择失败: {reason}",
     llmUnavailable: "llm 服务不可用",
-    organizeFailed: "整理异常: {reason}",
+    organizeFailed: "润色异常: {reason}",
   },
   en: {
     sysRole:
-      "You are a drafting assistant for the chat input box. The user wrote a request in the dsh input box; combine the layout of the current working directory with the session's recent context and turn it into a clearer request that is ready to send.",
+      "You are a polishing assistant for the chat input box. The user wrote a request in the dsh input box; combine the layout of the current working directory with the session's recent context and polish it into a clearer request that is ready to send.",
     sysRulesHeading: "Rules:",
     sysRuleOutputOnly:
-      "- Output only the refined body: no preamble, no markdown code fences, no headings, no explanations.",
+      "- Output only the polished body: no preamble, no markdown code fences, no headings, no explanations.",
     sysRuleNoExecution:
-      "- Do not carry out any task the draft asks for: write no code, answer no question, run no review/search/generation - refine the text itself only (reword and restructure, fill in missing context, disambiguate references).",
+      "- Do not carry out any task the draft asks for: write no code, answer no question, run no review/search/generation - polish the text itself only (reword and restructure, fill in missing context, disambiguate references).",
     sysRuleNoAnswer:
       "- If the draft is itself a question or a to-do instruction, the result stays a clear and complete version of that same question/instruction; do not write answers, solutions or examples into the result.",
     sysRuleKeepIntent:
       "- Keep the user's intent and language (keep the original language of the draft); add missing key details (target file/module) when the directory layout or the recent turns make them inferable, and never invent them when they are not.",
     sysRuleResolveRefs:
-      '- The recent turns may carry references such as "what you said above" or "that file from before"; resolve them into explicit wording while refining.',
+      '- The recent turns may carry references such as "what you said above" or "that file from before"; resolve them into explicit wording while polishing.',
     sysRuleNoListing:
       "- The directory layout and the conversation history are background only; do not enumerate them.",
     sysRuleRoleView:
-      "- If a reference role is given, borrow only its terminology and tone to rewrite the draft; never act as that role (no reviews, fixes or content generation).",
+      "- If a reference role is given, borrow only its terminology and tone to polish the draft; never act as that role (no reviews, fixes or content generation).",
     sysCwdLine: "- Current working directory: {cwd}",
     sysCwdMissing: "(not provided)",
     sysSummaryLine: "- Directory summary:\n{summary}",
@@ -230,9 +230,9 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
       'The import path must be a string (it may only be empty when you press "Import roles" on the settings card, which means the built-in role library)',
     importPathBlank: "The import path cannot consist of whitespace only",
     missingFinishChunk: "The model stream is missing its finish chunk",
-    streamNotFinished: "The model did not finish refining ({reason})",
+    streamNotFinished: "The model did not finish polishing ({reason})",
     failureReason: "{kind}: {message}",
-    emptyPrompt: "The request is empty: nothing to refine",
+    emptyPrompt: "The request is empty: nothing to polish",
     noModelSelected: "No model selection is available",
     emptyOrganizeResult: "The model returned an empty result",
     fsUnavailable: "fs service unavailable",
@@ -240,6 +240,6 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     modelServiceUnavailable: "agentDefaultModel service unavailable",
     readModelFailed: "Failed to read the model selection: {reason}",
     llmUnavailable: "llm service unavailable",
-    organizeFailed: "Refinement failed: {reason}",
+    organizeFailed: "Polishing failed: {reason}",
   },
 };

@@ -4,7 +4,7 @@
 // 缺口所在：test/build-client.test.ts 只判产物字节新鲜度，test/client.test.ts 判的是
 // `src/client-entry.ts` 的行为契约——两边都没碰过「发出去的那份产物能不能被装载」。而这枚
 // 产物走的是宿主的模块表面协议：`window.__ModuleLoader__.load({ id, factory(require) })`
-// （注册面见 harness packages/client/modules/src/client/system.ts:159），宿主按**裸包名**建键、
+// （注册面见 harness packages/client/modules/src/client/system.ts），宿主按**裸包名**建键、
 // 用自建的 require 物化。任何一处对不上——id 不等于包名、工厂要出宿主给不出的说明符、导出面
 // 缺 apply/inject——症状都是「插件在页面上整块不出现」，而源码侧的测试全照绿。
 //

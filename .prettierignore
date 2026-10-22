@@ -1,2 +1,5 @@
-# 生成产物（npm run gen:defaults 重新生成），不参与格式检查
+# 生成产物（node scripts/gen-defaults.mjs 重新生成），不参与格式检查。
+# 两份都要列：oxfmt 未指定 --ignore-path 时读本文件（见 oxfmt --help），漏一份就会
+# 让「请勿手改」的生成物被格式门改写。
 src/default-templates.generated.ts
+src/group-labels.generated.ts

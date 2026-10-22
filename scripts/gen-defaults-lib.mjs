@@ -297,7 +297,13 @@ export function condenseRoleBody(body) {
   return out.join("\n").trim();
 }
 
-/** 扫描 agents/<dept> 顶层 *.md（一级嵌套暂不需要，目录结构均在顶层）。
+/** 扫描 agents/<dept> 顶层的 *.md（不递归更深层）。
+ *
+ *  只到顶层是够的：精选集里的 slug 全部落在部门目录第一层，而被引用的角色只要出现在更深层，
+ *  调用方那条「精选 slug 全部命中」的检查就会把它报成缺失并以非零退出——漏扫是看得见的红，
+ *  不是静默跳过。agents/ 里确有若干二级目录（分组细分），它们的角色进不了这份索引，
+ *  但也不在精选集里；这部分内容由 vendored 的逐字节比对覆盖（那份会递归）。
+ *
  *  部门目录之间无先后依赖（各读各的目录，结果只按 deptNames 顺序拼接），故一次并行
  *  发起 readdir：Promise.all 保序 ⇒ 展平后的条目顺序与串行版逐条一致，生成文件字节不变。
  *  非目录条目用守卫块跳过（等价于原 continue）。
@@ -384,10 +390,14 @@ export function renderGenerated(entries) {
 }
 
 /**
- * oxfmt 的 bin 路径：oxfmt 是本包 devDependency（版本由 `pnpm-workspace.yaml` 的 catalog 钉），
- * 所以 pnpm 必然在 `<pkg>/node_modules/.bin` 放一份；不在就是没装，抛错而不是退回"未排版"。
+ * oxfmt 的入口脚本：oxfmt 是本包 devDependency（版本由 `pnpm-workspace.yaml` 的 catalog 钉），
+ * 所以 pnpm 必然在 `<pkg>/node_modules/oxfmt/bin` 放一份；不在就是没装，抛错而不是退回"未排版"。
+ *
+ * 不用 `node_modules/.bin/oxfmt`：那是包管理器的壳（Windows 上是 `.cmd`），`execFileSync`
+ * 不按 PATHEXT 解析，CI 实测 `spawnSync …\.bin\oxfmt ENOENT`。直接拿包自己的 JS 入口，
+ * 再用**当前 node** 跑它——三方（node / oxfmt / 本脚本）用同一个可执行文件，跨平台且不经 PATH。
  */
-const OXFMT_BIN = path.join(PLUGIN_ROOT, "node_modules", ".bin", "oxfmt");
+const OXFMT_BIN = path.join(PLUGIN_ROOT, "node_modules", "oxfmt", "bin", "oxfmt");
 
 /**
  * 起 oxfmt 子进程（裸路径参数 = 就地排版；`--check` 才是不写盘）。
@@ -406,16 +416,27 @@ const OXFMT_BIN = path.join(PLUGIN_ROOT, "node_modules", ".bin", "oxfmt");
 function runOxfmt(args) {
   if (!existsSync(OXFMT_BIN)) {
     throw new Error(
-      `找不到 oxfmt 可执行文件（${OXFMT_BIN}）：先跑 pnpm install（oxfmt 由 pnpm-workspace.yaml 的 catalog 钉版）`,
+      `找不到 oxfmt 入口脚本（${OXFMT_BIN}）：先跑 pnpm install（oxfmt 由 pnpm-workspace.yaml 的 catalog 钉版）`,
     );
   }
-  execFileSync(OXFMT_BIN, args, { stdio: "ignore" });
+  try {
+    execFileSync(process.execPath, [OXFMT_BIN, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+  } catch (error) {
+    // oxfmt 排版失败时的原因只在 stderr 里；不带 encoding 拿到的是 Buffer，而给 stdio 写 "ignore"
+    // 连 Buffer 都没有，调用方只剩一句空的 "Command failed"，看不出是语法错还是选项错。
+    const stderr = error instanceof Error && "stderr" in error ? error.stderr : "";
+    const detail = typeof stderr === "string" ? stderr.trim() : "";
+    throw new Error(detail === "" ? String(error) : `oxfmt 排版失败：${detail}`, { cause: error });
+  }
 }
 
 /**
  * 生成物的排版步骤：渲染出的源码文本 → oxfmt 的规范形态。
  *
- * 为什么这一步属于生成器而不是"人记得跑一次格式化"：`fmt:check: oxfmt --check src test scripts`
+ * 为什么这一步属于生成器而不是"人记得跑一次格式化"：包的 `fmt:check` 是 `oxfmt --check .`，
  * 把 `src` 下两份 `.generated.ts` 也算在排版面上（根 `~/.dsh/oxfmt.config.ts` 只排 markdown 一类），
  * 而 test/gen-defaults.test.ts 里那条"磁盘生成物 = 生成器输出"锁的是字节级相等。
  * 两边不共享同一套规范形态时，只能二选一红：实测在仓根跑 `oxfmt .` 就把
@@ -442,11 +463,10 @@ export function formatGenerated(code) {
 /**
  * 实证"落盘的生成物已是 oxfmt 规范形态"：把磁盘内容再过一遍同一套排版链路，字节必须不变。
  *
- * 为什么不用 `oxfmt --check <文件>`：实测（0.71.0，cwd 在包根）给它**单个文件路径**——相对与绝对都
- * 一样——只报 `Expected at least one target file. All matched files may have been excluded by
- * ignore rules.` 且**退出码 0**；给它目录才真的查到文件。也就是说按文件点名的 `--check` 是一道
- * 静默保绿的假门，而包里的 `fmt:check` 恰好全是目录形态（`oxfmt --check src test scripts`）。
- * 幂等比较吃的是 formatGenerated 同一条路径，不依赖 oxfmt 的路径匹配口径。
+ * 为什么不用 `oxfmt --check <文件>`：单文件路径上的行为随 oxfmt 版本翻转——有的版本只报
+ * `Expected at least one target file.` 并退出 0，有的版本真的按文件查到问题并退出非零。
+ * 判据不能建在随依赖版本翻转的行为上，所以这里不拿它当判据。
+ * 幂等比较走的是 formatGenerated 同一条路径，与 oxfmt 的路径匹配口径无关，各版本下含义相同。
  * @param {string} file - 生成物的绝对路径
  * @returns {void}
  */

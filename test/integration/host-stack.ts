@@ -7,24 +7,24 @@
 //   AgentDefaultModel @deepseek-ai/dsh-agent-default-model 真默认模型读面（volatile 引用）
 //   DiskFileSystem   ./real-fs.ts                         真磁盘上的 FileSystem 子类
 // 只有 `settings` 是一枚**形状合规的桩**：真 `SettingsForms` 硬注入 `configEditor` +
-// `profileContext`（packages/settings/settings/src/index.ts:224），属于 Loader 启动层，
+// `profileContext`（packages/settings/settings/src/index.ts），属于 Loader 启动层，
 // 由 test/integration/settings-boot.test.ts 用真 profile + 真 Loader 专管，不在这里重测。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · `WebServer` 服务名 'webServer'、`Context.webServer` 合并：packages/host/webserver/src/index.ts:302 / :27-30。
+//  · `WebServer` 服务名 'webServer'、`Context.webServer` 合并：packages/host/webserver/src/index.ts。
 //  · `register(route)` 只吃 `{kind:'exact'|'prefix', path, handler(req,res)}`，同 (kind,path)
-//    重复即抛，返回 disposer：:44(kind)/:47-53(WebRoute)/:334-341(register)；
-//    未命中路径 → 404 空体：:400-404；handler 抛/reject → 400（头已发则 destroy）：:411-425。
+//    重复即抛，返回 disposer（`kind` / `WebRoute` / `register` 三处声明）；
+//    未命中路径 → 404 空体；handler 抛/reject → 400（头已发则 destroy）。
 //  · `port` 是**实际监听端口**（config.port=0 时由 OS 给），`host` 是配置字面量，
-//    `protocol` 带尾冒号（'http:'）：:310-326 —— URL 拼接因此不能再补冒号。
-//  · `SessionStore`：服务名 'sessions'（packages/core/session/src/index.ts:1077）、
-//    `get(id)` 缺席回 undefined（:1351）、`create(id,{meta:{cwd}})` 只收**绝对** cwd
-//    （:112-116），header 冻结后 `cwd` 是只读位（types.ts:104-105）。
-//  · `LlmRuntime`：服务名 'llm'（packages/llm/llm/src/index.ts:351）、
-//    `stream(options)` 返回 `AsyncIterable<StreamChunk>`（:191/:1143），
-//    `registerAdapter(providers, adapter)` 重复路由抛 DUPLICATE_ADAPTER（types :246-253）。
+//    `protocol` 带尾冒号（'http:'）—— URL 拼接因此不能再补冒号。
+//  · `SessionStore`：服务名 'sessions'（packages/core/session/src/index.ts）、
+//    `get(id)` 缺席回 undefined、`create(id,{meta:{cwd}})` 只收**绝对** cwd
+//    header 冻结后 `cwd` 是只读位（types.ts）。
+//  · `LlmRuntime`：服务名 'llm'（packages/llm/llm/src/index.ts）、
+//    `stream(options)` 返回 `AsyncIterable<StreamChunk>`，
+//    `registerAdapter(providers, adapter)` 重复路由抛 DUPLICATE_ADAPTER（错误码在 types）。
 //  · `GenerateOptions` 必填 provider/model/messages，`system` 是 one-shot 专用位
-//    （packages/llm/llm/src/types.ts:511-528）——本包 organize 正是 one-shot 形状。
+//    （packages/llm/llm/src/types.ts）——本包 organize 正是 one-shot 形状。
 //  · `AgentDefaultModelConfig.currentSelection()` 现读 volatile 引用
 //    （packages/agent-default-model/src/index.ts，服务名 'agentDefaultModel'）。
 import { Context } from "@deepseek-ai/cordis";

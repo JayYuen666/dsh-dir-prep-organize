@@ -11,7 +11,7 @@
 //     模型/设置服务都是假对象 —— 绝不打真实模型。
 //
 // 审计修复的锁死点：
-//   · 「以角色视角整理」POST 必须带 roleText（host 侧已修，这里是客户端半程）；
+//   · 「以角色风格润色」POST 必须带 roleText（host 侧已修，这里是客户端半程）；
 //   · 被宿主拒绝的保存不得显示成功（mutate 不 reject，故复读快照比对）；
 //   · 导入省略计数必须显示；
 //   · crypto.randomUUID 不可用时新增模板仍可用。
@@ -79,9 +79,9 @@ const PKG_DIR = path.join(import.meta.dirname, "..");
 /**
  * 宿主 profile（`~/.dsh/profiles/web/package.json` → `dsh.profile.bundles`）里本包那一条，
  * 也就是 `plugins.bundle.config` 唯一能命中的 key（宿主派发 `entryKey: pkg.name`：installed
- * dsh-client-ui-plugin-manager/lib/client.js:1821，pkg.name = bundle.name：:306/:320；槽契约
- * slot-contract.d.ts:96-100「keyed by the bundle's package name」；匹配是逐字相等：
- * dsh-client-ui-renderer/lib/client.js:1154 → 写成裸条目 id 就是整张卡不渲染）。
+ * dsh-client-ui-plugin-manager/lib/client.js，pkg.name = bundle.name；槽契约
+ * slot-contract.d.ts「keyed by the bundle's package name」；匹配是逐字相等：
+ * dsh-client-ui-renderer/lib/client.js → 写成裸条目 id 就是整张卡不渲染）。
  * **解析**而不是在测试里抄一份：抄一份同样的错值就一直绿，这正是会漏的原因。
  * 同时钉住 profile 的 link 目标就是本目录，避免比到另一份残留副本。
  */
@@ -310,7 +310,7 @@ function stubFetch(router: Router): void {
   );
 }
 
-/** 整理三端点的默认成功路由（context/model 带 csrf）。 */
+/** 润色三端点的默认成功路由（context/model 带 csrf）。 */
 function stubOrganizeOk(roleBody?: unknown): void {
   stubFetch((url) => {
     if (url.startsWith(CONTEXT_URL)) {
@@ -746,7 +746,7 @@ function mountAll(
   const settingsReg = ctx.registers.find((reg) => reg.name === SLOT_BUNDLE_CONFIG);
   assert.ok(settingsReg?.inject);
   const dockRegs = ctx.registers.filter((reg) => reg.name === SLOT_INPUT_RIGHT);
-  assert.equal(dockRegs.length, 2, "整理 + 模板两个按钮");
+  assert.equal(dockRegs.length, 2, "润色 + 模板两个按钮");
   // dock 注册契约（官方 slots.md）：locale 声明（框架合成 t seat）+ inject hooks 间隔
   // （裸 getSnapshot/subscribe 源 → useCard，组件不直呼 useSyncExternalStore），
   // 且与设置卡共享同一 store 实例。
@@ -761,7 +761,7 @@ function mountAll(
     typeof dockLabels[0] === "function" && typeof dockLabels[1] === "function",
     "两个 dock label 都是 thunk",
   );
-  assert.equal(dockLabels[0](), translator("dockOrganizeEntry"), "整理 label 走 dock 字典");
+  assert.equal(dockLabels[0](), translator("dockOrganizeEntry"), "润色 label 走 dock 字典");
   assert.equal(dockLabels[1](), translator("dockTemplatesEntry"), "模板 label 走 dock 字典");
   const cardInjected = settingsReg.inject() as unknown as CardInject;
   assert.ok(isStoreView(cardInjected.hooks.card), "设置卡 hooks.card 是 templatesStore");
@@ -1173,15 +1173,15 @@ describe("inject 声明", () => {
   it("client 半依赖 slots + configForms + locale（卡片文案走官方 locale）", () => {
     // 0.1.7：`settingsScope` 服务已被宿主移除（installed 全树零命中），配置读写的入口
     // 是 `ctx.configForms.get(entryId)`（installed dsh-client-ui-settings/lib/types/
-    // client/config-form.d.ts:94-98 交出 Context.configForms，get:142）。声明里没有
+    // client/config-form.d.ts 交出 Context.configForms 与 `get`）。声明里没有
     // configForms → inject 解析不出来 → 整个 client 半不挂载（设置卡 + 两个按钮全静默缺席）。
     assert.deepEqual(clientInject, ["slots", "configForms", "locale"]);
   });
 
   it("apply 取表单用的是本条目的 profile id（= 0.1.7 的 settings 命名空间）", async () => {
     // 0.1.7 没有 register 声明 ns 这一步：命名空间 = profile 条目 id（installed
-    // dsh-settings/lib/index.js:432 的 `ns: entry.options.id`），client 侧
-    // `configForms.get(entryId)`（同包 config-form.d.ts:142）按同一个 id 取表单。
+    // dsh-settings/lib/index.js 的 `ns: entry.options.id`），client 侧
+    // `configForms.get(entryId)`（同包 config-form.d.ts 的 `get`）按同一个 id 取表单。
     // 取错 id 的形状是"卡片能打开、保存却写进别的条目"，且两侧各写各的常量就会漂移，
     // 故这里把 client 取的 id 钉在本包 cordis.patch.yml 上，且只在 apply 里取一次。
     const ctx = makeCtx();
@@ -1200,11 +1200,11 @@ describe("inject 声明", () => {
   });
 
   it("设置卡 slot key = profile bundles 里的 bundle 包名（键值定案，2026-09-23）", async () => {
-    // 派发链（installed dsh 0.1.7）：plugin-manager/lib/client.js:1821 用
-    // `entryKey: pkg.name` 渲染该槽，pkg.name = bundle.name（:306/:320），页面还以
-    // :2698 `ledger.bundles.has(openPkg.name)` 决定开不开这一段；renderer/lib/client.js:1154
-    // 逐字相等匹配。slot-contract.d.ts:96-100 写明「keyed by the bundle's package name」。
-    // 官方占位者 dsh-experimental-client-ui-voice-input/lib/client.js:5659-5661 亦用包名。
+    // 派发链（installed dsh 0.1.7）：plugin-manager/lib/client.js 用
+    // `entryKey: pkg.name` 渲染该槽，pkg.name = bundle.name，页面还以
+    // `ledger.bundles.has(openPkg.name)` 决定开不开这一段；renderer/lib/client.js
+    // 逐字相等匹配。slot-contract.d.ts 写明「keyed by the bundle's package name」。
+    // 官方占位者 dsh-experimental-client-ui-voice-input/lib/client.js 亦用包名。
     const { ctx } = mountAll();
     const regs = ctx.registers.filter((reg) => reg.name === SLOT_BUNDLE_CONFIG);
     // `.at(0)` 而不是 `[0]`：下标在 oxlint 的类型引擎里非空（它不接 tsc 的
@@ -1217,10 +1217,10 @@ describe("inject 声明", () => {
     const bareIds = await patchEntryIds();
     assert.deepEqual(bareIds, [ENTRY_ID], "cordis.patch.yml 只声明一行裸条目 id");
     assert.notEqual(bundleKey, bareIds[0], "key 不再是条目 id");
-    // 反向钉 2：bundle 槽用包名，行槽才是 `<pkg>#<rowId>`（plugin-manager/lib/client.js:27-28）。
+    // 反向钉 2：bundle 槽用包名，行槽才是 `<pkg>#<rowId>`（plugin-manager/lib/client.js）。
     assert.ok(typeof bundleKey === "string" && !bundleKey.includes("#"), "bundle 槽的 key 不含 #");
     // 硬约束的另一面：表单仍按裸条目 id 取（0.1.7 里它就是 settings 命名空间，installed
-    // dsh-client-ui-settings/lib/client.js:1309-1315），与 slot key 刻意不同源。
+    // dsh-client-ui-settings/lib/client.js），与 slot key 刻意不同源。
     assert.deepEqual(ctx.formEntryIds, bareIds, "configForms.get() 仍吃裸条目 id");
     assert.notEqual(ctx.formEntryIds[0], bundleKey, "命名空间 ≠ slot key：两个串各自独立");
     // 两个 dock 按钮的 id 也不受牵连（那是 list 槽的 id，不是 keyed 槽的 key）。
@@ -1251,7 +1251,7 @@ describe("inject 声明", () => {
   });
 });
 
-// ── 「整理」分段按钮 ────────────────────────────────────────────────────────
+// ── 「润色」分段按钮 ────────────────────────────────────────────────────────
 
 interface KitProps {
   /** locale seat 的测试替身：mountAll 每轮从 dock 注册的 inject 抽取（见 dockKit）。 */
@@ -1313,13 +1313,13 @@ describe("OrganizeButton", () => {
 
   afterEach(domFixtureTeardown);
 
-  it("空闲态渲染主键 + ▾；点主键走三段请求并写回整理结果", async () => {
+  it("空闲态渲染主键 + ▾；点主键走三段请求并写回润色结果", async () => {
     stubOrganizeOk();
     const { organize } = mountAll();
     writes.length = 0;
     await mount(React.createElement(organize, kitProps()));
     assert.equal(stateOf(FIELD_ORGANIZE_BTN), "idle");
-    assert.ok(text().includes("整理"));
+    assert.ok(text().includes("润色"));
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     const posted = fetchCalls
       .map((call) => call.url.split("?")[0] ?? "")
@@ -1331,7 +1331,7 @@ describe("OrganizeButton", () => {
     const body = jsonRecordOf(post.init.body);
     assert.equal(body["prompt"], "原始草稿");
     assert.equal(body["sessionId"], "s1");
-    assert.equal("roleText" in body, false, "直接整理不带角色");
+    assert.equal("roleText" in body, false, "直接润色不带角色");
     assert.match(String(body["entriesSummary"]), /📁 sub\//u, "目录摘要已提交");
   });
 
@@ -1347,19 +1347,19 @@ describe("OrganizeButton", () => {
     assert.equal(roleItems.length, 1, "角色项 = 当前模板列表长度");
     const [first] = roleItems;
     assert.ok(first, "至少一个角色项");
-    assert.match(textOf(first), /^以「.+」视角整理$/u, "无 emoji 时不加前导空格");
+    assert.match(textOf(first), /^以「.+」的风格润色$/u, "无 emoji 时不加前导空格");
     await press(first);
     const post = fetchCalls.find((call) => call.init.method === "POST");
-    assert.ok(post, "角色整理也走 POST");
+    assert.ok(post, "角色润色也走 POST");
     const body = jsonRecordOf(post.init.body);
     const { roleText } = body;
-    assert.equal(typeof roleText, "string", "角色整理必须带 roleText 字段");
+    assert.equal(typeof roleText, "string", "角色润色必须带 roleText 字段");
     assert.ok(typeof roleText === "string" && roleText.length > 0, "roleText 非空");
     assert.ok(roleText.includes("正文甲"), "roleText = 所选模板正文全文");
     assert.deepEqual(writes, ["整理后的要求"]);
   });
 
-  it("菜单里的「直接整理」项与带 emoji/ description 的角色项均按模板渲染", async () => {
+  it("菜单里的「直接润色」项与带 emoji/ description 的角色项均按模板渲染", async () => {
     stubOrganizeOk();
     const snapshot: FormSnapshot = snap({
       writable: true,
@@ -1383,9 +1383,9 @@ describe("OrganizeButton", () => {
     const [role] = byFields(FIELD_ORGANIZE_ROLE_ITEM);
     assert.ok(role, "角色项已渲染");
     assert.equal(role.title, "一句话介绍");
-    assert.match(textOf(role), /🧪 以「有标记」视角整理/u);
-    await press(buttonWithText("直接整理（默认，不带角色）"));
-    assert.deepEqual(writes, ["整理后的要求"], "菜单里的直接整理同样写回一次");
+    assert.match(textOf(role), /🧪 以「有标记」的风格润色/u);
+    await press(buttonWithText("直接润色（默认，不带角色）"));
+    assert.deepEqual(writes, ["整理后的要求"], "菜单里的直接润色同样写回一次");
   });
 
   it("宿主回空表（用户从未设置）→ 菜单取内置精选集，不出空态", async () => {
@@ -1400,7 +1400,7 @@ describe("OrganizeButton", () => {
       DEFAULT_TEMPLATES.length,
       "空表按未设置处理 → 与「模板」下拉同源取内置精选集",
     );
-    assert.doesNotMatch(text(), /无模板可选为整理视角/u);
+    assert.doesNotMatch(text(), /无模板可选作角色风格/u);
   });
 
   it("templates 是非空数组但逐项非法 → 菜单才显示空态文案", async () => {
@@ -1412,7 +1412,7 @@ describe("OrganizeButton", () => {
     );
     await mount(React.createElement(organize, kitProps()));
     await press(buttonByField(FIELD_ORGANIZE_CARET));
-    assert.match(text(), /无模板可选为整理视角/u);
+    assert.match(text(), /无模板可选作角色风格/u);
   });
 
   it("失败：host 回 ok:false → 输入框保持原值并显示失败态（4 秒后回常态）", async () => {
@@ -1497,7 +1497,7 @@ describe("OrganizeButton", () => {
     );
   });
 
-  it("整理回执整体不是对象 → 报「整理失败（未知错误）」", async () => {
+  it("润色回执整体不是对象 → 报「润色失败（未知错误）」", async () => {
     stubFetch((url) =>
       url.startsWith(ORGANIZE_URL)
         ? { body: "不是对象" }
@@ -1509,7 +1509,7 @@ describe("OrganizeButton", () => {
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     assert.match(
       buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "",
-      /整理失败（未知错误）/u,
+      /润色失败（未知错误）/u,
       "回执坏到没有 error 时也要有话说",
     );
     assert.deepEqual(writes, [], "坏回执绝不覆写草稿");
@@ -1566,7 +1566,7 @@ describe("OrganizeButton", () => {
       const { organize } = mountAll();
       await mount(React.createElement(organize, kitProps()));
       await press(buttonByField(FIELD_ORGANIZE_BTN));
-      assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /整理失败/u);
+      assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /润色失败/u);
       assert.deepEqual(writes, [], `${throwOn} 失败绝不覆写草稿`);
     },
   );
@@ -1604,14 +1604,14 @@ describe("OrganizeButton", () => {
     const { organize } = mountAll();
     await mount(React.createElement(organize, kitProps({ inputActions: undefined })));
     const btn = buttonByField(FIELD_ORGANIZE_BTN);
-    assert.ok(btn, "整理按钮在位");
-    assert.equal(btn.disabled, true, "整理结果无处可写时按钮就该是禁用的");
+    assert.ok(btn, "润色按钮在位");
+    assert.equal(btn.disabled, true, "润色结果无处可写时按钮就该是禁用的");
     assert.match(btn.title, /输入框动作不可用/u);
     await press(btn);
     assert.deepEqual(calls, [], "一次真实的 LLM 请求换一句报错，纯浪费——请求不该发出去");
   });
 
-  it("写回动作在整理途中失效 → 明确错误（不静默吞掉一次已付费的调用）", async () => {
+  it("写回动作在润色途中失效 → 明确错误（不静默吞掉一次已付费的调用）", async () => {
     // 与上一条互补：canWrite 只在**渲染那一刻**判一次；宿主若在请求在途时把
     // setDraft 摘掉，writeDraft 仍要抛，否则这次调用就白花了且界面毫无交代。
     // 注意改的是**嵌套对象**的成员：React.createElement 拷的是顶层 props，
@@ -1716,6 +1716,54 @@ describe("OrganizeButton", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
     assert.equal(byField(FIELD_ORGANIZE_MENU), null, "Esc 关闭");
+  });
+
+  it("写不回时菜单项一并停用，并在 title 上说明原因", async () => {
+    stubOrganizeOk();
+    const { organize } = mountAll();
+    await mount(React.createElement(organize, kitProps({ inputActions: undefined })));
+    await press(buttonByField(FIELD_ORGANIZE_CARET));
+    const direct = buttonByField("dpi-organize-role-direct");
+    const role = buttonByField(FIELD_ORGANIZE_ROLE_ITEM);
+    assert.ok(direct && role, "菜单项已渲染");
+    assert.equal(direct.disabled, true, "写不回时不允许从菜单直接发请求");
+    assert.equal(role.disabled, true, "角色项与直接项同一条门");
+    assert.equal(direct.title, tZh("organizeWriteBackUnavailable"), "原因挂在直接项上");
+    assert.equal(role.title, tZh("organizeWriteBackUnavailable"), "原因挂在角色项上");
+    assert.deepEqual(writes, [], "点不出来就不会发请求");
+  });
+
+  it("在途时菜单项停用，但 title 不冒充「写不回」", async () => {
+    const gate = Promise.withResolvers<undefined>();
+    stubFetch(async (url) => {
+      if (url.startsWith(ORGANIZE_URL)) {
+        await gate.promise;
+        return { body: { ok: true, content: "迟到结果" } };
+      }
+      return { body: { ok: true, csrf: "t", cwd: "/w", entries: [], provider: "p", model: "m" } };
+    });
+    const { organize } = mountAll();
+    await mount(React.createElement(organize, kitProps()));
+    const main = buttonByField(FIELD_ORGANIZE_BTN);
+    assert.ok(main, "主键存在");
+    await act(async () => {
+      main.click();
+    });
+    await flush();
+    assert.equal(stateOf(FIELD_ORGANIZE_BTN), "loading");
+    // 在途时 caret 在 DOM 上已禁用，直调 React onClick 才能把菜单展开到这一态。
+    await clickViaProps(buttonByField(FIELD_ORGANIZE_CARET));
+    const direct = buttonByField("dpi-organize-role-direct");
+    const role = buttonByField(FIELD_ORGANIZE_ROLE_ITEM);
+    assert.ok(direct && role, "菜单项已渲染");
+    assert.equal(direct.disabled, true, "在途时不动另一个请求");
+    assert.equal(role.disabled, true);
+    assert.equal(direct.getAttribute("title"), null, "在途不是写不回，不给那句原因");
+    assert.equal(role.title, "正文甲", "角色项回落到模板正文作说明");
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await flush();
   });
 });
 
@@ -1857,7 +1905,7 @@ describe("TemplateButton", () => {
   });
 });
 
-// ── 设置页「提示词模板」卡（TemplatesCard / TemplateRow / ImportPanel）───────
+// ── 设置页「模板库」卡（TemplatesCard / TemplateRow / ImportPanel）───────
 
 /** config 槽 inject 的形状守卫（框架把它映射为 TemplatesCard 的 props）。 */
 interface CardInject {
@@ -1865,7 +1913,7 @@ interface CardInject {
   t: Translate;
   hooks: { card: unknown };
   /** 表单写入的直传：0.1.7 的 `ConfigForm.set/unset` 回 Promise<boolean>
-   *  （installed config-form-types.d.ts:65/:73）。 */
+   *  （installed config-form-types.d.ts）。 */
   set: (field: string, value: unknown) => Promise<boolean>;
   unset: (field: string) => Promise<boolean>;
   readBack: () => unknown;
@@ -2113,7 +2161,7 @@ describe("TemplatesCard 编辑与保存", () => {
     vi.spyOn(injected, "set").mockRejectedValue(rejection);
     const props = cardPropsOf(injected);
     await mount(React.createElement(mounted.card, props));
-    await press(buttonContaining("提示词模板"));
+    await press(buttonContaining("模板库"));
     await type(inputByClass(CLS_NAME, 0), "改名");
     await blur(inputByClass(CLS_NAME, 0));
     await press(saveButton());
@@ -2177,7 +2225,7 @@ describe("TemplatesCard 编辑与保存", () => {
     await blur(inputByClass(CLS_EMOJI, 0));
     await type(inputByClass(".dpic-group", 0), "工程");
     await blur(inputByClass(".dpic-group", 0));
-    // .dpic-desc 同时是卡头说明 div 的类名 → 必须限定到 input
+    // .dpic-desc 只挂在设置行的说明输入框上；带 input 前缀把选择器钉到那个控件
     await type(inputByClass("input.dpic-desc", 0), "一句话");
     await blur(inputByClass("input.dpic-desc", 0));
     await press(saveButton());
@@ -2442,6 +2490,17 @@ describe("内置表按需下发", () => {
     const [, second] = await Promise.all([loadBuiltinTemplates(), loadBuiltinTemplates()]);
     assert.equal(defaultsCallCount(), 1, "第二次撞在飞闸门：复用同一条 promise");
     assert.equal(second.phase, "ready");
+  });
+
+  it("恢复默认越过在飞那一发 → 晚到的结果不写 store，调用方仍拿得到", async () => {
+    const gate = stubBuiltinPending();
+    const pending = loadBuiltinTemplates();
+    assert.equal(builtinTemplatesSnapshot().phase, "loading", "请求确实在飞，不是提前返回");
+    resetBuiltinTemplates();
+    gate.release();
+    const settled = await pending;
+    assert.equal(settled.phase, "ready", "调用方拿得到自己那一发的结果");
+    assert.equal(builtinTemplatesSnapshot().phase, "idle", "上一代的结果不许写进 store");
   });
 
   it("载荷不是对象（老宿主/HTML 回执）→ 失败面带得出兜底文案", async () => {
@@ -2881,7 +2940,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
 
   afterEach(domFixtureTeardown);
 
-  it("整理请求 125 秒未完成 → 超时错误可见（客户端不悬挂）", async () => {
+  it("润色请求 125 秒未完成 → 超时错误可见（客户端不悬挂）", async () => {
     stubFetch(async (url: string) => {
       if (!url.startsWith(ORGANIZE_URL)) {
         return { body: { ok: true, cwd: "/w", entries: [], provider: "p", model: "m" } };
@@ -2901,7 +2960,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(126_000);
     });
-    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /整理失败：请求超时/u);
+    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /润色失败：请求超时/u);
     vi.useRealTimers();
   });
 
@@ -2924,7 +2983,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
 
   it("slot collapse 后重跑工厂：写入仍落到同一张共享表单（表单跨清理长活）", async () => {
     // 0.1.6 的 settingsScope 在 slot collapse 里被永久 dispose，之后每次保存被静默丢弃；
-    // 0.1.7 的表单归 provider 持有（installed config-form.d.ts:138-142），disposer 只
+    // 0.1.7 的表单归 provider 持有（installed config-form.d.ts），disposer 只
     // unregister，所以工厂重跑后写入照旧可达——这条正是"别再往 disposer 里塞 dispose"的
     // 行为锁（配合上一根的抛错绊线）。
     const ctx = makeCtx();
@@ -2967,7 +3026,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     assert.equal(ctx.registers.length, 0, "inject 只登记工厂，框架调用时才占位");
     const disposeDock = dockFactory();
     const disposeConfig = configFactory();
-    assert.equal(ctx.registers.length, 3, "整理 + 模板 + 设置卡");
+    assert.equal(ctx.registers.length, 3, "润色 + 模板 + 设置卡");
     disposeDock?.();
     disposeConfig?.();
     assert.equal(ctx.registers.length, 0, "注销后槽位清空");
@@ -2983,7 +3042,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     assert.ok(isCardInject(injected), "inject 形状：t + hooks.card + set/unset/readBack");
     assert.equal(injected.t, tZh, "t 来自 ctx.locale.bind（宿主绑到哪份字典由语言决定）");
     // 0.1.7 的受理位直通：set/unset 回 Promise<boolean>（installed
-    // config-form-types.d.ts:65/:73），宿主拒绝 → false 而不是 reject。
+    // config-form-types.d.ts），宿主拒绝 → false 而不是 reject。
     assert.equal(await injected.set("templates", [TPL]), true, "受理成功回 true");
     assert.deepEqual(ctx.scope.writes[0]?.value, [TPL], "set 直通表单");
     const readBack: unknown = injected.readBack();
@@ -3033,16 +3092,16 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
   it("en 字典渲染整张设置卡：标题/按钮/面板是英文，且不残留中文", async () => {
     await openCard(READY_ASCII, tEn);
     const body = text();
-    assert.match(body, /Prompt templates/u, "英文标题");
+    assert.match(body, /Template library/u, "英文标题");
     assert.match(body, /Save/u, "英文保存按钮");
     assert.match(body, /Import roles/u, "英文导入按钮");
     assert.match(body, /Import allowed directories/u, "英文允许目录标题");
-    assert.doesNotMatch(body, /提示词模板|保存|撤销|删除|导入角色|登记目录|移除/u, "整卡不混中文");
+    assert.doesNotMatch(body, /模板库|保存|撤销|删除|导入角色|登记目录|移除/u, "整卡不混中文");
   });
 
   it("zh 字典渲染同一张设置卡：中文标题在位（两语走同一渲染路径）", async () => {
     await openCard(READY_ASCII);
-    assert.match(text(), /提示词模板（输入框「模板」下拉）/u);
+    assert.match(text(), /模板库（输入框「模板」下拉与「润色」▾ 共用）/u);
   });
 
   it("两语模板的 {占位符} 集合一致（翻译不会漏掉插值）", () => {

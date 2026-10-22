@@ -4,26 +4,26 @@
 // （test/routes.test.ts 的 locale 那一族、test/client.test.ts 的 ConfigForm 桩），于是
 // 「宿主到底把哪些字段投影成可编辑面、写完怎么回流到 volatile 引用」从来没被跑过。
 // 这层用的是官方自己的装配法（deepseek-harness packages/settings/settings/tests/
-// configuration-fixture.ts:15-58）：真临时 profile + 真 cordis.patch.yml + 真 ConfigEditor +
+// configuration-fixture.ts）：真临时 profile + 真 cordis.patch.yml + 真 ConfigEditor +
 // 真 SettingsForms，条目 id 就是本包 cordis.patch.yml 里那枚 `dir-prep-organize`。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · `SettingsForms` 硬注入 `configEditor` + `profileContext`：packages/settings/settings/src/index.ts:224；
-//    服务名 'settings' 与 `Context.settings` 合并：:231 / :38-43。
+//  · `SettingsForms` 硬注入 `configEditor` + `profileContext`：packages/settings/settings/src/index.ts；
+//    服务名 'settings' 与 `Context.settings` 合并。
 //  · 投影面：`describe()` 只收**有 volatile 字段**的条目（volatileForm 回 undefined 即整条跳过）
-//    :308-309；descriptor 必填位 ns/autoGenerate/schema/value/revision/applies：:20-31；
-//    `base`/`user` 只在 redactSecrets 请求下额外给（:328-329），不带 options 时也有；
-//    revision 取 JSON.stringify([fiber.uid, schema.toJSON(), entry.options.config]) 的指纹（:311-315），
-//    变化即 `settings/document-updated`（:316-318）。
-//  · volatile 选取规则：`volatileForm` 递归取"最近一个 volatile 祖先"（schema.ts:37-47），
-//    `plainSchema` 保留 meta.default 但删掉 volatile 标记（:19-31）——这正是本包不把整张
+//    descriptor 必填位 ns/autoGenerate/schema/value/revision/applies；
+//    `base`/`user` 只在 redactSecrets 请求下额外给，不带 options 时也有；
+//    revision 取 JSON.stringify([fiber.uid, schema.toJSON(), entry.options.config]) 的指纹，
+//    变化即 `settings/document-updated`。
+//  · volatile 选取规则：`volatileForm` 递归取"最近一个 volatile 祖先"（schema.ts），
+//    `plainSchema` 保留 meta.default 但删掉 volatile 标记——这正是本包不把整张
 //    内置精选表写进 .default 的理由（host.ts 的 configShape 上方那段注释在此处得到实证）。
-//  · 写入面：`update` 合并、`replace` 整段、`mutate` 逐路径（:347-375）；三者在持久化前
-//    先过 `cloneJsonShaped`（只放 JSON 形：Date/Map/BigInt/环都拒，:134-166）与
-//    `isVolatilePath` 校验（非 volatile → `Config field "x" is not volatile`，:388/:406）；
-//    带 expectedRevision 且对不上 → `SettingsConflictError`（code SETTINGS_CONFLICT，:45-64 / :393-395）。
+//  · 写入面：`update` 合并、`replace` 整段、`mutate` 逐路径；三者在持久化前
+//    先过 `cloneJsonShaped`（只放 JSON 形：Date/Map/BigInt/环都拒）与
+//    `isVolatilePath` 校验（非 volatile → `Config field "x" is not volatile`）；
+//    带 expectedRevision 且对不上 → `SettingsConflictError`（code SETTINGS_CONFLICT）。
 //  · 页面策略 `configure({auto}, owner)`：同一 fiber 重复登记抛，缺省 owner 是**服务自己的**
-//    fiber，故本包必须显式带 ctx.fiber（:266-277）。
+//    fiber，故本包必须显式带 ctx.fiber。
 import { afterEach, describe, it } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
 import { strict as assert } from "node:assert";
@@ -120,7 +120,7 @@ async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
     }),
   );
   // patch 里三条：宿主的 config-editor / settings，本包的 locale 与 dir-prep-organize。
-  // 条目 id 用本包 cordis.patch.yml 的同一枚（:14-15），名字经 builtins 交真件。
+  // 条目 id 用本包 cordis.patch.yml 的同一枚，名字经 builtins 交真件。
   await writeFile(
     path.join(bundle, PATCH_YML),
     JSON.stringify([
@@ -263,7 +263,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
       namespaces.includes(ENTRY_ID),
       `describe() 应含 ${ENTRY_ID}，实际 ${namespaces.join(",")}`,
     );
-    // config-editor / settings 自己没有 volatile 字段 → 整条被跳过（index.ts:308-309），
+    // config-editor / settings 自己没有 volatile 字段 → 整条被跳过（index.ts 的 `describe()`），
     // 这条"缺席"本身就是投影规则的判据，不许悄悄当成空表单渲染出来。
     assert.equal(namespaces.includes("config-editor"), false);
     const row = requireRow(ctx, ENTRY_ID);
@@ -309,8 +309,8 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
       "revision 变化必发 document-updated（:316-318）",
     );
     // base/user/value 三位各按其义，且**形状彼此不同**（这条只在真件上看得出）：
-    // `user` 是补丁里的原文（projectForm 只按 schema 声明丢字段，不填默认，index.ts:322 +
-    // schema.ts:59-67），`value` 是 cordis 校验填过默认的现行配置（:319），`base` 是继承层。
+    // `user` 是补丁里的原文（projectForm 只按 schema 声明丢字段，不填默认，见 index.ts 与
+    // schema.ts 的 projectForm），`value` 是 cordis 校验填过默认的现行配置，`base` 是继承层。
     const user = requireRow(ctx, ENTRY_ID).user as Record<string, unknown>;
     assert.deepEqual(user["templates"], [{ id: "t1", name: "评审官", text: "正文" }]);
     assert.deepEqual(sectionOf(row)["templates"], [
@@ -332,10 +332,10 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
       "index.ts:388/:406 的 volatile 校验",
     );
     // ⚠ 真件给的事实（本层跑出来的，不是推断）：**写入路径不跑 schema 校验**。
-    // `update` 只做 cloneJsonShaped + volatile 路径校验（index.ts:347-349/:399-409），
+    // `update` 只做 cloneJsonShaped + volatile 路径校验（index.ts），
     // 于是缺必填 `text` 的条目会被**接受**并落进 volatile 引用，读回来仍是缺那一位
     // （schemastery 只为有 .default 的字段补默认，必填位无人补）。设置卡的最后防线因此在
-    // 消费侧：src/templates.ts:296 sanitizeTemplateList 逐条 normalizeEntry，坏条目丢弃。
+    // 消费侧：src/templates.ts 的 sanitizeTemplateList 逐条 normalizeEntry，坏条目丢弃。
     await ctx.settings.update(ENTRY_ID, { templates: [{ id: "x", name: "y" }] });
     const damaged = describeEntry(ctx, ENTRY_ID);
     assert.deepEqual(
@@ -343,13 +343,13 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
       [{ id: "x", name: "y", description: "", group: "", emoji: "" }],
       "缺必填位的条目照原样进读面：text 既不存在也不补默认",
     );
-    // cloneJsonShaped：Date 不是 JSON 形，持久化前就拒（:134-166）
+    // cloneJsonShaped：Date 不是 JSON 形，持久化前就拒
     await assert.rejects(
       () =>
         ctx.settings.update(ENTRY_ID, { importAllowRoots: [new Date()] as unknown as string[] }),
       /contains a Date/u,
     );
-    // 数组下标越界（applyPathOp:92-93）
+    // 数组下标越界（applyPathOp）
     await assert.rejects(
       () =>
         ctx.settings.mutate(ENTRY_ID, [

@@ -8,7 +8,7 @@
 //     全量角色可经设置页「导入角色」一键导入（路径留空 = 导入内置 agents/ 全部；
 //     填路径按「cwd 内 + 内置角色目录 allowlist」策略放行，绝对路径默认拒绝，见 host）。
 //   - 角色文件解析（parseAgentFrontmatter）/ 正文提炼（condenseRoleBody）纯函数共享
-//     host（导入读面）与 client（「以该角色整理」的角色上下文），单源防两份副本漂移；
+//     host（导入读面）与 client（「以该角色风格润色」的角色上下文），单源防两份副本漂移；
 //     生成脚本为镜像实现，测试锁「生成结果与真实文件一致」（漂移即红）。
 //   - 不设字符上限（用户拍板）：正文提炼只做叙述主干/代码围栏清洗，
 //     不做长度截断——上下文完整性优先，模型 context 超限由模型报错提示用户自行处理。
@@ -37,7 +37,7 @@ export interface TemplateEntry {
   emoji: string;
 }
 
-/** 角色正文提炼/「按角色整理」上下文：不设字符上限（用户拍板，
+/** 角色正文提炼/「按角色风格润色」上下文：不设字符上限（用户拍板，
  *  上下文完整性优先；模型 context 超限由模型报错提示用户自行处理）。 */
 
 // ── agency-agents-zh 角色目录 → 中文分组标签（导入角色时按父目录取组）────────────
@@ -86,7 +86,7 @@ function stripPairQuotes(value: string): string {
   return value;
 }
 
-/** frontmatter 键名形状（与旧版 `^key:.*$` 正则同语义）。 */
+/** frontmatter 键名形状：字母开头，随后字母/数字/下划线/连字符。 */
 const FRONTMATTER_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
 /** 头部只解析前 20 行键值对（防御恶意超长头部拖慢）。 */
@@ -178,13 +178,13 @@ export function parseAgentFrontmatter(text: string): AgentFileInfo | undefined {
 }
 
 /**
- * 角色正文提炼（导入 / 「按角色整理」共用）：取叙述主干、去代码围栏。
+ * 角色正文提炼（导入 / 「按角色风格润色」共用）：取叙述主干、去代码围栏。
  *
  * 规则（确定性，测试锁死）：
  * - ``` 围栏行整体剔除（围栏内容多为长代码样例，对角色语境价值低）；
  * - 行内反引号一并剔除——沿用"正文不含反引号、插入不破坏 markdown 围栏"不变式；
  * - 不设字符上限（用户拍板）：全量保留叙述内容，避免截断影响
- *   「以角色整理」的上下文完整性；模型 context 超限由模型报错提示用户自行处理；
+ *   「以角色风格润色」的上下文完整性；模型 context 超限由模型报错提示用户自行处理；
  * - 结果 trim；空正文（全围栏/全空白）→ 空串。
  */
 export function condenseRoleBody(body: string): string {
@@ -246,13 +246,13 @@ export { DEFAULT_TEMPLATES } from "./default-templates.generated.ts";
  *    `-<index>` 直到唯一）——同输入同输出，可测试；
  *  - 绝不修改输入（深比较测试锁死）。 */
 
-/** 字段 → trim 后的 string；非字符串一律 ""（与旧版逐字段三元的判据同语义）。 */
+/** 字段 → trim 后的 string；非字符串一律 ""。 */
 function trimField(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
 /** id 缺失或与已收集 id 撞名 → 确定性补 `tpl-<index>`（仍撞则追加 `-<index>` 直到唯一）。
- *  只负责取名，不登记 `seen`——登记由调用方在装配条目时做（同旧版顺序）。 */
+ *  只负责取名，不登记 `seen`——登记由调用方在装配条目时按装配顺序做。 */
 function uniqueEntryId(candidate: string, index: number, seen: Set<string>): string {
   if (candidate !== "" && !seen.has(candidate)) {
     return candidate;

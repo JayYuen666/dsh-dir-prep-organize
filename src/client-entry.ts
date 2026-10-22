@@ -2,7 +2,7 @@ import { createElement, useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { mergeImportedTemplates, sanitizeAllowRoots, sanitizeTemplateList } from "./templates.ts";
 import type { TemplateEntry } from "./templates.ts";
-// 整理时限的取值与夹位（连同「为什么必须夹」的证据）单源在 client-timeouts.ts。
+// 润色时限的取值与夹位（连同「为什么必须夹」的证据）单源在 client-timeouts.ts。
 import { organizeFetchTimeoutMs, rawOrganizeTimeoutMsOf } from "./client-timeouts.ts";
 // 注入样式表（纯数据，单源在 client-styles.ts；理由见那份文件头）。
 import { CARD_STYLES } from "./client-styles.ts";
@@ -24,7 +24,7 @@ const NS: LocaleNs = "dir-prep-organize";
 const BUNDLE_PKG = "@jayyuen66/dsh-dir-prep-organize";
 
 const ERROR_FLASH_MS = 4000;
-/** 非整理读面的等待上限（与迁移前 HTTP 读面的常量同值）。 */
+/** 非润色读面的等待上限。润色那一发有自己的超时（来自设置卡的 organizeTimeoutMs）。 */
 const REMOTE_TIMEOUT_MS = 125_000;
 const RESET_CONFIRM_MS = 4000;
 const EMOJI_PLACEHOLDER = "😀";
@@ -239,6 +239,11 @@ const builtinInitial: BuiltinState = { phase: "idle", list: [], error: "" };
 
 let builtinState: BuiltinState = builtinInitial;
 let builtinInflight: Promise<BuiltinState> | null = null;
+/**
+ * 在飞 Promise 的世代。reset 之后新一代重新起跑，上一代晚到的结果不许再写进 store，
+ * 否则用户点了「恢复默认」却拿回恢复前那次请求的快照。
+ */
+let builtinGeneration = 0;
 const builtinListeners = new Set<() => void>();
 
 function setBuiltinState(next: BuiltinState): BuiltinState {
@@ -270,7 +275,7 @@ function requireReader(): DirPrepReader {
   return dirPrepReader;
 }
 
-/** 客户端超时只影响等待：宿主侧的整理超时仍由它自己的 AbortController 收口。 */
+/** 客户端超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收口。 */
 async function within<Value>(pending: Promise<Value>, timeoutMs: number): Promise<Value> {
   const gate = Promise.withResolvers<never>();
   const timer = setTimeout(() => {
@@ -291,6 +296,7 @@ export async function loadBuiltinTemplates(): Promise<BuiltinState> {
     const inflightState = await builtinInflight;
     return inflightState;
   }
+  const generation = builtinGeneration;
   builtinInflight = (async (): Promise<BuiltinState> => {
     setBuiltinState({ phase: "loading", list: builtinState.list, error: "" });
     let settled: BuiltinState;
@@ -315,9 +321,12 @@ export async function loadBuiltinTemplates(): Promise<BuiltinState> {
     } catch (error) {
       settled = { phase: "error", list: [], error: errorText(error) };
     } finally {
-      builtinInflight = null;
+      if (builtinGeneration === generation) {
+        builtinInflight = null;
+      }
     }
-    return setBuiltinState(settled);
+    // 世代被 reset 越过时，这一发的结果属于上一代：调用方拿得到它，但不许写进 store。
+    return builtinGeneration === generation ? setBuiltinState(settled) : settled;
   })();
   const firstState = await builtinInflight;
   return firstState;
@@ -331,6 +340,8 @@ export function subscribeBuiltinTemplates(listener: () => void): () => void {
 }
 
 export function resetBuiltinTemplates(): void {
+  // 同时在飞的那一发不再能落盘：世代 +1 之后它的 finally 与 setState 都被挡在门外。
+  builtinGeneration += 1;
   builtinInflight = null;
   setBuiltinState(builtinInitial);
 }
@@ -341,7 +352,7 @@ function builtinStatusRow(snap: TemplatesSnapshot, t: Translate): ReactNode | un
     "button",
     {
       type: "button",
-      className: "dpi-builtin-retry",
+      className: "dpic-btn",
       "data-field": "dpi-builtin-retry",
       onClick: () => {
         void loadBuiltinTemplates();
@@ -376,7 +387,7 @@ function assertOrganizeReady(
     throw new Error(`读取模型失败: ${modelRes.error ?? "未知错误"}`);
   }
   if (prompt.trim().length === 0) {
-    throw new Error("输入框为空，无内容可整理");
+    throw new Error("输入框为空，无内容可润色");
   }
 }
 
@@ -400,7 +411,7 @@ async function requestOrganize(args: {
   );
   const orgRes = parseOrganizeResponse(organized);
   if (!orgRes.ok || orgRes.content === undefined) {
-    throw new Error(orgRes.error ?? "整理失败（未知错误）");
+    throw new Error(orgRes.error ?? "润色失败（未知错误）");
   }
   return orgRes.content;
 }
@@ -428,7 +439,7 @@ async function runOrganizeFlow(args: {
   });
 }
 
-// ── 模板：0.1.7 配置表单契约与 store（读侧唯一入口）──────────────────────────
+// ── 模板：配置表单契约与 store（读侧唯一入口）─────────────────────────────────
 
 export type EntryForm = ConfigForm<Record<string, unknown>>;
 
@@ -798,14 +809,14 @@ interface OrganizeUIView {
   builtinRow: ReactNode | undefined;
   loading: boolean;
   menuOpen: boolean;
-  /** 宿主是否给了「把整理结果写回输入框」的手段（inputActions.setDraft）。 */
+  /** 宿主是否给了「把润色结果写回输入框」的手段（inputActions.setDraft）。 */
   canWrite: boolean;
   templates: readonly TemplateEntry[];
   onRun: OrganizeRun;
   onToggleMenu: () => void;
 }
 
-/** 整理结果无处可写时的主按钮 title（与模板项那一档同一句话，同一套判据）。 */
+/** 润色结果无处可写时的主按钮 title（与模板项那一档同一句话，同一套判据）。 */
 const NO_WRITE_BACK_TITLE_KEY = "organizeWriteBackUnavailable";
 
 function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
@@ -819,7 +830,7 @@ function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
       title: errTitle,
       "data-field": "dpi-organize-btn",
       "data-state": state,
-      // canWrite 与「模板」下拉项同口径（client-entry.ts 的 TemplateButton）：整理结果
+      // canWrite 与「模板」下拉项同口径（client-entry.ts 的 TemplateButton）：润色结果
       // 最终要写回输入框，写不回时整次调用就是纯浪费——一次真实的 LLM 请求 + 一份真实
       // 账单，换来一句错误文案。失败在写回那一步才抛（writeDraft），所以这道门只能
       // 在发请求**之前**判断，否则钱已经花完了。
@@ -854,7 +865,21 @@ function createOrganizeCaret(ui: OrganizeUIView): ReactNode {
 }
 
 function createOrganizeRoleMenu(ui: OrganizeUIView): ReactNode {
-  const { t, templates, onRun, directItemLabel, noTemplatesLabel, builtinRow } = ui;
+  const {
+    t,
+    templates,
+    onRun,
+    directItemLabel,
+    noTemplatesLabel,
+    builtinRow,
+    loading,
+    canWrite,
+    errTitle,
+  } = ui;
+  // 菜单项与主按钮同一道门：写不回时一次真实 LLM 往返换来的结果无处落地，只能等到 writeDraft 才抛错。
+  // 主按钮与 caret 早就按 loading 挡住了，菜单项漏了同一条判据——从 caret 展开后照样能点。
+  const blocked = loading || !canWrite;
+  const blockedTitle = canWrite ? undefined : errTitle;
   return createElement(
     "div",
     { className: "dpi-menu", role: "menu", "data-field": "dpi-organize-menu" },
@@ -865,6 +890,8 @@ function createOrganizeRoleMenu(ui: OrganizeUIView): ReactNode {
         className: "dpi-item",
         role: "menuitem",
         "data-field": "dpi-organize-role-direct",
+        disabled: blocked,
+        ...(blockedTitle === undefined ? {} : { title: blockedTitle }),
         onClick: () => {
           void onRun();
         },
@@ -882,7 +909,8 @@ function createOrganizeRoleMenu(ui: OrganizeUIView): ReactNode {
               className: "dpi-item",
               role: "menuitem",
               "data-field": "dpi-organize-role-item",
-              title: tpl.description === "" ? tpl.text : tpl.description,
+              disabled: blocked,
+              title: blockedTitle ?? (tpl.description === "" ? tpl.text : tpl.description),
               onClick: () => {
                 void onRun(tpl.text);
               },
@@ -1104,7 +1132,7 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
   };
 }
 
-// ── 设置页「提示词模板」卡（quality-gate 卡同款骨架）────────────────────────
+// ── 设置页「模板库」卡（quality-gate 卡同款骨架）────────────────────────
 
 interface TemplatesCardProps {
   t: Translate;
@@ -1604,7 +1632,7 @@ function createCardHeader(view: {
 }): ReactNode {
   const { t, open, setOpen } = view;
   const headTitle = createElement("div", { className: "dpic-title" }, t("cardTitle"));
-  const headDesc = createElement("div", { className: "dpic-desc" }, t("cardDescription"));
+  const headDesc = createElement("div", { className: "dpic-cardsub" }, t("cardDescription"));
   const headBlock = createElement("div", { className: "dpic-head" }, headTitle, headDesc);
   const chevronPath = createElement("path", svgPathProps("M3 5l4 4 4-4", true));
   const chevron = createElement(
@@ -1803,6 +1831,10 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
       return;
     }
     setConfirmReset(false);
+    // 撤销与保存写的是同一份表单（reset 走 unset、保存走 set），而 CardFootBar 的 busy 门禁
+    // 就是为了不让这两条路并发：不置 busy 时，用户在 reset 的一次往返途中仍能点保存，
+    // 于是 unset 与 set 落到同一字段上，最后写入者赢。这里与 onSave 用同一对 setBusy。
+    setBusy(true);
     void (async () => {
       try {
         const builtin = await loadBuiltinTemplates();
@@ -1819,6 +1851,8 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
         setRootsDraft(allowRoots);
       } catch (error) {
         reportError(error);
+      } finally {
+        setBusy(false);
       }
     })();
   }
@@ -2031,7 +2065,7 @@ export type LocaleCatalog = Record<BuiltInLocaleId, LocaleDictOf<typeof NS>>;
 
 const inject = ["slots", "configForms", "locale"];
 
-/** 注入输入框右侧的「整理」「模板」两个按钮（两枚共用同一份 store 与 t）。
+/** 注入输入框右侧的「润色」「模板」两个按钮（两枚共用同一份 store 与 t）。
  *
  * 一次 inject 挂两枚：它们的 inject 面完全相同（都只要 store 这一份 card hook），
  * 分成两次 inject 会让宿主多跑一轮 occupant 装配，而拆开的唯一好处只是少几行。 */
@@ -2067,7 +2101,8 @@ function injectDock(ctx: ClientCtx, store: TemplatesStore, t: Translate): void {
   });
 }
 
-/** 注入设置页的「提示词模板」卡（插件自带卡片，宿主不再生成自动表单页）。
+/** 注入设置页的「模板库」卡（插件自带卡片，宿主不再生成自动表单页）。
+ *  这张卡管的就是「模板」下拉与「润色」▾ 共用的那一份列表。
  *
  * scope 作为参数传进来而不是就地取：卡片 inject 闭包里的 set/unset 必须落到
  * apply 期取的那**同一份**配置表单上（中途再 get 一次未必是同一个 provider 对象），

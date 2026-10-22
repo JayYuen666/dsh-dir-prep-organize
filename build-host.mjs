@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 /// <reference types="node" />
 // 构建 host.js：rolldown 把 host.ts 及其 `./src/*` 本地依赖打成单文件 ESM，落在**包根**
 // （与源码同目录，故 `import.meta.dirname` 的语义与源码态完全一致）。
@@ -6,10 +7,12 @@
 // ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING（实测），而发布出去的包正是躺在
 // node_modules 里被 dsh 载入的；官方示例包（docs/user/develop/basic/publish.zh.md
 // 的 hello-plugin）也是包根放 index.js 产物。本仓 host.ts + client.js 同形态。
-// 不产 .d.ts：插件包对外没有 TS API——dsh 按包名载入运行，没有人 import 它。
+// 本文件不产 .d.ts：类型面由 build-types.mjs 单独跑 tsc 生成到 types/（package.json 的
+// types / exports."."types" 指向那里）。两者分开是因为声明只由类型检查产出，与打包无关。
 // 顶部 node reference：oxlint 类型检查对 .mjs 不自动加载 @types/node，需显式声明
 // 才能解析 node:fs/promises、process、import.meta（否则整文件按 error 类型误报 unsafe）。
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { rolldown } from "rolldown";
 import { canonicalizeRegionPaths } from "@jayyuen66/dsh-plugin-shared/lib/canonicalize-region-paths";
@@ -20,12 +23,21 @@ const root = import.meta.dirname;
 const pkgJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 
 /**
+ * 对象守卫：数组与非对象都不算 Record。
+ * @param {unknown} raw
+ * @returns {raw is Record<string, unknown>}
+ */
+function isRecord(raw) {
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw);
+}
+
+/**
  * 从 JSON.parse 的 unknown 投影为 Record（非对象 → 空对象兜底），避免 any 索引。
  * @param {unknown} raw
  * @returns {Record<string, unknown>}
  */
 function asRecord(raw) {
-  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+  if (isRecord(raw)) {
     return raw;
   }
   return {};
@@ -47,6 +59,7 @@ function dependencyNames(field) {
 const externalNames = new Set([
   ...dependencyNames("dependencies"),
   ...dependencyNames("peerDependencies"),
+  ...dependencyNames("optionalDependencies"),
 ]);
 
 /**
@@ -68,6 +81,40 @@ function packageNameOf(id) {
  * @returns {boolean}
  */
 const isExternal = (id) => externalNames.has(packageNameOf(id));
+
+/**
+ * rolldown 输出项的最小投影：单文件产物只关心这几项。
+ * @typedef {{ type: string, fileName: string, code?: string, isEntry?: boolean }} OutputItem
+ */
+
+/**
+ * 单文件产物只接受一个带正文的 entry chunk。
+ * @param {OutputItem | undefined} item
+ * @returns {item is { type: "chunk", fileName: string, code: string }}
+ */
+function isEntryChunk(item) {
+  return item?.type === "chunk" && item.isEntry === true && typeof item.code === "string";
+}
+
+/**
+ * 单文件产物只允许一个 entry chunk：多余 chunk / asset 不落盘，宿主加载时才炸。
+ * @param {readonly OutputItem[]} output
+ * @param {string} source
+ * @returns {{ type: "chunk", code: string }}
+ */
+export function singleEntryChunk(output, source) {
+  if (output.length !== 1) {
+    const names = output.map((item) => `${item.type}:${item.fileName}`).join(", ");
+    throw new Error(
+      `rolldown 为 ${source} 产出了 ${output.length} 项输出（期望恰好一个 entry chunk）：${names}`,
+    );
+  }
+  const chunk = output.at(0);
+  if (!isEntryChunk(chunk)) {
+    throw new Error(`rolldown 为 ${source} 产出的不是单个 entry chunk`);
+  }
+  return chunk;
+}
 
 /**
  * 本包的产物表：源码入口 → 落盘文件名。
@@ -112,33 +159,75 @@ export async function buildHost() {
         input: path.join(root, artifact.source),
         external: isExternal,
         platform: "node",
+        // `//#region` 行的相对路径由 rolldown 按 process.cwd() 算出 ⇒ 不固定它同一份源码在包根与
+        // 子目录下会产出两种字节（跨 cwd 构建不可复现）。
+        cwd: root,
         resolve: { extensions: [".ts", ".mjs", ".js"] },
       });
-      const { output } = await bundle.generate({ format: "esm" });
-      const chunk = output.find((item) => item.type === "chunk");
-      if (chunk === undefined) {
-        throw new Error(`rolldown generate returned no chunk output for ${artifact.source}`);
+      try {
+        const { output } = await bundle.generate({ format: "esm" });
+        const chunk = singleEntryChunk(output, artifact.source);
+        // `//#region` 行的路径由 rolldown 按 process.cwd() 算出 ⇒ 同一份源码有两种字节（cwd=包根 写
+        // `lib/x.ts`，cwd=plugins/ 写 `<包名>/lib/x.ts`）。折成 canonical 必须落在**返回值之前**：
+        // test/host-freshness.ts 拿内存构建与磁盘产物逐字节比，只在一侧折就永远红。
+        const code = canonicalizeRegionPaths(chunk.code.trimEnd(), root);
+        /** @type {[string, string]} */
+        const entry = [path.join(root, artifact.output), `${artifact.header}${code}\n`];
+        return entry;
+      } finally {
+        // rolldown 的 bundle 持有原生资源；generate 或守卫抛错时同样要释放。
+        await bundle.close();
       }
-      // `//#region` 行的路径由 rolldown 按 process.cwd() 算出 ⇒ 同一份源码有两种字节（cwd=包根 写
-      // `lib/x.ts`，cwd=plugins/ 写 `<包名>/lib/x.ts`）。折成 canonical 必须落在**返回值之前**：
-      // test/host-freshness.ts 拿内存构建与磁盘产物逐字节比，只在一侧折就永远红。
-      const code = canonicalizeRegionPaths(chunk.code.trimEnd(), root);
-      return [path.join(root, artifact.output), `${artifact.header}${code}\n`];
     }),
   );
   return new Map(built);
 }
 
+/**
+ * 原子落盘：同目录临时文件 + rename；失败时清掉临时文件。
+ * @param {string} target
+ * @param {string} text
+ * @returns {Promise<void>}
+ */
+async function writeArtifact(target, text) {
+  const scratch = `${target}.${process.pid}.tmp`;
+  try {
+    await writeFile(scratch, text, "utf8");
+    await rename(scratch, target);
+  } catch (error) {
+    await rm(scratch, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * 直跑守卫：argv[1] 可能缺席或是软链路径，两边折成 realpath 再比。
+ * @returns {boolean}
+ */
+function invokedDirectly() {
+  const entry = process.argv.at(1);
+  if (entry === undefined || entry.length === 0) {
+    return false;
+  }
+  try {
+    return realpathSync(entry) === realpathSync(import.meta.filename);
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const artifacts = await buildHost();
-  await Promise.all([...artifacts].map(([file, code]) => writeFile(file, code, "utf8")));
+  await Promise.all([...artifacts].map(([file, code]) => writeArtifact(file, code)));
   console.info(
     "written:",
-    [...artifacts].map(([file, code]) => `${path.basename(file)} ${code.length} chars`).join(", "),
+    [...artifacts]
+      .map(([file, code]) => `${path.basename(file)} ${Buffer.byteLength(code, "utf8")} bytes`)
+      .join(", "),
   );
 }
 
-if (process.argv[1] === import.meta.filename) {
+if (invokedDirectly()) {
   try {
     await main();
   } catch (error) {

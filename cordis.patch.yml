@@ -1,24 +1,24 @@
-# dir-prep-organize（整理 + 模板；内容源为内置角色库）。
-# 功能一「整理」：输入框右上角分段按钮。主键点击 → 按当前目录结构 + 当前 session
-# 模型整理优化草稿（成功直接替换，失败保持原值）；▾ → 「以 XX 视角整理」（角色菜单，
-# 角色上下文 = 模板正文提炼，随 organize 调用注入 system，走同一 LLM 流）。
+# dir-prep-organize（润色 + 模板；内容源为内置角色库）。
+# 功能一「润色」：输入框右上角分段按钮。主键点击 → 按当前目录结构 + 当前 session
+# 模型润色草稿（成功直接替换，失败保持原值）；▾ → 「以 XX 的风格润色」（角色菜单，
+# 角色上下文 = 模板正文提炼，随 organize 调用注入 user 的 <data> 围栏，走同一 LLM 流）。
 # 功能二「模板」：输入框旁「模板」下拉，默认展示精选角色集（由 scripts/gen-defaults.mjs
 # 从插件 agents/ 目录生成，src/default-templates.generated.ts 单源），按 group 分组
 # 渲染（emoji + 名称 + description 悬停）；点选插入草稿（空整段填入 / 非空末尾追加）。
-# 列表存 settings（0.1.7 隐式注册：命名空间 = 本条目 id，可编辑字段 = host.ts 导出的
-# Config 上标了 .volatile() 的 templates/importAllowRoots；生成集不再是 register 的 base，
-# 而是 client 半的回落），设置页卡逐条增删改（name/emoji/
+# 列表存 settings（隐式注册：命名空间 = 本条目 id，可编辑字段 = host.ts 导出的
+# Config 上标了 .volatile() 的那几项；内置精选集是 client 半在配置缺席时的回落），
+# 设置页卡逐条增删改（name/emoji/
 # group/description/text）+ 两步确认恢复默认 + 角色导入（importTemplates：留空 = 一键
 # 导入内置 agents/ 全部；填路径 = 导入本地 .md 或目录）。client 直读本条目的配置表单
-# （ctx.configForms.get(条目 id)；0.1.7 已移除 settingsScope）。
+# （ctx.configForms.get(条目 id)，没有 settingsScope 这一层）。
 #
 # 架构：Host 半（host.ts）注册官方 Typert Remote 的服务键 `dirPrepOrganize`，
-# defaults / context / model / organize / importTemplates 五个方法就是全部读面；
+# 它导出的方法表就是全部读面；
 # 认证、Host/DNS 重绑定/Origin 判据与请求体上限由宿主 /api 网关承担，本包不注册
 # HTTP 路由、也没有自建 CSRF 令牌。Client 半（src/client-entry.ts → client.js）注册
-# conversation.input.right list 槽（整理 id=dir-prep-organize order 99 / 模板
-# id=…-templates order 100）与 plugins.bundle.config 设置卡（keyed；0.1.6 起
-# settings.plugin.item 已随旧设置页删除）；整理经 Remote 读取器调用上述方法，写回走
+# conversation.input.right list 槽（润色 id=dir-prep-organize order 99 / 模板
+# id=dir-prep-organize-templates order 100）与 plugins.bundle.config 设置卡（keyed，
+# 旧设置页的 settings.plugin.item 面已不存在）；润色经 Remote 读取器调用上述方法，写回走
 # inputActions.setDraft；模板读写配置表单 ctx.configForms.get(条目 id)（数组 set=字段级整体替换，
 # 已按 dsh-settings applyPathOp/cloneJsonShaped 源码取证）。
 - insert:

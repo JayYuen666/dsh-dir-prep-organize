@@ -246,11 +246,86 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     await assert.rejects(reader.defaults(), /unavailable: gateway down/u);
   });
 
+  it("应答不是 RemoteResult → 报形状不对，而不是解构时抛无关的 TypeError", async () => {
+    const shapes: unknown[] = [undefined, { value: 1 }, { ok: "yes", value: 1 }];
+    await Promise.all(
+      shapes.map(async (shape) => {
+        const reader = createDirPrepReader({
+          get: (name: string): unknown =>
+            name === "remote"
+              ? { $mount: () => Promise.resolve() }
+              : {
+                  defaults: async () => shape,
+                  context: async () => ({ ok: true, value: {} }),
+                  model: async () => ({ ok: true, value: {} }),
+                  organize: async () => ({ ok: true, value: {} }),
+                  importTemplates: async () => ({ ok: true, value: {} }),
+                },
+        });
+        assert.ok(reader !== undefined);
+        await assert.rejects(reader.defaults(), /不是 RemoteResult：缺少布尔字段 ok/u);
+      }),
+    );
+  });
+
+  it("error 分支缺 code 或 message → 点名缺的是哪一段", async () => {
+    const broken: unknown[] = [{ ok: false }, { ok: false, error: { code: "x" } }];
+    await Promise.all(
+      broken.map(async (shape) => {
+        const reader = createDirPrepReader({
+          get: (name: string): unknown =>
+            name === "remote"
+              ? { $mount: () => Promise.resolve() }
+              : {
+                  defaults: async () => shape,
+                  context: async () => ({ ok: true, value: {} }),
+                  model: async () => ({ ok: true, value: {} }),
+                  organize: async () => ({ ok: true, value: {} }),
+                  importTemplates: async () => ({ ok: true, value: {} }),
+                },
+        });
+        assert.ok(reader !== undefined);
+        await assert.rejects(reader.defaults(), /error 分支缺 code\/message/u);
+      }),
+    );
+  });
+
+  it("被拒的挂载不留在缓存里：下一次读重新挂载并取到值", async () => {
+    let mounts = 0;
+    const namespace = {
+      defaults: async () => ({ ok: true, value: { templates: [] } }),
+      context: async () => ({ ok: true, value: {} }),
+      model: async () => ({ ok: true, value: {} }),
+      organize: async () => ({ ok: true, value: {} }),
+      importTemplates: async () => ({ ok: true, value: {} }),
+    };
+    const reader = createDirPrepReader({
+      get: (name: string): unknown => {
+        if (name === "remote") {
+          return {
+            $mount: async (): Promise<void> => {
+              mounts += 1;
+              if (mounts === 1) {
+                throw new Error("mount failed");
+              }
+            },
+          };
+        }
+        return name === SERVICE_KEY ? namespace : undefined;
+      },
+    });
+    assert.ok(reader !== undefined);
+    await assert.rejects(reader.defaults(), /mount failed/u);
+    assert.equal(mounts, 1, "第一次读尝试过一次挂载");
+    assert.deepEqual(await reader.defaults(), { templates: [] }, "第二次读取到了值");
+    assert.equal(mounts, 2, "被拒的挂载没有留在缓存里");
+  });
+
   it("宿主上下文没有注册口 → 只少掉读面，不抛错", () => {
     assert.equal(installDirPrepRemote({} as never, scopeOf() as never), false);
   });
 
-  it("服务方法直接调用：默认模板、上下文、模型、整理与导入", async () => {
+  it("服务方法直接调用：默认模板、上下文、模型、润色与导入", async () => {
     const service = new DirPrepRemoteService(
       new Context(),
       scopeOf(
@@ -298,7 +373,7 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     const contextBody = await service.context(null as never);
     assert.equal(contextBody["ok"], false, "非对象请求按无会话处理");
     const organized = await service.organize(null as never);
-    assert.equal(organized["ok"], false, "空 body 交回整理失败，而不是抛穿");
+    assert.equal(organized["ok"], false, "空 body 交回润色失败，而不是抛穿");
 
     const payloads = createRemotePayloads(
       {

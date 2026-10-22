@@ -1,4 +1,4 @@
-// dir-prep-organize host 半：对话输入框"整理"按钮的后端。
+// dir-prep-organize host 半：对话输入框「润色」按钮的后端。
 //
 // 架构：Client 半（src/client-entry.ts）经官方 Typert Remote 的 `dirPrepOrganize`
 // 命名空间调用本文件的五个方法。认证、Host/DNS 重绑定/Origin 判据与 body 上限由
@@ -8,11 +8,11 @@
 //   defaults()                                  内置精选模板表（按需载入）
 //   context({ sessionId })                      目录上下文（文件名+大小+关键文件摘要）
 //   model({ sessionId })                        当前默认模型（provider/model/effort）
-//   organize({ sessionId, prompt, … })          用该模型整理优化草稿（LLM 流式聚合）
+//   organize({ sessionId, prompt, … })          用该模型润色草稿（LLM 流式聚合）
 //   importTemplates({ path, sessionId })        角色 .md 导入 → 模板条目（只读，见导入节）
 //
-// 文案双语：本文件产出的固定文案（①「整理」的 system prompt，面向模型；②会回显到设置卡
-// 与整理按钮的导入/读面回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
+// 文案双语：本文件产出的固定文案（①「润色」的 system prompt，面向模型；②会回显到设置卡
+// 与润色按钮的导入/读面回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
 // 的偏好现读取表（见 apply 的 localeMessages）；纯函数一律以字典为**入参**、不读设置。
 // console.* 日志与注释不随界面语言切换，故留中文；agents/ 角色库与
 // src/default-templates.generated.ts 是用户可编辑的数据，不做机翻。
@@ -37,7 +37,7 @@
 // 传输层已交给官方 Typert Remote：认证、body 上限与方法分派由宿主 /api 网关负责，
 // 本文件不再解析请求体，也没有自建的信任闸门或 CSRF 令牌。
 //
-// 模板设置（0.1.7 起为**隐式注册**）
+// 模板设置（**隐式注册**）
 // 宿主移除了 settings.register/get/installSection：命名空间 = 本包 cordis.patch.yml 里的
 // 裸条目 id（dir-prep-organize），可编辑字段 = 下面 Config 上标了 `.volatile()` 的字段。
 // 一个 volatile 字段都没有的条目会被宿主 describe() 整条跳过
@@ -47,8 +47,8 @@
 // importAllowRoots 落 `.default([])`，而 templates **不给默认**——src/default-templates.generated.ts
 // 那份精选集（scripts/gen-defaults.mjs 从 agents/ 角色库生成）由 **client 半**持有并作回落，
 // host 半不再读它，也没有把整份精选集当底座交进 settings 的那一步。
-// client（设置卡/下拉）直读本条目的配置表单 `ctx.configForms.get(entryId)`（0.1.7 起取代
-// 已随宿主移除的 settingsScope），不经 HTTP、零 LLM。数组 set 语义
+// client（设置卡/下拉）直读本条目的配置表单 `ctx.configForms.get(entryId)`（宿主已移除
+// settingsScope 这一层），不经 HTTP、零 LLM。数组 set 语义
 // 已按 dsh-settings 源码取证：applyPathOp 字段级整体替换 + cloneJsonShaped
 // JSON 白名单允许普通对象数组（session-rescue providerExcludes:string[] 先例）。
 // host 侧只剩两面用 settings：configure（声明本包自带卡片、别让宿主再生成自动页）
@@ -96,9 +96,9 @@ import type { AgentFileInfo, TemplateEntry } from "./src/templates.ts";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
-/** 本包送进 `llm.stream({ messages })` 的整理请求帧是 **request-only 输入**：它从不落
+/** 本包送进 `llm.stream({ messages })` 的润色请求帧是 **request-only 输入**：它从不落
  *  任何持久消息位（`runOrganize` 只回 `{ content }`，读面也不把帧身份回投给卡片），所以
- *  按 0.1.7 它既不需要 `id` 也不带 `source`——证据三条：
+ *  它既不需要 `id` 也不带 `source`——证据三条：
  *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts` 的 `RequestUserInput`
  *     把两面都标成 `?: never`（`readonly id?: never` / `readonly source?: never`），
  *     `GenerateOptions.messages` 收的是 `RequestMessage[] = Message | RequestUserInput`
@@ -221,19 +221,19 @@ const KEY_EXT = new Set([
  * 复数形式一并收进来：`tokens.json`、`accounts.json` 是真实存在的凭据文件名。 */
 const SECRET_PATTERN =
   /(?:^|[^a-z0-9])(?:credentials?|secrets?|id_rsa|pem|p12|pfx|keystore|env|keys?|tokens?|auth|passwd|password|accounts?)(?:[^a-z0-9]|$)/u;
-/** LLM 整理超时。 */
+/** LLM 润色超时。 */
 /** schema .default() 的单源（host 消费走 config 字段，不再直读常量）。 */
 const ORGANIZE_TIMEOUT_MS = 120_000;
 /** 单个关键文件的摘要字节上限。harness 的 readWholeText 无上限，超限文件整份
  *  跳过（不截半份——半份摘要会以"全量"的名义喂给模型，比没有更误导），
  *  并计入 skipped.tooLarge 回报。 */
 const MAX_SNIPPET_BYTES = 256 * 1024;
-/** 单次整理带进模型的全部摘要的**总量**上限。
+/** 单次润色带进模型的全部摘要的**总量**上限。
  *
  *  为什么需要总量而单文件上限不够：`maxSnippetBytes` 只管每个文件，而条目数不设上界
  *  （用户拍板）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，请求
  *  仍要过宿主 /api 网关的请求体上限，摘要一多就顶得过它，结果是 context 读面成功、
- *  UI 正常列出文件树，用户点「整理」才在网关处失败。这里给总量封顶，让「context 成功」
+ *  UI 正常列出文件树，用户点「润色」才在网关处失败。这里给总量封顶，让「context 成功」
  *  不再意味着「organize 必然失败」。留足余量：JSON 转义与 client 侧的拼接还会再放大一截。 */
 const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
 /** 文件读取并发上限：Promise.all 一次铺开会在导入内置角色库（整棵 agents/）时打满
@@ -355,7 +355,7 @@ export interface SessionsService {
 /** 会话 id 的官方品牌构造：把边界上读来的裸 string 送进 `SessionStore.get`。 */
 const sessionIdOf = (value: string): SessionId => brandString<SessionId>(value);
 /** `ReasoningEffortId` 取官方真品牌（`Branded<'ReasoningEffortId'>`，以 dsh-brand 的
- *  `unique symbol` 为键）。原先本地重述成 `string & { effortBrand: ... }` 是**假品牌**：
+ *  `unique symbol` 为键）。本地重述成 `string & { effortBrand: ... }` 是**假品牌**：
  *  键不同名即不同型，宿主真值塞不进来、任何带该属性的字符串反倒能通过，注释里那句
  *  「转换点为 0」并不成立。取官方类型后模型选择与 stream 入参两侧共用同一真值。 */
 export type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
@@ -410,7 +410,7 @@ function hasFnMember(value: unknown, member: string): boolean {
 }
 
 // 各服务的最小形状守卫（apply 里从 ctx 取出后投影，替代 `svc.get(name) as X`）。
-// 0.1.7 起 settings 不再暴露 register：本包只用 describe（跨命名空间读）与
+// settings 不再暴露 register：本包只用 describe（跨命名空间读）与
 // configure（页面策略），probe 宿主独有的 describe 即可。
 /**
  * 官方 `SettingsForms`（installed @deepseek-ai/dsh-settings/lib/types/index.d.ts，
@@ -582,8 +582,8 @@ export interface DirEntry {
   snippet: string | undefined;
 }
 
-/** 静默丢数据的记账（审计修复：原先"读失败即 undefined、超限即忽略"完全没有
- *  回执，界面与 host 都显示成功）。dir context 与 import 两个读面共用此形状。 */
+/** 静默丢数据的记账（"读失败即 undefined、超限即忽略"的话没有任何回执，
+ *  界面与 host 都显示成功）。dir context 与 import 两个读面共用此形状。 */
 export interface SkipCounts {
   /** 字节超限、整份跳过的文件数。 */
   tooLarge: number;
@@ -797,7 +797,7 @@ export interface ImportResult {
  *   不得被 `/home/dev/project` 的字符串前缀放行），越界即拒并回显解析后的绝对路径；
  * - 命中根后，「根以内的剩余部分」仍逐段校验：`.` / `..` / 以 `.` 开头的隐藏段一律
  *   拒绝（cwd 里的 `.ssh/` 不因"在 cwd 之内"就可读）。根前缀本身不参与该判断，
- *   因此装在 ~/.dsh 下的项目也能导入自己 cwd 内的角色（旧版把这类 cwd 整体拦死）。
+ *   因此装在 ~/.dsh 下的项目也能导入自己 cwd 内的角色。
  * - 请求路径以 `.md` 结尾 → 单文件导入；否则按目录导入（顶层 *.md + 一层子目录
  *   *.md，跳过隐藏项），目录扫描不递归更深层，但漏掉的必须计数回报。
  *
@@ -1285,7 +1285,7 @@ export async function collectAgentTemplates(
     // 于是 cwd 里一个 `roles -> /Users/me/.aws/credentials` 的软链目录，
     // 字符串形状「就在 cwd 之内」而真身在所有允许根之外。
     //
-    // 这道闸原先只挂在单文件分支上，目录分支整批漏掉：`importFromDirectory` 的
+    // 这道闸必须同时覆盖单文件与目录两个分支：只挂单文件分支的话，`importFromDirectory` 的
     // `mdCandidates` 拿 `fs.contains(target, child.target)` 当门，而那里的 `target`
     // **就是已经逃逸的那个目录自己**，用它当父判据必然为真，于是根外目录里的 .md
     // 连同正文整批被当成本地角色导入（已用真磁盘 + 符号链接复现：断言「0 条」实得 1 条）。
@@ -1320,7 +1320,7 @@ export async function collectAgentTemplates(
   }
 }
 
-// ── organize（LLM 整理，纯函数便于测试）──────────────────────────────────
+// ── organize（LLM 润色，纯函数便于测试）──────────────────────────────────
 
 export interface OrganizeInput {
   prompt: string;
@@ -1328,13 +1328,13 @@ export interface OrganizeInput {
   entriesSummary?: string;
   /** 会话最近对话文本（user/assistant 交替，host 侧从 deriveMessages 提取）。 */
   recentTurns?: string;
-  /** 参考角色上下文（提炼自模板正文；可选）。提供时整理以其角色视角重写需求。 */
+  /** 参考角色上下文（提炼自模板正文；可选）。提供时借用该角色的术语与风格润色草稿。 */
   roleText?: string;
   model?: ModelSelection;
 }
 
 /** 构造 system 提示（导出供测试）。规则正文与各段标题全部取自注入的字典——
- *  面向模型的 prompt 也随官方 locale 偏好切语言，zh 输出与迁移前逐字一致。 */
+ *  面向模型的 prompt 也随官方 locale 偏好切语言；zh 输出的正文逐字取自该字典。 */
 export function buildOrganizeSystem(
   input: Omit<OrganizeInput, "prompt">,
   messages: HostMessages,
@@ -1365,9 +1365,12 @@ export function buildOrganizeSystem(
  * user 消息 = 草稿 + 围栏起来的不可信数据块。
  *
  * 围栏用**成对的定界标记**而不是缩进或横线：模型侧最容易被无视的是「看起来像普通内容」
- * 的标记，而 `</data>` 这种成对标签既显眼、又难以由数据自身伪造（数据里出现的
- * `</data>` 会被当作提前闭合，后续内容重新落回指令位——所以围栏内容仍按纯文本处理，
- * 不做任何解析或转义）。
+ * 的标记，而成对标签既显眼、又便于判断边界。
+ *
+ * ⚠ 标签本身拦不住数据：围栏内容来自用户仓库（目录摘要里的文件名、会话历史、角色 .md
+ * 正文），里面完全可能含 `</data>`。原样拼进去会被读成提前闭合，其后的字符就重新落回
+ * 指令位——围栏反而把不可信内容送到了它本该隔离的信任层。所以落进围栏的每一段文本都先
+ * 把自己的定界标记替换成中性写法，标记只能由本函数产生。
  *
  * @param prompt - 真正的用户草稿
  * @param input - 其余上下文（摘要/历史/角色）
@@ -1379,8 +1382,16 @@ export function buildOrganizeUser(
   input: Omit<OrganizeInput, "prompt">,
   messages: HostMessages,
 ): string {
+  // 先去掉数据自带的同类标记再包：只替换开始/结束两枚定界串本身，其余字符逐字保留，
+  // 于是丢掉的只是「看起来像围栏」那层伪装，内容本身不变。
+  const defused = (line: string): string =>
+    line
+      .split(messages.sysDataFenceStart)
+      .join("[fence-open]")
+      .split(messages.sysDataFenceEnd)
+      .join("[fence-close]");
   const fenced = (line: string): string =>
-    [messages.sysDataFenceStart, line, messages.sysDataFenceEnd].join("\n");
+    [messages.sysDataFenceStart, defused(line), messages.sysDataFenceEnd].join("\n");
   const blocks = [
     input.entriesSummary !== undefined && input.entriesSummary !== ""
       ? fenced(fillTemplate(messages.sysSummaryLine, [["{summary}", input.entriesSummary]]))
@@ -1495,7 +1506,7 @@ export async function drainStreamToText(
   return text.trim();
 }
 
-/** 整理入口（读面调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
+/** 润色入口（读面调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
  *  注入的字典，本函数不读设置。 */
 export async function runOrganize(
   llm: LlmService,
@@ -1528,7 +1539,7 @@ export async function runOrganize(
   const timer = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
-  // 调用方主动取消也要中止：没有这条，一次已放弃的整理会继续烧满整个超时窗口和
+  // 调用方主动取消也要中止：没有这条，一次已放弃的润色会继续烧满整个超时窗口和
   // 一份真实 token 账单，而响应反正没人收。abort 监听用 once + finally 里摘除，
   // 免得在长驻的宿主进程里给每次请求留一个悬挂监听。
   // （当前读面不传 callerSignal：客户端超时只放弃等待，宿主仍由自己的 timer 收口。）
@@ -1548,17 +1559,11 @@ export async function runOrganize(
       model: model.model,
       ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: model.reasoningEffort }),
       messages: llmMessages,
-      // roleText 必须进 system：漏传时「以角色视角整理」退化成直接整理，
-      // 而界面仍报成功（审计复现：system.includes("纵深防御") === false）。
-      system: buildOrganizeSystem(
-        {
-          cwd: input.cwd,
-          ...(input.entriesSummary === undefined ? {} : { entriesSummary: input.entriesSummary }),
-          ...(input.recentTurns === undefined ? {} : { recentTurns: input.recentTurns }),
-          ...(input.roleText === undefined ? {} : { roleText: input.roleText }),
-        },
-        messages,
-      ),
+      // system 只拿会话 cwd：目录摘要、会话历史、角色正文都由 buildOrganizeUser 放进
+      // user 消息的围栏块（信任序见 buildOrganizeSystem 与 buildOrganizeUser 的注释）。
+      // 这里不要再把三者折进来——buildOrganizeSystem 根本不读它们，写了是空透传，
+      // 读起来像"角色/摘要在 system 里"，正好把信任序读反。
+      system: buildOrganizeSystem({ cwd: input.cwd }, messages),
       signal: controller.signal,
     });
     const content = await drainStreamToText(stream, messages);
@@ -1572,7 +1577,7 @@ export async function runOrganize(
   }
 }
 
-// ── 模板 settings（0.1.7：隐式注册 + volatile 字段）─────────────────────────
+// ── 模板 settings（隐式注册 + volatile 字段）───────────────────────────────
 
 /** 单条模板的 settings schema 形状（与 src/templates.ts 的 TemplateEntry 对齐：
  *  description/group/emoji 收敛为空串默认，旧存量条目（无新字段）写入时也能过校验）。 */
@@ -1612,7 +1617,7 @@ const TemplateEntrySchema = Schema.object({
 const configShape = {
   templates: Schema.array(TemplateEntrySchema).volatile(),
   importAllowRoots: Schema.array(Schema.string()).default([]).volatile(),
-  // ── Config 化（默认与原模块常量同值；config.md:78-92：部署间可能想配不同值的
+  // ── Config 化（默认与原模块常量同值；部署间可能想配不同值的
   // 必须是配置字段）。organizeTimeoutMs **volatile 上卡**：客户端 fetch 超时要与它
   // 保持同源（host 先超时、客户端留 5s 余量），而 client 半唯一能读到的就是
   // configForms 快照的 volatile 位；另两位是 host 侧部署假定值（非 volatile，不占卡）。
@@ -1637,7 +1642,7 @@ const configSchema: ReturnType<typeof Schema.object<typeof configShape>> =
 export interface Config {
   templates: Volatile<TemplateEntry[] | undefined>;
   importAllowRoots: Volatile<string[]>;
-  /** LLM 整理中止时限（volatile：客户端经 configForms 快照同源读取）。 */
+  /** LLM 润色中止时限（volatile：客户端经 configForms 快照同源读取）。 */
   organizeTimeoutMs: Volatile<number>;
   /** 关键文件摘要的单文件字节上限（超出整份跳过）。 */
   maxSnippetBytes: number;
@@ -1665,9 +1670,9 @@ export function importAllowRootsOf(raw: unknown): string[] {
 // ── 插件主体 ───────────────────────────────────────────────────────────────
 
 /** 注入的服务面：settings 为硬依赖（cordis 等它就绪才 apply）。
- *  0.1.7 起命名空间是隐式的（= 本条目在 cordis.patch.yml 里的裸 id，可编辑字段取自
- *  导出的 Config），所以 settings 不再是「注册的前提」而是「页面策略（configure）与
- *  跨命名空间读（describe）」的载体；设置页只派发「host 已 serve 的命名空间 ∩
+ *  命名空间是隐式的（= 本条目在 cordis.patch.yml 里的裸 id，可编辑字段取自
+ *  导出的 Config），所以 settings 在这里的职责是「页面策略（configure）与跨命名空间读
+ *  （describe）」，而非「注册的前提」；设置页只派发「host 已 serve 的命名空间 ∩
  *  settings.plugin.item 卡」（dsh-client-ui-settings-plugins 源码语义），configure 必须
  *  发生在 apply 期，故仍硬注入。sessions/fs/llm/agentDefaultModel 仍可选读。 */
 export const inject = ["settings"];
@@ -1681,7 +1686,7 @@ export interface RouteDeps {
   agentDefaultModel?: () => AgentDefaultModel | undefined;
   /** 设置里登记的额外导入允许根（每次请求现读，改设置无需重启）。 */
   importAllowRoots?: () => readonly string[];
-  /** 部署值（Config 化）：整理超时 / 摘要字节上限 / 读取并发。
+  /** 部署值（Config 化）：润色超时 / 摘要字节上限 / 读取并发。
    *  缺省回落原模块常量（与 schema .default 同值）——测试与旧调用方不必逐一改。 */
   limits?: () => RouteLimits;
   /** 内置精选模板表的取数口。缺省走按需 import 产物；测试替掉它即可覆盖载入失败那条回执，
@@ -1729,8 +1734,8 @@ function resolveRecentTurns(
   }
 }
 
-/** importTemplates 请求体的输入面（纯函数，测试锁死）：坏输入的判别顺序与旧版逐守卫
- *  完全一致——path 非字符串先于"纯空白 path"，两者各带自己的状态码与文案。 */
+/** importTemplates 请求体的输入面（纯函数，测试锁死）：坏输入按顺序判别——path
+ *  非字符串先于"纯空白 path"，两者各带自己的状态码与文案。 */
 type ImportRequest =
   | { readonly rejected: true; readonly status: number; readonly error: string }
   | {
@@ -1743,8 +1748,8 @@ type ImportRequest =
     };
 
 /** 已解析的请求体 → 导入目标（拒绝时带回执的状态码与文案，由调用方原样发出）。
- *  path 缺失/非字符串 → 直接拒（旧版把它悄悄当成"留空"，于是一个写坏字段的请求会
- *  静默导入整个内置库——越界与坏输入都不许降级成"更多权限"）；只含空白字符的串同样
+ *  path 缺失/非字符串 → 直接拒（把它当成"留空"就是一个写坏字段的请求静默导入
+ *  整个内置库——越界与坏输入都不许降级成"更多权限"）；只含空白字符的串同样
  *  是坏输入，不给降级空间（**精确空串**才是内置全量那个哨兵）。 */
 function importRequestOf(parsed: unknown, messages: HostMessages): ImportRequest {
   const body: Record<string, unknown> = isRecord(parsed) ? parsed : {};
@@ -1847,7 +1852,7 @@ function modelPayload(scope: RemoteScope): Record<string, unknown> {
   }
 }
 
-/** organize 请求体的输入面：JSON 已解析的 unknown → 整理入参（非字符串一律按空值处理）。 */
+/** organize 请求体的输入面：JSON 已解析的 unknown → 润色入参（非字符串一律按空值处理）。 */
 function organizeRequestOf(body: Record<string, unknown>): {
   readonly prompt: string;
   readonly entriesSummary: string;
@@ -1863,7 +1868,7 @@ function organizeRequestOf(body: Record<string, unknown>): {
   };
 }
 
-/** 整理：LLM 调用与两层错误回执。内层 catch 是「整理过程本身失败」（回裸 errorText），
+/** 润色：LLM 调用与两层错误回执。内层 catch 是「润色过程本身失败」（回裸 errorText），
  *  外层是「装配入参时炸」。`messages` 每次调用现读一次，不在此处二次现读。 */
 async function organizePayload(
   scope: RemoteScope,
@@ -2024,8 +2029,8 @@ interface ImportTemplatesRequest {
 }
 
 /**
- * 设置卡的宿主读面（官方 Typert Remote）：目录上下文、当前模型、整理、导入与内置模板。
- * 取代原先的五条 HTTP 端点（旧数据面已删除）。
+ * 设置卡的宿主读面（官方 Typert Remote）：目录上下文、当前模型、润色、导入与内置模板。
+ * 本包不自建 HTTP 端点，认证与分派由宿主 /api 网关负责。
  */
 export class DirPrepRemoteService extends TypertRemoteService {
   private readonly scope: RemoteScope;
@@ -2098,7 +2103,7 @@ function noopDisposer(): void {
 }
 
 /** host apply：登记设置页策略 + 注册官方 Remote 读面（注入子上下文，卸载即撤）。
- *  0.1.7 起模板设置是**隐式注册**的（导出的 Config + 字段上的 .volatile()），本函数
+ *  模板设置是**隐式注册**的（导出的 Config + 字段上的 .volatile()），本函数
  *  不再向 settings 注册任何东西；配置值由 cordis 校验并填过默认后按 volatile 引用交进来
  *  （第二参数 config），读当前值一律 `.get()`。 */
 export function apply(ctx: Context, config: Config): void {
@@ -2113,8 +2118,8 @@ export function apply(ctx: Context, config: Config): void {
     return result;
   };
   // host 文案的语言：每次取表时现读官方 locale 命名空间（用户在「设置 → 常规」改语言后，
-  // 下一个请求即切文案；不重启、也不加本插件自己的 locale 设置项）。0.1.7 里跨命名空间
-  // 读只剩 describe() 一条路：全部条目的表单投影里挑 ns === 'locale' 那条的 value。
+  // 下一个请求即切文案；不重启、也不加本插件自己的 locale 设置项）。跨命名空间读只剩
+  // describe() 一条路：全部条目的表单投影里挑 ns === 'locale' 那条的 value。
   // 没装官方 locale 插件（该条目未被投影）或 settings 形状不符 → 取到 undefined →
   // resolveLocalePreference 落中文默认，不抛。
   // describe() 也是迁移后**唯一还会抛**的宿主调用面（旧的 settings.register 已消失），
@@ -2155,7 +2160,7 @@ export function apply(ctx: Context, config: Config): void {
     }, "dir-prep-organize: settings presentation");
   });
   // 读面走官方 Typert Remote：经注入子上下文注册。没有 remote 网关的宿主只是设置卡
-  // 读不到数据面，目录整理/模板/沉淀这些能力本身只依赖 settings 与 fs，照常可用。
+  // 读不到数据面，目录润色与模板这两项能力本身只依赖 settings 与 fs，照常可用。
   // 各服务经惰性 getter + 形状守卫投影（服务可能晚于本条目就绪；替代 `svc.get(...) as X`）。
   // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
   const limitsOfConfig = (): RouteLimits => ({

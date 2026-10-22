@@ -6,28 +6,28 @@
 // 行为按 harness `packages/fs/fs-local/src/{index,fsio}.ts` 复刻，真目录树说了算。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · resolve：空串/纯空白抛 FS_NOT_FOUND（fsio.ts:162）；displayPath 保留含 `..` 的物理
-//    拼写，否则 path.resolve 归一（fsio.ts:145-151）；targetKey = 文件的 realpath，
-//    跟随符号链接并取磁盘真实大小写（fsio.ts:165）；缺席路径 realpath 最近存在祖先再拼回
-//    缺失后缀（fsio.ts:176-198），故「不存在」不抛错、由 stat 返回 undefined 表达。
+//  · resolve：空串/纯空白抛 FS_NOT_FOUND（fsio.ts 的 resolve）；displayPath 保留含 `..` 的物理
+//    拼写，否则 path.resolve 归一（fsio.ts 的 displayPath）；targetKey = 文件的 realpath，
+//    跟随符号链接并取磁盘真实大小写（fsio.ts 的 targetKey）；缺席路径 realpath 最近存在祖先再拼回
+//    缺失后缀（fsio.ts），故「不存在」不抛错、由 stat 返回 undefined 表达。
 //  · contains：relative(processPath(parent), processPath(child))，即 **realpath 之后**逐段
-//    判包含，`''`（同体）也算内含（fs-local/index.ts:152-155）→ cwd 内指向外部的软链，
+//    判包含，`''`（同体）也算内含（fs-local/index.ts 的 contains）→ cwd 内指向外部的软链，
 //    其 child.targetKey 已在根外，contains 当场判否。
 //  · listDir：数组而非迭代器；readdir 全量（含隐藏项）→ localeCompare 稳定名序
-//    （fsio.ts:312/320）；子项 type 只有 file|directory|other（联合里没有 symlink，
-//    软链报成目标的类型、断链落 other，fsio.ts:323-327）；**size 仅普通文件附带**（:330）；
-//    缺席 FS_NOT_FOUND、非目录 FS_NOT_DIRECTORY（fsio.ts:307-308,276-284）。
-//  · readText：先 stat，缺席 FS_NOT_FOUND、非普通文件 FS_NOT_REGULAR_FILE（fsio.ts:379,381）；
-//    头 8192 字节含 NUL → FS_NOT_TEXT「binary file」（fsio.ts:17,396）；TextDecoder({fatal})
-//    失败 → FS_NOT_TEXT（:346-353）；**byte-for-byte 交付，不归一行尾、不剥 BOM**（:390）。
-//  · 错误码词汇表：packages/fs/fs/src/types.ts:162-169；FsError 继承 HarnessError 带 code。
+//    （fsio.ts 的 listDir）；子项 type 只有 file|directory|other（联合里没有 symlink，
+//    软链报成目标的类型、断链落 other，fsio.ts 的 listDir）；**size 仅普通文件附带**（同处）；
+//    缺席 FS_NOT_FOUND、非目录 FS_NOT_DIRECTORY（fsio.ts）。
+//  · readText：先 stat，缺席 FS_NOT_FOUND、非普通文件 FS_NOT_REGULAR_FILE（fsio.ts 的 readText）；
+//    头 8192 字节含 NUL → FS_NOT_TEXT「binary file」（fsio.ts）；TextDecoder({fatal})
+//    失败 → FS_NOT_TEXT（fsio.ts 的 readText）；**byte-for-byte 交付，不归一行尾、不剥 BOM**（同处）。
+//  · 错误码词汇表：packages/fs/fs/src/types.ts；FsError 继承 HarnessError 带 code。
 //
 // 本文件是宿主实现的**语义镜像**，三处规则按整文件豁免，理由各一条：
 //  · eslint(new-cap)：`FsTargetKey()` / `FsVersion()` 是官方导出的品牌函数（不是构造器），
-//    types.ts:22/36 就这么写的，换名字等于自造 API。
+//    types.ts 就这么写的，换名字等于自造 API。
 //  · eslint(class-methods-use-this)：`FileSystem` 抽象成员的签名归官方，读面实现
 //    （processPath / lstat / writeText…）天然不引用 this，硬塞 this 只为过 lint 是假动作。
-//  · eslint(no-await-in-loop)：listDir 逐子项串行 await，与 fsio.ts:320-336 同式——宿主
+//  · eslint(no-await-in-loop)：listDir 逐子项串行 await，与 fsio.ts 的 listDir 同式——宿主
 //    就是靠串行来天然限流（不开并发），并发化等于偏离被测语义。
 /* oxlint-disable class-methods-use-this, new-cap, no-await-in-loop */
 import { FsError, FileSystem, FsTargetKey, FsVersion } from "@deepseek-ai/dsh-fs";
@@ -48,37 +48,37 @@ import type { Stats } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** fs-local 的二进制采样窗口（fsio.ts:17）。 */
+/** fs-local 的二进制采样窗口（fsio.ts）。 */
 const BINARY_SAMPLE_BYTES = 8192;
 
-/** 跟随末段软链后可能出现的类型（fs-local 的 `stat` 永不报 symlink，fsio.ts:213-221）。 */
+/** 跟随末段软链后可能出现的类型（fs-local 的 `stat` 永不报 symlink，fsio.ts 的 stat）。 */
 type FollowedType = "file" | "directory" | "other";
 
-/** 探针返回值（fs-local 的 PathInfo / PathLinkInfo 投影，types.ts:70-90）。 */
+/** 探针返回值（fs-local 的 PathInfo / PathLinkInfo 投影，types.ts）。 */
 interface ProbeResult<TType extends FsInfo["type"] | "symlink"> {
   readonly version: FsVersionType;
   readonly type: TType;
   readonly size: number;
 }
 
-/** 缺席判据之一（fsio.ts:22-28）。 */
+/** 缺席判据之一（fsio.ts）。 */
 function isEnoent(error: unknown): boolean {
   const { code } = error as { code?: string };
   return code === "ENOENT";
 }
 
-/** 父段不是目录判据（fsio.ts:30-38）：POSIX 上它也意味着「这条路不可能存在」。 */
+/** 父段不是目录判据（fsio.ts）：POSIX 上它也意味着「这条路不可能存在」。 */
 function isEnotdir(error: unknown): boolean {
   const { code } = error as { code?: string };
   return code === "ENOTDIR";
 }
 
-/** ENOENT / ENOTDIR 在宿主口径里同义为「缺席」（fsio.ts:22-38 + :233-240）。 */
+/** ENOENT / ENOTDIR 在宿主口径里同义为「缺席」（fsio.ts）。 */
 function isMissing(error: unknown): boolean {
   return isEnoent(error) || isEnotdir(error);
 }
 
-/** node 的 Stats 归约成宿主那几档判别（fsio.ts:213-224 的并集）。 */
+/** node 的 Stats 归约成宿主那几档判别（fsio.ts 那几档判别的并集）。 */
 function typeOf(
   info: {
     isFile: () => boolean;
@@ -97,8 +97,8 @@ function typeOf(
 }
 
 /**
- * 版本串与宿主同式（dev:ino:size:mtime:ctime，fsio.ts:75-77）。宿主取 bigint 的 mtimeNs，
- * 这里取 mtimeMs：这一位是 **opaque 身份**（types.ts:26-31 明令消费方不得解读），两者都只
+ * 版本串与宿主同式（dev:ino:size:mtime:ctime，fsio.ts 的版本串）。宿主取 bigint 的 mtimeNs，
+ * 这里取 mtimeMs：这一位是 **opaque 身份**（types.ts 明令消费方不得解读），两者都只
  * 兑现「改过一次就换一个」，而集成测试判的正是这件事。
  */
 function versionOf(info: Stats): FsVersionType {
@@ -107,7 +107,7 @@ function versionOf(info: Stats): FsVersionType {
   );
 }
 
-/** 探针共用体：缺席回 undefined，其余按是否跟随末段取元数据（fsio.ts:247-274）。 */
+/** 探针共用体：缺席回 undefined，其余按是否跟随末段取元数据（fsio.ts 的探针）。 */
 async function probeWith(
   absolute: string,
   noFollow: boolean,
@@ -137,20 +137,20 @@ async function probeWith(
   return result;
 }
 
-/** 跟随末段（fs-local 的 `probe`，fsio.ts:247）。类型上就排除 symlink，省得每个消费点收窄。 */
+/** 跟随末段（fs-local 的 `probe`，fsio.ts 的 probe）。类型上就排除 symlink，省得每个消费点收窄。 */
 async function probeFollow(absolute: string): Promise<ProbeResult<FollowedType> | undefined> {
   const info = await probeWith(absolute, false);
   return info === undefined ? undefined : (info as ProbeResult<FollowedType>);
 }
 
-/** 不跟随末段（fs-local 的 `probeNoFollow`，fsio.ts:263）：只有这一支报得出 symlink。 */
+/** 不跟随末段（fs-local 的 `probeNoFollow`，fsio.ts）：只有这一支报得出 symlink。 */
 async function probeNoFollow(
   absolute: string,
 ): Promise<ProbeResult<FollowedType | "symlink"> | undefined> {
   return probeWith(absolute, true);
 }
 
-/** 缺席 → FS_NOT_FOUND（fsio.ts:371-376）；其余错误原样上抛。 */
+/** 缺席 → FS_NOT_FOUND（fsio.ts 的 stat）；其余错误原样上抛。 */
 async function statOrThrow(
   absolute: string,
   verb: "read",
@@ -196,7 +196,7 @@ async function readFileBounded(absolute: string, signal?: AbortSignal): Promise<
 
 /**
  * displayPath 与 fs-local `localDisplayPath` 同式：请求里带物理 `..` 遍历段时保留原拼写，
- * 否则 path.resolve 归一（fsio.ts:145-151）。
+ * 否则 path.resolve 归一（fsio.ts 的 displayPath）。
  */
 function displayPathOf(base: string, request: string): string {
   const raw = path.isAbsolute(request) ? request : `${base}${path.sep}${request}`;
@@ -204,7 +204,7 @@ function displayPathOf(base: string, request: string): string {
 }
 
 /**
- * realpath 身份（fs-local `resolveLocalTarget` 的 key 那一半，fsio.ts:161-198）：存在即取
+ * realpath 身份（fs-local `resolveLocalTarget` 的 key 那一半，fsio.ts 的 realpath 身份）：存在即取
  * 自身 realpath；缺席则 realpath 最近存在祖先再拼回缺失后缀，使创建前后身份一致。
  */
 async function identityOf(absolute: string): Promise<string> {
@@ -281,7 +281,7 @@ export class DiskFileSystem extends FileSystem {
       : { version: info.version, type: info.type, size: info.size };
   }
 
-  /** 末段是软链时不跟随：`symlink` 这一档只有 lstat 报得出（fs-local/index.ts:165-173）。 */
+  /** 末段是软链时不跟随：`symlink` 这一档只有 lstat 报得出（fs-local/index.ts 的 lstat）。 */
   public override async lstat(
     request: string,
     opts?: { cwd?: string },
@@ -331,7 +331,7 @@ export class DiskFileSystem extends FileSystem {
     };
   }
 
-  /** 整读字节，`maxBytes` 是**完整内容**的上界（fsio.ts:420-421 的 stat 早停）。 */
+  /** 整读字节，`maxBytes` 是**完整内容**的上界（fsio.ts 的 stat 早停）。 */
   public override async readBytes(
     target: FsTarget,
     signal: AbortSignal | undefined,
@@ -358,7 +358,7 @@ export class DiskFileSystem extends FileSystem {
     return raw.subarray(range.offset, range.offset + range.length);
   }
 
-  /** 稳定名序 + 跟随软链的子项形状 + 从不读正文（fsio.ts:299-341）。 */
+  /** 稳定名序 + 跟随软链的子项形状 + 从不读正文（fsio.ts 的 listDir）。 */
   public override async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
     checkAborted(signal, "list");
     const dir = this.processPath(target);
@@ -374,14 +374,14 @@ export class DiskFileSystem extends FileSystem {
     const out: FsDirEntry[] = [];
     for (const name of names) {
       checkAborted(signal, "list");
-      // 子项以 **parent.targetKey（realpath 世界）** 为基准解析，与 fsio.ts:286-288 同式：
+      // 子项以 **parent.targetKey（realpath 世界）** 为基准解析，与 fsio.ts 的 listDir 同式：
       // 链接子项的 targetKey 因此落在真实目标上——contains 的判据就是为这件事准备的。
       const child = await identityOf(path.join(dir, name));
       const childInfo = await probeFollow(child);
       out.push({
         name,
         // 跟随末段的探针报不出 symlink（FsDirEntry 的联合里本来就没有这一档，
-        // fsio.ts:323-327），断链探针缺席 → undefined → 'other'，与 fs-local 同式。
+        // fsio.ts 的 listDir），断链探针缺席 → undefined → 'other'，与 fs-local 同式。
         type: childInfo?.type ?? "other",
         target: { targetKey: FsTargetKey(child), displayPath: path.join(target.displayPath, name) },
         ...(childInfo === undefined ? {} : { version: childInfo.version }),

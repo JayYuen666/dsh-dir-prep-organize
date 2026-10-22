@@ -13,7 +13,7 @@ import { strict as assert } from "node:assert";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
-import { buildHost } from "../build-host.mjs";
+import { buildHost, singleEntryChunk } from "../build-host.mjs";
 import { hostFreshnessEvidence } from "./host-freshness.ts";
 
 /** 包根（本文件在 test/ 下）。产物必须落在这里，与 host.ts 同目录。 */
@@ -39,6 +39,24 @@ function artifactText(artifacts: Map<string, string>, name: string): string {
   const text = artifacts.get(path.join(PKG_ROOT, name));
   assert.ok(text !== undefined, `buildHost() 没有产出 ${name}`);
   return text;
+}
+
+/** 输出守卫测试用的最小 chunk 正文。 */
+const CHUNK_CODE = "export {};";
+
+/**
+ * 造一个最小输出项；判据只看 type/fileName/isEntry/code。
+ * @param type - rolldown 输出项类型
+ * @param fileName - 产物文件名
+ * @param extra - 该类型需要的其余字段
+ * @returns 可交给 singleEntryChunk 的输出项
+ */
+function outputItem(
+  type: string,
+  fileName: string,
+  extra: Partial<{ isEntry: boolean; code: string }> = {},
+): { type: string; fileName: string } & Partial<{ isEntry: boolean; code: string }> {
+  return { type, fileName, ...extra };
 }
 
 describe("dir-prep-organize host 构建", () => {
@@ -147,6 +165,35 @@ describe("dir-prep-organize host 构建", () => {
       landed.get(TEMPLATES_DATA)?.isFile() === true,
       "templates.data.mjs 已产出（npm run build）",
     );
+  });
+});
+
+describe("单文件产物的输出守卫", () => {
+  it("拒绝多个 chunk：单文件产物不能静默丢掉第二个", () => {
+    const output = [
+      outputItem("chunk", "host.js", { isEntry: true, code: CHUNK_CODE }),
+      outputItem("chunk", "chunk-abc.js", { isEntry: false, code: CHUNK_CODE }),
+    ];
+    assert.throws(() => singleEntryChunk(output, "host.ts"), /2 项输出/u);
+  });
+
+  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+    const output = [
+      outputItem("chunk", "host.js", { isEntry: true, code: CHUNK_CODE }),
+      outputItem("asset", "x.css"),
+    ];
+    assert.throws(() => singleEntryChunk(output, "host.ts"), /2 项输出/u);
+  });
+
+  it("拒绝非 entry 的单个 chunk", () => {
+    const output = [outputItem("chunk", "chunk-abc.js", { isEntry: false, code: CHUNK_CODE })];
+    assert.throws(() => singleEntryChunk(output, "host.ts"), /entry chunk/u);
+  });
+
+  it("接受唯一的 entry chunk", () => {
+    const output = [outputItem("chunk", "host.js", { isEntry: true, code: CHUNK_CODE })];
+    const chunk = singleEntryChunk(output, "host.ts");
+    assert.equal(chunk.code, CHUNK_CODE);
   });
 });
 

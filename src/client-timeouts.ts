@@ -27,7 +27,7 @@ export const ORGANIZE_TIMEOUT_SLACK_MS = 5000;
  * `organizeTimeoutMs` 的前端取表。
  *
  * 上界与 host 同为 `[1, MAX_TIMER_MS]`：host 自己夹了上界正是为了躲开上面那个静默夹断，
- * 而这一侧是**唯一**发起整理读面调用的地方，它要是没夹，host 夹得再对也没用。
+ * 而这一侧是**唯一**发起润色读面调用的地方，它要是没夹，host 夹得再对也没用。
  *
  * @param value - 配置表单投影值
  * @returns `[1, MAX_TIMER_MS]` 区间内的整数；不合法时 undefined（回落默认）
@@ -35,21 +35,24 @@ export const ORGANIZE_TIMEOUT_SLACK_MS = 5000;
 export function rawOrganizeTimeoutMsOf(value: Record<string, unknown>): number | undefined {
   const key = "organizeTimeoutMs";
   const raw = value[key];
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0
-    ? Math.min(Math.trunc(raw), MAX_TIMER_MS)
-    : undefined;
+  const usable = typeof raw === "number" && Number.isFinite(raw) && raw > 0;
+  // 下界也要夹：Math.trunc 会把 (0,1) 的配置值取整成 0，而 0 不是「没超时」而是「立刻超时」，
+  // setTimeout 拿到 0 就当场排队，润色请求一发出就判定超时。
+  return usable ? Math.min(Math.max(Math.trunc(raw), 1), MAX_TIMER_MS) : undefined;
 }
 
 /**
- * 整理请求的客户端超时：host 的整理时限 + 余量，整条结果同样夹进 `[1, MAX_TIMER_MS]`。
+ * 润色请求的客户端超时：host 的润色时限 + 余量，整条结果同样夹进 `[1, MAX_TIMER_MS]`。
  *
  * **加法之后还要再夹一次**，因为 `MAX_TIMER_MS + ORGANIZE_TIMEOUT_SLACK_MS` 自己就越界了
- * （实测 V8 把 2147488647 的延时夹成 1ms，点击整理立刻回「请求超时」）。
+ * （实测 V8 把 2147488647 的延时夹成 1ms，点击润色立刻回「请求超时」）。
  *
- * @param raw - 配置表单投影里的整理时限（未夹）
+ * @param raw - 配置表单投影里的润色时限（未夹）
  * @returns 可安全交给 setTimeout 的毫秒数
  */
 export function organizeFetchTimeoutMs(raw: number | undefined): number {
   const base = raw ?? ORGANIZE_TIMEOUT_FALLBACK_MS;
-  return Math.min(base + ORGANIZE_TIMEOUT_SLACK_MS, MAX_TIMER_MS);
+  // 两侧都要夹：上界防越界后被 V8 静默改成 1ms，下界防负数（或落进 (0,1) 的值）
+  // 让 base + 余量算成 0 或负数——那同样是「立刻超时」，而调用方看起来是配了一个合法数字。
+  return Math.min(Math.max(base + ORGANIZE_TIMEOUT_SLACK_MS, 1), MAX_TIMER_MS);
 }

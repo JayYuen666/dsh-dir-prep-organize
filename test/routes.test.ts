@@ -239,10 +239,10 @@ const MEM_VERSION = "mem";
 const inoVersion = (ino: number): FsVersion => brandString<FsVersion>(String(ino));
 const fakeVersion = (raw: string): FsVersion => brandString<FsVersion>(raw);
 
-/** fs target 替身：`targetKey` 是官方品牌 `FsTargetKey`（installed dsh-fs types.d.ts:14），
+/** fs target 替身：`targetKey` 是官方品牌 `FsTargetKey`（installed dsh-fs types.d.ts），
  *  合法构造口只有官方 `brandString`（恒等函数）——替身也走它，不用 `as` 绕过；品牌位直接
  *  索引官方成员形状（dsh-fs 根模块未 re-export 该名字）。
- *  `FsVersion` 同理走官方构造口（types.d.ts:36）：它是后端给的**不透明新鲜度 token**，
+ *  `FsVersion` 同理走官方构造口（types.d.ts）：它是后端给的**不透明新鲜度 token**，
  *  消费方不解释，本包只原样取回。 */
 /** 夹具共用的 contains 实现：后端用自己的世界判包含关系，本地夹具就用 targetKey 的
  *  路径前缀等价。生产代码走的是 dsh-fs 自己的 contains，不经过这里。 */
@@ -343,7 +343,7 @@ function fsReturning(children: FsDirEntry[]): FsService {
 
 const depsOf = (partial: Record<string, unknown>): RouteDeps => partial;
 
-/** 一条正常完成的整理流（text-delta + finish(stop)）。
+/** 一条正常完成的润色流（text-delta + finish(stop)）。
  *  `satisfies` 校验它确实是 host 的 LlmService，同时保留"stream 无参"的调用面。 */
 const FINISH_STOP = { type: "finish", reason: { kind: "stop" } } as const;
 /** 官方 StreamChunk 的 text 增量判别位（字面量重复超阈值，提出来免得抄错）。 */
@@ -947,7 +947,7 @@ describe("organize 端点", () => {
     assert.equal(parsed(out)["error"], "provider timeout", "非 Error 原因按 String() 展示");
   });
 
-  it("整理流程内部抛错 → 整理异常回执", async () => {
+  it("润色流程内部抛错 → 润色异常回执", async () => {
     const throwingDerive = {
       header: { cwd: "/w" },
       deriveMessages: (): never => {
@@ -1263,7 +1263,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.match(String(parsed(out)["error"]), /不能只含空白字符/u);
   });
 
-  it("en 偏好下的整理：发给模型的 system 提示也是英文", async () => {
+  it("en 偏好下的润色：发给模型的 system 提示也是英文", async () => {
     const calls: LlmStreamOptions[] = [];
     const recordingLlm = {
       stream(options: LlmStreamOptions): AsyncIterable<StreamChunk> {
@@ -1293,8 +1293,8 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     const [call] = calls;
     assert.ok(call, "stream 收到一次调用");
     const system = call.system ?? "";
-    assert.match(system, /drafting assistant/u, "system 用英文规则正文");
-    assert.doesNotMatch(system, /整理/u, "中文规则不该出现");
+    assert.match(system, /polishing assistant/u, "system 用英文规则正文");
+    assert.doesNotMatch(system, /润色/u, "中文规则不该出现");
   });
 
   it("可选服务形状全不符 → 四个 getter 的否定支各走一遍", async () => {
@@ -1419,7 +1419,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.match(String(parsed(out)["error"]), /收集异常: sessions-string-error/u);
   });
 
-  it("organize 的 llm getter 抛错 → 整理异常回执", async () => {
+  it("organize 的 llm getter 抛错 → 润色异常回执", async () => {
     const handlers = createRouteHandlers(
       depsOf({
         llm: () => {
@@ -1438,7 +1438,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
         body: bodyOf({ prompt: "x", sessionId: "s" }),
       }),
     );
-    assert.match(String(parsed(out)["error"]), /整理异常: llm 服务抖动/u);
+    assert.match(String(parsed(out)["error"]), /润色异常: llm 服务抖动/u);
   });
 
   it("path 缺字段 / 非字符串 → 400 拒绝（不再静默降级成「导入内置全部」）", async () => {

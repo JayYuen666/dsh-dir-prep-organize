@@ -14,7 +14,8 @@
 // 顶部 node reference：oxlint 类型检查对 .mjs 不自动加载 @types/node，需显式声明才能解析
 // node:fs/promises、node:child_process、process（否则整文件按 error 类型误报 unsafe）。
 import { execFileSync } from "node:child_process";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = import.meta.dirname;
@@ -54,7 +55,7 @@ export function canonicalizeDeclarationSpecifiers(text) {
  */
 function run(file, args) {
   try {
-    execFileSync(file, args, { cwd: root, stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync(file, args, { cwd: root, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
   } catch (error) {
     const stderr = error instanceof Error && "stderr" in error ? error.stderr : "";
     const detail = typeof stderr === "string" ? stderr.trim() : "";
@@ -91,8 +92,19 @@ async function listDeclarations(dir, prefix) {
  * @returns {Promise<string[]>} 改写过的声明文件清单（相对包根）
  */
 export async function buildTypes() {
+  // 先清空：tsc 不清 outDir，留着旧声明等于把陈旧（可能已无对应源码的）类型一起发出去。
+  await rm(outDir, { recursive: true, force: true });
   // tsc 自己已经按 tsconfig 排好了依赖与增量，交给它报错即可；这里只把失败原样抛出。
-  run("npx", ["tsc", "-p", "tsconfig.types.json"]);
+  //
+  // 直接跑本地 tsc 的入口 JS，不经 `npx`：Windows 上 `npx` 实际是 `npx.cmd`，而
+  // `execFileSync` 不按 PATHEXT 解析（`shell` 默认 false），于是这条调用在 Windows
+  // runner 上一律 `spawnSync npx ENOENT`——构建在 `build:types` 这一步必红，与代码无关。
+  // 用 `process.execPath` 跑同一个入口文件，则不依赖任何 shell 与扩展名。
+  run(process.execPath, [
+    path.join(root, "node_modules", "typescript", "bin", "tsc"),
+    "-p",
+    "tsconfig.types.json",
+  ]);
   const files = await listDeclarations(outDir, "");
   await Promise.all(
     files.map(async (file) => {
@@ -109,7 +121,23 @@ async function main() {
   console.info("types/ written:", files.length, "files");
 }
 
-if (process.argv[1] === import.meta.filename) {
+/**
+ * 直跑守卫：argv[1] 可能缺席或是软链路径，两边折成 realpath 再比。
+ * @returns {boolean}
+ */
+function invokedDirectly() {
+  const entry = process.argv.at(1);
+  if (entry === undefined || entry.length === 0) {
+    return false;
+  }
+  try {
+    return realpathSync(entry) === realpathSync(import.meta.filename);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
   try {
     await main();
   } catch (error) {

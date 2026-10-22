@@ -6,11 +6,12 @@
 // 页面（见 client-entry.ts 的 apply）。
 // 带变量的整句用官方 Translate 的 `{name}` 插值（宿主同语义），不再手工拼串。
 //
-// 覆盖面：设置卡 + 输入框旁「整理」「模板」两个 dock 按钮（组件经注册项 `locale: NS`
+// 覆盖面：设置卡 + 输入框旁「润色」「模板」两个 dock 按钮（组件经注册项 `locale: NS`
 // 声明拿框架合成的 `t` seat，注册 label 用 thunk 跟随活动语言——见 client-entry.ts 的
 // apply）。刻意不进字典的两类：
-//   - 喂给模型的目录摘要与整理错误（formatContextSummary / assertOrganizeReady，
-//     属于 LLM 输入面，翻译它等于改模型看到的 prompt）；
+//   - 喂给模型的目录摘要（formatContextSummary）：它是 prompt 的一段，翻译它等于改
+//     模型看到的输入。润色前的三条前置错误（assertOrganizeReady）不属于这一类——它们
+//     经 organizeFailedTitle 渲染成按钮 tooltip，是给人看的文案，中英不分、这里是缺口；
 //   - 用户自填的模板正文/角色库数据（default-templates.generated.ts 与 agents/）——
 //     数据不做机翻。
 import type { TranslateNS as OfficialTranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
@@ -18,9 +19,9 @@ import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 本包设置卡产出的全部界面文案。 */
 export interface UiMessages {
-  /** 卡片标题（设置页插件列表里的那一行）。 */
+  /** 卡片标题（设置页插件列表里的那一行）：这份列表同时喂「模板」下拉与「润色」▾。 */
   readonly cardTitle: string;
-  /** 卡片副标题：一句话说明这张卡管什么。 */
+  /** 卡片副标题：一句话说明这张卡管什么（数据源、空表回落、导入放行面）。 */
   readonly cardDescription: string;
   /** 设置源可写位为 false 时的状态条。 */
   readonly statusReadOnly: string;
@@ -138,33 +139,33 @@ export interface UiMessages {
   readonly rootsAdd: string;
   /** 允许目录面板的规则说明（绝对路径默认拒绝）。 */
   readonly rootsHint: string;
-  /** dock 注册项 label：「整理」按钮。 */
+  /** dock 注册项 label：「润色」按钮。 */
   readonly dockOrganizeEntry: string;
   /** dock 注册项 label：「模板」按钮。 */
   readonly dockTemplatesEntry: string;
-  /** 「整理」主键（空闲态）。 */
+  /** 「润色」主键（空闲态）。 */
   readonly organizeIdle: string;
-  /** 「整理」主键（请求中）。 */
+  /** 「润色」主键（请求中）。 */
   readonly organizeLoading: string;
-  /** 「整理」主键（失败闪烁）。 */
+  /** 「润色」主键（失败闪烁）。 */
   readonly organizeFailedShort: string;
-  /** 「整理」按钮 title（空闲态）。 */
+  /** 「润色」按钮 title（空闲态）。 */
   readonly organizeIdleTitle: string;
-  /** 「整理」失败时 title 前缀（后接错误摘要）。 */
+  /** 「润色」失败时 title 前缀（后接错误摘要）。 */
   readonly organizeFailedTitle: string;
   /** ▾ 角色菜单按钮的 aria-label。 */
   readonly organizeCaretAria: string;
   /** ▾ 角色菜单按钮的 title。 */
   readonly organizeCaretTitle: string;
-  /** 「整理」主键的 aria-label。 */
+  /** 「润色」主键的 aria-label。 */
   readonly organizeMainAria: string;
-  /** 角色菜单首项：直接整理。 */
+  /** 角色菜单首项：直接润色。 */
   readonly organizeDirectItem: string;
   /** 角色菜单空态（没有任何模板）。 */
   readonly organizeNoTemplates: string;
   /** 角色菜单条目（{name} = 模板名）。 */
   readonly organizeRoleItem: string;
-  /** 整理成功但输入框动作缺失时抛出的错误（会闪烁在按钮上）。 */
+  /** 润色成功但输入框动作缺失时抛出的错误（会闪烁在按钮上）。 */
   readonly organizeWriteBackUnavailable: string;
   /** 「模板」按钮 title（可写时）。 */
   readonly templatesIdleTitle: string;
@@ -189,7 +190,7 @@ export interface UiMessages {
  * `dsh-client-ui-slots/lib/types/index.d.ts`「Dictionary owners extend via declaration
  * merging (exactly like SlotMap)」）。这不是美化：不 merge 时 `ctx.locale.bind(NS)` 只能
  * 落到官方那条**未类型化**重载（返回 `Translate<string>`），卡片要的窄键集 `t` 就无官方
- * 来源，本地只好手写一份同构签名（就是被这一段替换掉的旧版本）。
+ * 来源，本地只好手写一份同构签名。
  * ⚠ interface 键位必须是字面量，故用下面的等式常量把它与 client-entry.ts 的 `NS` 钉住。
  */
 declare module "@deepseek-ai/dsh-client-ui-slots" {
@@ -220,9 +221,9 @@ export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
-    cardTitle: "提示词模板（输入框「模板」下拉）",
+    cardTitle: "模板库（输入框「模板」下拉与「润色」▾ 共用）",
     cardDescription:
-      "「模板」下拉的数据源：内置精选角色集（生成自插件 agents/ 角色库，可增删改）；留空点「导入角色」可一键导入内置全部角色，导入路径按「会话 cwd + 内置角色库 + 下方导入允许目录」放行。编辑后点「保存」生效，重启不丢。",
+      "输入框「模板」下拉与「润色」▾ 角色菜单共用这一份列表，空表即回落到内置精选角色集（生成自插件 agents/ 角色库）。留空点「导入角色」可一键导入内置全部；填路径则按「会话 cwd + 内置角色库 + 下方导入允许目录」放行。编辑后点「保存」生效，重启不丢。",
     statusReadOnly: "设置源不可写：编辑已禁用；下拉仍按当前列表生效。",
     statusNotReady: "设置源未就绪：显示当前生效列表，就绪后可编辑。",
     addTemplate: "+ 新增模板",
@@ -239,7 +240,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "说明：编辑/新增/删除先在本地暂存，点「保存」一次写入（模板与导入允许目录同理）；清空名称或正文的条目保存时会被剔除（删除请用行内「删除」）；恢复默认只回滚模板列表。",
     saveFailed: "保存失败：",
     newTemplateName: "新模板 {index}",
-    newTemplateText: "（填写模板正文：发给 AI 的引导词；[product] 类占位符用户发送前填写）",
+    newTemplateText: "（填写模板正文：点选后插入输入框、随消息发给模型的文字）",
     persistUnconfirmed: "{action}结果不可确认：设置源未就绪（宿主未回读成功）",
     persistRejected: "{action}未生效：宿主拒绝了本次写入（当前 revision {revision}）",
     rowAriaEmoji: "模板 {index} 视觉标记",
@@ -253,7 +254,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     rowDelete: "删除",
     rowPlaceholderDescription: "一句话介绍（下拉悬停时显示；如：威胁建模与 OWASP 代码审计）",
     rowAriaDescription: "模板 {index} 一句话介绍",
-    rowPlaceholderText: "模板正文（发送给 AI 的引导词；[product] 类占位符由用户发送前填写）",
+    rowPlaceholderText: "模板正文（点选后插入输入框，随你的消息一起发给模型）",
     rowAriaText: "模板 {index} 正文",
     importFailedUnknown: "导入失败（未知错误）",
     importEmpty: "目录下没有符合条件的角色 .md（需含 name 的 frontmatter）",
@@ -286,34 +287,33 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     rootsAdd: "登记目录",
     rootsHint:
       "绝对路径默认拒绝：只有「当前会话 cwd」「插件内置角色库 agents/」与本列表登记的目录之内可导入。设置页没有会话上下文，卡上填的路径必须落在内置库或本列表内。改完点底部「保存」生效。",
-    dockOrganizeEntry: "整理",
+    dockOrganizeEntry: "润色",
     dockTemplatesEntry: "模板",
-    organizeIdle: "整理",
-    organizeLoading: "整理中",
+    organizeIdle: "润色",
+    organizeLoading: "润色中",
     organizeFailedShort: "失败",
-    organizeIdleTitle: "根据当前目录结构整理输入框内容（主键直接整理；▾ 可选角色视角）",
-    organizeFailedTitle: "整理失败：{message}",
-    organizeCaretAria: "选择整理角色视角",
-    organizeCaretTitle: "以某角色视角整理（角色来自下方模板库）",
-    organizeMainAria: "整理输入框内容",
-    organizeDirectItem: "直接整理（默认，不带角色）",
-    organizeNoTemplates: "无模板可选为整理视角",
-    organizeRoleItem: "以「{name}」视角整理",
+    organizeIdleTitle: "结合当前目录润色输入框内容（主键直接润色；▾ 可选角色风格）",
+    organizeFailedTitle: "润色失败：{message}",
+    organizeCaretAria: "选择润色的角色风格",
+    organizeCaretTitle: "按某个角色的风格润色（角色来自下方模板库）",
+    organizeMainAria: "润色输入框内容",
+    organizeDirectItem: "直接润色（默认，不带角色）",
+    organizeNoTemplates: "无模板可选作角色风格",
+    organizeRoleItem: "以「{name}」的风格润色",
     organizeWriteBackUnavailable: "输入框动作不可用，无法写回",
-    templatesIdleTitle:
-      "选择一条提示引导词插入输入框（空则填入，非空追加；按分组展示；[product] 类占位符发送前自己补）",
+    templatesIdleTitle: "选择一条模板插入输入框（空则填入，非空则空一行追加；按分组展示）",
     templatesBrokenTitle: "输入框动作不可用，无法插入",
     templatesGroupCommon: "通用",
-    templatesAria: "插入提示引导词模板",
-    templatesEmptyHint: "无模板：在设置页「提示词模板」中添加或恢复默认",
+    templatesAria: "插入模板",
+    templatesEmptyHint: "无模板：在设置页「模板库」中添加或恢复默认",
     builtinLoading: "正在载入内置角色模板…",
     builtinFailed: "内置模板加载失败：{message}",
     builtinRetry: "重试",
   },
   en: {
-    cardTitle: 'Prompt templates (input-box "Template" dropdown)',
+    cardTitle: 'Template library (shared by the "Template" dropdown and the "Polish" ▾ menu)',
     cardDescription:
-      'Data source of the "Template" dropdown: a curated built-in role set (generated from this plugin\'s agents/ role library; add, edit and delete are supported). Leave the path empty and press "Import roles" to import the whole built-in library; import paths are allowed within "session cwd + built-in role library + the import allowed directories below". Press "Save" after editing — it survives restarts.',
+      'The input-box "Template" dropdown and the "Polish" ▾ role menu share this one list; an empty list falls back to the built-in curated role set (generated from this plugin\'s agents/ role library). Leave the path empty and press "Import roles" to import the whole built-in library; an explicit path is allowed within "session cwd + built-in role library + the import allowed directories below". Press "Save" after editing — it survives restarts.',
     statusReadOnly:
       "Settings source is read-only: editing is disabled; the dropdown still uses the current list.",
     statusNotReady:
@@ -334,7 +334,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saveFailed: "Save failed: ",
     newTemplateName: "New template {index}",
     newTemplateText:
-      "(Template body: the prompt sent to the AI; fill [product]-style placeholders yourself before sending)",
+      "(Template body: the text inserted into the input box and sent to the model with your message)",
     persistUnconfirmed:
       "{action} cannot be confirmed: the settings source is not ready (host read-back failed)",
     persistRejected:
@@ -353,7 +353,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "One-line intro (shown on dropdown hover; e.g. threat modelling and OWASP code auditing)",
     rowAriaDescription: "One-line intro of template {index}",
     rowPlaceholderText:
-      "Template body (the prompt sent to the AI; [product]-style placeholders are filled in before sending)",
+      "Template body (inserted into the input box and sent to the model with your message)",
     rowAriaText: "Body of template {index}",
     importFailedUnknown: "Import failed (unknown error)",
     importEmpty: "No qualifying role .md in that directory (frontmatter must contain name)",
@@ -390,29 +390,28 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     rootsAdd: "Register directory",
     rootsHint:
       'Absolute paths are refused by default: imports only succeed inside "the current session cwd", "the plugin\'s built-in role library agents/" and the directories registered below. The settings page has no session context, so a path typed here must fall inside the built-in library or this list. Press "Save" at the bottom to apply.',
-    dockOrganizeEntry: "Organize",
+    dockOrganizeEntry: "Polish",
     dockTemplatesEntry: "Templates",
-    organizeIdle: "Organize",
-    organizeLoading: "Organizing",
+    organizeIdle: "Polish",
+    organizeLoading: "Polishing",
     organizeFailedShort: "Failed",
     organizeIdleTitle:
-      "Organize the input-box content from the current directory structure (main key organizes directly; ▾ picks a role perspective)",
-    organizeFailedTitle: "Organize failed: {message}",
-    organizeCaretAria: "Choose a role perspective for organizing",
-    organizeCaretTitle:
-      "Organize from a role's perspective (roles come from the template library below)",
-    organizeMainAria: "Organize the input-box content",
-    organizeDirectItem: "Organize directly (default, no role)",
-    organizeNoTemplates: "No templates available as an organize perspective",
-    organizeRoleItem: 'Organize as "{name}"',
+      "Polish the input-box content against the current directory (main key polishes directly; ▾ picks a role style)",
+    organizeFailedTitle: "Polish failed: {message}",
+    organizeCaretAria: "Choose a role style to polish with",
+    organizeCaretTitle: "Polish in a role's style (roles come from the template library below)",
+    organizeMainAria: "Polish the input-box content",
+    organizeDirectItem: "Polish directly (default, no role)",
+    organizeNoTemplates: "No templates available as a role style",
+    organizeRoleItem: 'Polish in the style of "{name}"',
     organizeWriteBackUnavailable: "Input-box actions unavailable; cannot write back",
     templatesIdleTitle:
-      "Pick a prompt template to insert into the input box (empty fills it, non-empty appends; grouped display; fill [product]-style placeholders yourself before sending)",
+      "Pick a template to insert into the input box (an empty draft is filled, a non-empty one gets a blank line plus the template; shown grouped)",
     templatesBrokenTitle: "Input-box actions unavailable; cannot insert",
     templatesGroupCommon: "General",
-    templatesAria: "Insert a prompt template",
+    templatesAria: "Insert a template",
     templatesEmptyHint:
-      'No templates: add or restore defaults under "Prompt templates" in the settings page',
+      'No templates: add or restore defaults under "Template library" in the settings page',
     builtinLoading: "Loading built-in role templates…",
     builtinFailed: "Failed to load built-in templates: {message}",
     builtinRetry: "Retry",
