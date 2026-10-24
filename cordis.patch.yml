@@ -1,26 +1,7 @@
-# dir-prep-organize（润色 + 模板；内容源为内置角色库）。
-# 功能一「润色」：输入框右上角分段按钮。主键点击 → 按当前目录结构 + 当前 session
-# 模型润色草稿（成功直接替换，失败保持原值）；▾ → 「以 XX 的风格润色」（角色菜单，
-# 角色上下文 = 模板正文提炼，随 organize 调用注入 user 的 <data> 围栏，走同一 LLM 流）。
-# 功能二「模板」：输入框旁「模板」下拉，默认展示精选角色集（由 scripts/gen-defaults.mjs
-# 从插件 agents/ 目录生成，src/default-templates.generated.ts 单源），按 group 分组
-# 渲染（emoji + 名称 + description 悬停）；点选插入草稿（空整段填入 / 非空末尾追加）。
-# 列表存 settings（隐式注册：命名空间 = 本条目 id，可编辑字段 = host.ts 导出的
-# Config 上标了 .volatile() 的那几项；内置精选集是 client 半在配置缺席时的回落），
-# 设置页卡逐条增删改（name/emoji/
-# group/description/text）+ 两步确认恢复默认 + 角色导入（importTemplates：留空 = 一键
-# 导入内置 agents/ 全部；填路径 = 导入本地 .md 或目录）。client 直读本条目的配置表单
-# （ctx.configForms.get(条目 id)，没有 settingsScope 这一层）。
-#
-# 架构：Host 半（host.ts）注册官方 Typert Remote 的服务键 `dirPrepOrganize`，
-# 它导出的方法表就是全部读面；
-# 认证、Host/DNS 重绑定/Origin 判据与请求体上限由宿主 /api 网关承担，本包不注册
-# HTTP 路由、也没有自建 CSRF 令牌。Client 半（src/client-entry.ts → client.js）注册
-# conversation.input.right list 槽（润色 id=dir-prep-organize order 99 / 模板
-# id=dir-prep-organize-templates order 100）与 plugins.bundle.config 设置卡（keyed，
-# 旧设置页的 settings.plugin.item 面已不存在）；润色经 Remote 读取器调用上述方法，写回走
-# inputActions.setDraft；模板读写配置表单 ctx.configForms.get(条目 id)（数组 set=字段级整体替换，
-# 已按 dsh-settings applyPathOp/cloneJsonShaped 源码取证）。
+# 本包提供的输入框「润色」与「模板」能力由 client 半注册成 dock 条目；这份 patch 只负责
+# 把 bundle 插进插件层栈。设置卡数据面走官方 Typert Remote 的 dirPrepOrganize 命名空间，
+# 内置精选集由 host 半从 templates.data.mjs 经 defaults 方法按需下发。
+# 架构与数据流见 README 与 host.ts / src/client-entry.ts。
 - insert:
     - id: dir-prep-organize
       name: "@jayyuen66/dsh-dir-prep-organize"

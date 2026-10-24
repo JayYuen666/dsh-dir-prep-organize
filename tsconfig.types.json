@@ -7,7 +7,6 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "noEmit": false,
-    "rewriteRelativeImportExtensions": true,
     "types": ["node"]
   },
   "include": ["host.ts", "src/**/*.ts"]

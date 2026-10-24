@@ -1,4 +1,15 @@
 # 钉住行尾，不让 checkout 跟着平台走：Windows runner 上 Git for Windows 的机器级
 # core.autocrlf=true 会把工作树换成 CRLF，而 oxfmt 的 endOfLine 默认是 lf —— 于是
-# fmt:check 只在 windows 那一格把每个文件都判成未格式化（内容一字不差）。
+# fmt:check 会在 windows 那一格把它覆盖到的文件判成未格式化（内容一字不差）。fmt:check
+# 的覆盖面不含 ignore 文件与 oxfmt.config.ts 排除的文件（.md、.jsonc 等），所以这行保证
+# 只对「被 oxfmt 覆盖的那部分文件」自动成立。
+#
+# 这行规则只对之后的检出与新增生效：eol=lf 不会把已以 CRLF 存进索引的内容改写回 LF。
+# 现量核对过 git ls-files --eol：全部跟踪文件索引与工作树两侧都是 lf，本仓目前没有
+# 需要重新规范化的存量。将来若引入 CRLF 存量，先 `git add --renormalize .` 单独提交，
+# 再用 git ls-files --eol 复核两侧全为 lf。
+#
+# agents/ 是逐字节交付的上游原件（vendored:check 与上游逐字节比对）：text=auto 只在
+# 归类为文本时做归一化，若上游某份原件本身带 CRLF，add 时会被静默改写成 LF 并让那份
+# 比对变红——真要按原字节交付的目录用 `-text` 显式声明，不要依赖内容探测。
 * text=auto eol=lf

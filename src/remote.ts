@@ -199,6 +199,12 @@ const unwrap = (raw: unknown): unknown => {
     // 宿主给的 message 是面向用户的句子，前面挂上协议码便于对照网关日志；不要把它吞掉。
     throw new Error(`${error["code"]}: ${error["message"]}`);
   }
+  // 成功分支同样要验键：`ok: true` 与「带 value」是两件事，协议栈换版本或某条方法
+  // 声明成 void 时，`raw["value"]` 会读到 undefined，而调用方拿到的是一份「成功但空」
+  // 的结果——它会在下游解构时才炸，错因指向卡片而不是应答形状。
+  if (!("value" in raw)) {
+    throw new TypeError("Typert Remote 应答的 ok 分支缺 value 字段");
+  }
   return raw["value"];
 };
 
@@ -208,6 +214,12 @@ function buildReader(ctx: RemoteHost, remote: RemoteMounter): DirPrepReader {
     // 被拒的挂载不留在缓存里：$mount 失败一次（宿主还没起远端栈、descriptor 与当前协议版
     // 不兼容）之后每一次读都该重试，否则整张卡在这个页面生命周期内永久显示「读不到」，
     // 而症状看起来是数据面没挂上——与真实成因无关。
+    //
+    // 无条件清空即可：这一行是同步赋值，清缓存又发生在同一个 promise 的 catch 里，
+    // 因此「清掉别人刚建好的挂载」这一刻在时序上不存在（并发等待者共享同一枚在途
+    // promise，它们的 catch 都在同一次微任务排空里跑，其间没有别处会再赋值）。
+    // 实测：一枚失败的挂载被两个并发读共用时 $mount 只调一次、两个调用方都拿到原错，
+    // 下一次读重新挂载（.probe 回执 T1 mounts=1 / T2 mounts=2）。
     mounted ??= remote.$mount({ package: PACKAGE_NAME, descriptors: DIR_PREP_DESCRIPTORS });
     try {
       await mounted;
@@ -236,8 +248,20 @@ function buildReader(ctx: RemoteHost, remote: RemoteMounter): DirPrepReader {
   };
 }
 
-/** 造读取器；当前部署没有远程面时 undefined（卡片只显示读不到）。 */
+/** 造读取器；当前部署没有远程面时 undefined（卡片只显示读不到）。
+ *
+ *  `get` 的两个口径与 buildReader 里查命名空间时保持一致，都显式传 `strict = false`：
+ *  不传时 cordis 默认只返回「提供者 fiber 当前 active」的实现，而设置卡可能在 fiber
+ *  就绪前就挂上——那时读面会拿到 undefined 并显示「读不到」，看起来是插件没装。
+ *  `get` 本身也可能抛（宿主版本演进后反射面可能不再接受 bool），兜住它只是为了把这
+ *  一栏降级成「读不到」，不让整张卡片跟着炸。 */
 export function createDirPrepReader(ctx: RemoteHost): DirPrepReader | undefined {
-  const remote = ctx.get?.("remote");
+  // 单出口满足 consistent-return：任一分支取不到可挂载的 remote 面都保持 undefined。
+  let remote: unknown;
+  try {
+    remote = ctx.get?.("remote", false);
+  } catch {
+    remote = undefined;
+  }
   return isMounter(remote) ? buildReader(ctx, remote) : undefined;
 }

@@ -82,6 +82,9 @@ interface UserPsyche {
 }
 
 export function generateSprintNudge(pendingTasks: Task[], userProfile: UserPsyche) {
+  // 没有待办事项：不发送通知；调用方收到 null 时跳过投递。
+  if (pendingTasks.length === 0) return null;
+
   // 退避策略：连续忽略 3 次就降频
   if (userProfile.consecutiveIgnores >= 3) {
     return {

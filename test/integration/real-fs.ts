@@ -19,7 +19,9 @@
 //    缺席 FS_NOT_FOUND、非目录 FS_NOT_DIRECTORY（fsio.ts）。
 //  · readText：先 stat，缺席 FS_NOT_FOUND、非普通文件 FS_NOT_REGULAR_FILE（fsio.ts 的 readText）；
 //    头 8192 字节含 NUL → FS_NOT_TEXT「binary file」（fsio.ts）；TextDecoder({fatal})
-//    失败 → FS_NOT_TEXT（fsio.ts 的 readText）；**byte-for-byte 交付，不归一行尾、不剥 BOM**（同处）。
+//    失败 → FS_NOT_TEXT（fsio.ts 的 readText）；**不归一行尾**，而前导 BOM 与宿主同式被
+//    TextDecoder 的默认 `ignoreBOM: false` 剥掉（fsio.ts 的 decodeUtf8 也用默认值：实测含
+//    BOM 的 8 字节文件解出 5 个字符，首字符不是 U+FEFF）。
 //  · 错误码词汇表：packages/fs/fs/src/types.ts；FsError 继承 HarnessError 带 code。
 //
 // 本文件是宿主实现的**语义镜像**，三处规则按整文件豁免，理由各一条：
@@ -165,6 +167,20 @@ async function statOrThrow(
   }
 }
 
+/** 普通文件校验（fsio.ts 的 `statRegularFile`）：目录挡在读取之前，而不是让 `handle.read`
+ *  在 POSIX 上抛原生 EISDIR、在 Windows 上给另一个错误。 */
+async function statRegularFile(
+  absolute: string,
+  displayPath: string,
+  verb: "read",
+): Promise<{ size: number }> {
+  const info = await statOrThrow(absolute, verb);
+  if (!info.isFile()) {
+    throw new FsError(`cannot ${verb} "${displayPath}": not a regular file`, "FS_NOT_REGULAR_FILE");
+  }
+  return info;
+}
+
 /** abort 检查独立成函数：内联两处的话 TS 会把上一轮的收窄带过 await，把第二次判真当作不可达。 */
 function checkAborted(signal: AbortSignal | undefined, verb: string): void {
   if (signal?.aborted === true) {
@@ -197,10 +213,14 @@ async function readFileBounded(absolute: string, signal?: AbortSignal): Promise<
 /**
  * displayPath 与 fs-local `localDisplayPath` 同式：请求里带物理 `..` 遍历段时保留原拼写，
  * 否则 path.resolve 归一（fsio.ts 的 displayPath）。
+ *
+ * 保留原拼写的意思是**原样交回拼出来的串**，不是再 resolve 一次——resolve 恰恰会把 `..`
+ * 那一段归一掉，两条分支于是等价、判据形同虚设（实测 `../bom.txt` 在宿主侧是
+ * `<base>/../bom.txt`，而归一之后指到父目录下的同名文件，两者不是同一个拼写）。
  */
 function displayPathOf(base: string, request: string): string {
   const raw = path.isAbsolute(request) ? request : `${base}${path.sep}${request}`;
-  return /(?:^|[\\/])\.\.(?:[\\/]|$)/u.test(raw) ? path.resolve(raw) : path.resolve(base, request);
+  return /(?:^|[\\/])\.\.(?:[\\/]|$)/u.test(raw) ? raw : path.resolve(base, request);
 }
 
 /**
@@ -338,7 +358,7 @@ export class DiskFileSystem extends FileSystem {
     maxBytes: number,
   ): Promise<Uint8Array> {
     const file = this.processPath(target);
-    const info = await statOrThrow(file, "read");
+    const info = await statRegularFile(file, target.displayPath, "read");
     if (info.size > maxBytes) {
       throw new FsError(`cannot read "${target.displayPath}": file too large`, "FS_TOO_LARGE");
     }
@@ -354,8 +374,22 @@ export class DiskFileSystem extends FileSystem {
     range: { offset: number; length: number },
     signal?: AbortSignal,
   ): Promise<Uint8Array> {
-    const raw = await readFileBounded(this.processPath(target), signal);
-    return raw.subarray(range.offset, range.offset + range.length);
+    const file = this.processPath(target);
+    // 宿主 readByteWindow 先 statRegularFile 再按 start/end 定向读；镜像照做，别把整文件读进
+    // 内存后 subarray——返回的 subarray 仍引用整块 buffer，调用方持有即拖住整文件。
+    await statRegularFile(file, target.displayPath, "read");
+    checkAborted(signal, "read");
+    if (range.length === 0) {
+      return new Uint8Array(0);
+    }
+    const handle = await open(file, "r");
+    try {
+      const buffer = new Uint8Array(range.length);
+      const chunk = await handle.read(buffer, 0, range.length, range.offset);
+      return chunk.bytesRead === range.length ? buffer : buffer.subarray(0, chunk.bytesRead);
+    } finally {
+      await handle.close();
+    }
   }
 
   /** 稳定名序 + 跟随软链的子项形状 + 从不读正文（fsio.ts 的 listDir）。 */

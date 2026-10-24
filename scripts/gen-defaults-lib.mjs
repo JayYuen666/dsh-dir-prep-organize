@@ -285,8 +285,12 @@ export function condenseRoleBody(body) {
   /** @type {string[]} */
   const out = [];
   let inFence = false;
-  for (const raw of lines) {
+  let fenceStart = 0;
+  for (const [index, raw] of lines.entries()) {
     if (raw.trim().startsWith("```")) {
+      // 进围栏时记下起始行，出围栏时清零：漏写结束围栏的角色文件后半篇会被整体丢弃，
+      // 而「提炼结果非空」那道判据看不出来——少了一半的正文照样非空。
+      fenceStart = inFence ? 0 : index + 1;
       inFence = !inFence;
     } else if (inFence) {
       // 围栏内容整体跳过
@@ -294,7 +298,28 @@ export function condenseRoleBody(body) {
       out.push(raw.replaceAll("`", ""));
     }
   }
+  if (inFence) {
+    throw new Error(`正文第 ${String(fenceStart)} 行的代码围栏没有结束标记（\`\`\`）`);
+  }
   return out.join("\n").trim();
+}
+
+/**
+ * 跨部门目录同名 slug 检测（slug = 去扩展名的文件名）。
+ * 精选索引按 slug 建 Map，跨目录同名会让后扫到的静默覆盖先扫到的（顺序还随 readdir
+ * 波动）；调用方必须在建索引前把这种情况报成错误，而不是靠漂移测试偶然发现。
+ * @param {Array<{slug: string}>} files
+ * @returns {string[]} 出现多次的 slug，升序
+ */
+export function duplicateSlugsOf(files) {
+  const counts = new Map();
+  for (const file of files) {
+    counts.set(file.slug, (counts.get(file.slug) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([slug]) => slug)
+    .toSorted();
 }
 
 /** 扫描 agents/<dept> 顶层的 *.md（不递归更深层）。
@@ -333,7 +358,7 @@ export async function scanAgentFiles() {
 
 /** 精选 slug 列表 → 模板条目（顺序即展示顺序）。
  *  读源文件并行发起（各本地文件之间无依赖，串行只是把 IO 延迟累加）：Promise.all
- *  保序 ⇒ texts 与 CURATED_SLUGS 同位，下面的解析/提炼/校验循环因此与串行版逐条一致，
+ *  保序 ⇒ loaded 与 CURATED_SLUGS 同位，下面的解析/提炼/校验循环因此与串行版逐条一致，
  *  包括「第一个坏 slug 先报错」的 CLI 语义。唯一差别：若某文件**读**失败（缺权限等），
  *  并行下报出的可能是任一坏文件——缺失 slug 早已由调用方挡掉，不影响产物。
  *  @param {Map<string, {slug: string; dirName: string; filePath: string}>} bySlug
@@ -341,11 +366,31 @@ export async function scanAgentFiles() {
  *  @returns {Promise<Array<{id:string;name:string;description:string;text:string;group:string;emoji:string}>>}
  */
 export async function buildEntries(bySlug, read) {
-  const texts = await Promise.all(CURATED_SLUGS.map((slug) => read(bySlug.get(slug).filePath)));
+  const missing = CURATED_SLUGS.filter((slug) => !bySlug.has(slug));
+  if (missing.length > 0) {
+    throw new Error(`精选角色在 agents/ 里找不到源文件：${missing.join("、")}`);
+  }
+  // slug 与 dirName 随文本一起带走：下面的循环就不需要按下标对位（checkJs 推断不出
+  // 「texts 与精选表同位」这条不变量），dirName 也不用再查一遍 Map。
+  const loaded = await Promise.all(
+    CURATED_SLUGS.map(async (slug) => {
+      const info = bySlug.get(slug);
+      // 上一步已经挡掉缺失，这里只为让 read 的 filePath 拿到确定的形状，
+      // 同时把读失败换成带 slug 的话术：底层 fs 错误里没有 slug，看不出是哪个角色。
+      if (info === undefined) {
+        throw new Error(`${slug} 没有源文件`);
+      }
+      try {
+        return { slug, dirName: info.dirName, text: await read(info.filePath) };
+      } catch (error) {
+        throw new Error(`${slug} 读取失败：${info.filePath}`, { cause: error });
+      }
+    }),
+  );
   /** @type {Array<{id:string;name:string;description:string;text:string;group:string;emoji:string}>} */
   const entries = [];
-  for (const [index, slug] of CURATED_SLUGS.entries()) {
-    const info = parseAgentFrontmatter(texts[index]);
+  for (const { slug, dirName, text } of loaded) {
+    const info = parseAgentFrontmatter(text);
     if (info === undefined) {
       throw new Error(`${slug} 解析失败（无有效 frontmatter name）`);
     }
@@ -358,7 +403,7 @@ export async function buildEntries(bySlug, read) {
       name: info.name,
       description: info.description,
       text: condensed,
-      group: groupLabelOf(bySlug.get(slug).dirName),
+      group: groupLabelOf(dirName),
       emoji: info.emoji,
     });
   }
@@ -436,12 +481,11 @@ function runOxfmt(args) {
 /**
  * 生成物的排版步骤：渲染出的源码文本 → oxfmt 的规范形态。
  *
- * 为什么这一步属于生成器而不是"人记得跑一次格式化"：包的 `fmt:check` 是 `oxfmt --check .`，
- * 把 `src` 下两份 `.generated.ts` 也算在排版面上（根 `~/.dsh/oxfmt.config.ts` 只排 markdown 一类），
- * 而 test/gen-defaults.test.ts 里那条"磁盘生成物 = 生成器输出"锁的是字节级相等。
- * 两边不共享同一套规范形态时，只能二选一红：实测在仓根跑 `oxfmt .` 就把
- * `default-templates.generated.ts` 整片重排，字节锁当场红。
- * 排版因此并入生成链路（排除面一条都没加）。
+ * 为什么这一步属于生成器而不是"人记得跑一次格式化"：两份 `.generated.ts` 不进包内
+ * fmt:check 的面（.prettierignore 排除），它们的规范形态只由本链路保证——
+ * test/gen-defaults.test.ts 里那条"磁盘生成物 = 生成器输出"锁的是字节级相等，
+ * 生成器自己先吐规范形态，重跑对比与字节锁才有稳定的基准。排版因此并入生成链路
+ * （排除面一条都没加）。
  *
  * 临时文件落在 `tmpdir()`：本仓的 oxfmt 配置只提供 `ignorePatterns`、不提供任何排版选项，
  * 所以默认形态与在 `src/` 里就地排版一致；这一条由 `checkFormatted` 在写盘后实证，不靠推断。

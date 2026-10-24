@@ -20,6 +20,7 @@ import {
   buildEntries,
   condenseRoleBody as mirrorCondense,
   CURATED_SLUGS,
+  duplicateSlugsOf,
   GENERATED_FILE,
   formatGenerated,
   groupLabelOf as mirrorGroupLabel,
@@ -66,6 +67,44 @@ describe("gen-defaults 镜像常量表", () => {
     const bySlug = await scanMap();
     const missing = CURATED_SLUGS.filter((slug) => !bySlug.has(slug));
     assert.deepEqual(missing, [], "缺失 slug 会让 gen:defaults 直接退出，测试同步锁住");
+  });
+});
+
+describe("buildEntries 的失败话术：缺 slug 与读失败都要点名", () => {
+  it("精选 slug 没有源文件：先集中报出，不是读的时候才炸 TypeError", async () => {
+    // 旧实现在 map 里直接 `read(bySlug.get(slug).filePath)`：缺失 slug 抛的是
+    // `Cannot read properties of undefined (reading 'filePath')`，CLI 只看到一条没有
+    // slug 的 TypeError，得自己去猜是哪个精选角色少了文件。
+    await assert.rejects(
+      () => buildEntries(new Map(), () => Promise.resolve("")),
+      /精选角色在 agents\/ 里找不到源文件：.*engineering-frontend-developer/u,
+    );
+  });
+
+  it("读文件失败：包成带 slug 与路径的话术，原始错误留在 cause", async () => {
+    const bySlug = await scanMap();
+    const boom = new Error("EACCES: permission denied");
+    await assert.rejects(
+      () => buildEntries(bySlug, () => Promise.reject(boom)),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /engineering-frontend-developer 读取失败：/u);
+        assert.equal(error.cause, boom, "原始 fs 错误保留在 cause");
+        return true;
+      },
+    );
+  });
+
+  it("duplicateSlugsOf 报出跨部门同名 slug；当前 agents/ 没有同名（有的话 gen:defaults 会红）", async () => {
+    const duplicates = duplicateSlugsOf(await scanAgentFiles());
+    assert.deepEqual(duplicates, [], "出现了跨部门同名 slug：先消歧再加精选");
+    const probe = [
+      { slug: "same-slug", dirName: "engineering", filePath: "/a/same-slug.md" },
+      { slug: "other", dirName: "design", filePath: "/b/other.md" },
+      { slug: "same-slug", dirName: "product", filePath: "/c/same-slug.md" },
+    ];
+    assert.deepEqual(duplicateSlugsOf(probe), ["same-slug"], "同名 slug 按名去重汇总");
+    assert.deepEqual(duplicateSlugsOf(probe.slice(0, 1)), [], "单条不误报");
   });
 });
 

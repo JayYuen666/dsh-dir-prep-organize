@@ -1,132 +1,28 @@
 #!/usr/bin/env node
 // @ts-check
 /// <reference types="node" />
-// 构建 host.js：rolldown 把 host.ts 及其 `./src/*` 本地依赖打成单文件 ESM，落在**包根**
-// （与源码同目录，故 `import.meta.dirname` 的语义与源码态完全一致）。
-// 为什么必须有这一步：Node 对 node_modules 里的 .ts 直接抛
-// ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING（实测），而发布出去的包正是躺在
-// node_modules 里被 dsh 载入的；官方示例包（docs/user/develop/basic/publish.zh.md
-// 的 hello-plugin）也是包根放 index.js 产物。本仓 host.ts + client.js 同形态。
-// 本文件不产 .d.ts：类型面由 build-types.mjs 单独跑 tsc 生成到 types/（package.json 的
-// types / exports."."types" 指向那里）。两者分开是因为声明只由类型检查产出，与打包无关。
-// 顶部 node reference：oxlint 类型检查对 .mjs 不自动加载 @types/node，需显式声明
-// 才能解析 node:fs/promises、process、import.meta（否则整文件按 error 类型误报 unsafe）。
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+// 构建 host 产物（host.js + templates.data.mjs）：每个入口单独一次 rolldown，打成
+// 自包含单文件 ESM，落在**包根**（与源码同目录，故 `import.meta.dirname` 的语义与源码态
+// 完全一致）。
+// 编排（依赖段外部化、输出守卫、region 正典化、moduleIds 结构性判据）统一住在
+// @jayyuen66/dsh-plugin-shared/lib/build-host，一处可改；本文件只声明本仓的产物表与
+// 生成头。本文件不产 .d.ts：类型面由 build-types.mjs 单独跑 tsc 生成到 types/。
+//
+// 本包的产物表：内置精选模板表（src/default-templates.generated.ts，生成物约 640 KB
+// 源码）是独立产物而不是打进 host.js——宿主载入插件的那一刻不该整张精选表就占住内存，
+// host.ts 只在该端点第一次被请求时 import 它。两个产物都必须落在包根：host.js 用
+// import.meta.dirname 定位 agents/，templates.data.mjs 用 import.meta.url 相对定位
+// 自己，落进 dist/ 两者都会静默失联。
 import path from "node:path";
 import { rolldown } from "rolldown";
-import { canonicalizeRegionPaths } from "@jayyuen66/dsh-plugin-shared/lib/canonicalize-region-paths";
+import { buildHostEntries } from "@jayyuen66/dsh-plugin-shared/lib/build-host";
+import { invokedDirectly, writeArtifact } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
+
+export { singleEntryChunk } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
 
 const root = import.meta.dirname;
 
-/** @type {unknown} */
-const pkgJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-
-/**
- * 对象守卫：数组与非对象都不算 Record。
- * @param {unknown} raw
- * @returns {raw is Record<string, unknown>}
- */
-function isRecord(raw) {
-  return raw !== null && typeof raw === "object" && !Array.isArray(raw);
-}
-
-/**
- * 从 JSON.parse 的 unknown 投影为 Record（非对象 → 空对象兜底），避免 any 索引。
- * @param {unknown} raw
- * @returns {Record<string, unknown>}
- */
-function asRecord(raw) {
-  if (isRecord(raw)) {
-    return raw;
-  }
-  return {};
-}
-
-/**
- * 取依赖表里的包名清单（值即外部化说明符）。
- * @param {string} field
- * @returns {string[]}
- */
-function dependencyNames(field) {
-  const table = asRecord(asRecord(pkgJson)[field]);
-  return Object.keys(table).filter((name) => typeof table[name] === "string");
-}
-
-// dependencies/peerDependencies 一律外部化：它们由 pnpm 真实安装，产物里保留裸
-// 说明符才拿得到单例（内联会把 shared 的模块级状态复制成多份）。子路径说明符同样
-// 要外部化——external 的字符串项是精确匹配，所以按「包名段」判定而不是枚举子路径。
-const externalNames = new Set([
-  ...dependencyNames("dependencies"),
-  ...dependencyNames("peerDependencies"),
-  ...dependencyNames("optionalDependencies"),
-]);
-
-/**
- * 说明符的包名段：`@scope/pkg/sub` → `@scope/pkg`，`pkg/sub` → `pkg`。
- * @param {string} id
- * @returns {string}
- */
-function packageNameOf(id) {
-  const segments = id.split("/");
-  if (id.startsWith("@")) {
-    return segments.slice(0, 2).join("/");
-  }
-  return segments[0] ?? id;
-}
-
-/**
- * rolldown 外部化判据。
- * @param {string} id
- * @returns {boolean}
- */
-const isExternal = (id) => externalNames.has(packageNameOf(id));
-
-/**
- * rolldown 输出项的最小投影：单文件产物只关心这几项。
- * @typedef {{ type: string, fileName: string, code?: string, isEntry?: boolean }} OutputItem
- */
-
-/**
- * 单文件产物只接受一个带正文的 entry chunk。
- * @param {OutputItem | undefined} item
- * @returns {item is { type: "chunk", fileName: string, code: string }}
- */
-function isEntryChunk(item) {
-  return item?.type === "chunk" && item.isEntry === true && typeof item.code === "string";
-}
-
-/**
- * 单文件产物只允许一个 entry chunk：多余 chunk / asset 不落盘，宿主加载时才炸。
- * @param {readonly OutputItem[]} output
- * @param {string} source
- * @returns {{ type: "chunk", code: string }}
- */
-export function singleEntryChunk(output, source) {
-  if (output.length !== 1) {
-    const names = output.map((item) => `${item.type}:${item.fileName}`).join(", ");
-    throw new Error(
-      `rolldown 为 ${source} 产出了 ${output.length} 项输出（期望恰好一个 entry chunk）：${names}`,
-    );
-  }
-  const chunk = output.at(0);
-  if (!isEntryChunk(chunk)) {
-    throw new Error(`rolldown 为 ${source} 产出的不是单个 entry chunk`);
-  }
-  return chunk;
-}
-
-/**
- * 本包的产物表：源码入口 → 落盘文件名。
- *
- * 为什么拆成两个产物：内置精选模板表（src/default-templates.generated.ts，生成物约 640 KB
- * 源码）原本被静态导入打进 host.js，于是**宿主载入插件的那一刻**整张精选表就已经占住内存，
- * 哪怕用户从不开「模板」下拉。改成独立产物后，host.ts 只在 default-templates 端点第一次
- * 被请求时 import 它——客户端那一侧本来就是按需拉的（走该端点），这一步只是把宿主侧对齐。
- *
- * 两个产物都必须落在**包根**（与 host.ts 同目录）：host.js 用 import.meta.dirname 定位
- * agents/，templates.data.mjs 用 import.meta.url 相对定位自己，落进 dist/ 两者都会静默失联。
- */
+/** 产物表：源码入口 → 落盘文件名与生成头。 */
 const ARTIFACTS = [
   {
     source: "host.ts",
@@ -143,82 +39,31 @@ const ARTIFACTS = [
 ];
 
 /**
- * 逐个产物跑一遍 rolldown，交回「落盘绝对路径 → 正文」。
+ * 逐个产物跑一遍构建，交回「落盘绝对路径 → 正文」。
  *
  * 返回 Map 而不是单串，是为了让 test/host-freshness.ts 的逐字节门禁把两个产物都算进去：
  * 它对 Map 形态会折成「相对路径 + 摘要」清单两侧比对，任一产物停在上一次构建都会红。
- *
  * @returns {Promise<Map<string, string>>}
  */
 export async function buildHost() {
-  // 两条产物互不依赖（各自的入口之间没有共享 chunk），并发跑即可；串行只是在等第二次
-  // 构建，而 no-await-in-loop 也会因此报出来。
-  const built = await Promise.all(
-    ARTIFACTS.map(async (artifact) => {
-      const bundle = await rolldown({
-        input: path.join(root, artifact.source),
-        external: isExternal,
-        platform: "node",
-        // `//#region` 行的相对路径由 rolldown 按 process.cwd() 算出 ⇒ 不固定它同一份源码在包根与
-        // 子目录下会产出两种字节（跨 cwd 构建不可复现）。
-        cwd: root,
-        resolve: { extensions: [".ts", ".mjs", ".js"] },
-      });
-      try {
-        const { output } = await bundle.generate({ format: "esm" });
-        const chunk = singleEntryChunk(output, artifact.source);
-        // `//#region` 行的路径由 rolldown 按 process.cwd() 算出 ⇒ 同一份源码有两种字节（cwd=包根 写
-        // `lib/x.ts`，cwd=plugins/ 写 `<包名>/lib/x.ts`）。折成 canonical 必须落在**返回值之前**：
-        // test/host-freshness.ts 拿内存构建与磁盘产物逐字节比，只在一侧折就永远红。
-        const code = canonicalizeRegionPaths(chunk.code.trimEnd(), root);
-        /** @type {[string, string]} */
-        const entry = [path.join(root, artifact.output), `${artifact.header}${code}\n`];
-        return entry;
-      } finally {
-        // rolldown 的 bundle 持有原生资源；generate 或守卫抛错时同样要释放。
-        await bundle.close();
-      }
-    }),
-  );
-  return new Map(built);
-}
-
-/**
- * 原子落盘：同目录临时文件 + rename；失败时清掉临时文件。
- * @param {string} target
- * @param {string} text
- * @returns {Promise<void>}
- */
-async function writeArtifact(target, text) {
-  const scratch = `${target}.${process.pid}.tmp`;
-  try {
-    await writeFile(scratch, text, "utf8");
-    await rename(scratch, target);
-  } catch (error) {
-    await rm(scratch, { force: true });
-    throw error;
-  }
-}
-
-/**
- * 直跑守卫：argv[1] 可能缺席或是软链路径，两边折成 realpath 再比。
- * @returns {boolean}
- */
-function invokedDirectly() {
-  const entry = process.argv.at(1);
-  if (entry === undefined || entry.length === 0) {
-    return false;
-  }
-  try {
-    return realpathSync(entry) === realpathSync(import.meta.filename);
-  } catch {
-    return false;
-  }
+  const artifacts = await buildHostEntries({
+    root,
+    rolldown,
+    // 显式带 .json：extensions 是**替换**默认表而非追加，宿主侧一旦出现
+    // `import data from "./x.json"`，缺 .json 就是 UNRESOLVED_IMPORT。
+    resolveExtensions: [".ts", ".mjs", ".js", ".json"],
+    entries: ARTIFACTS,
+  });
+  return new Map(artifacts.map((artifact) => [artifact.file, artifact.code]));
 }
 
 async function main() {
   const artifacts = await buildHost();
-  await Promise.all([...artifacts].map(([file, code]) => writeArtifact(file, code)));
+  await Promise.all(
+    [...artifacts].map(async ([file, code]) => {
+      await writeArtifact(file, code);
+    }),
+  );
   console.info(
     "written:",
     [...artifacts]
@@ -227,7 +72,7 @@ async function main() {
   );
 }
 
-if (invokedDirectly()) {
+if (invokedDirectly(import.meta.filename)) {
   try {
     await main();
   } catch (error) {

@@ -63,6 +63,9 @@ class PIPELINE_OT_validate_assets(bpy.types.Operator):
 
     def execute(self, context):
         issues = []
+        if not context.selected_objects:
+            self.report({'WARNING'}, "Select assets before validation/export.")
+            return {'CANCELLED'}
         for obj in context.selected_objects:
             if obj.type != "MESH":
                 continue
@@ -73,8 +76,8 @@ class PIPELINE_OT_validate_assets(bpy.types.Operator):
             if any(abs(s - 1.0) > 0.0001 for s in obj.scale):
                 issues.append(f"{obj.name}: unapplied scale")
 
-            if len(obj.material_slots) == 0:
-                issues.append(f"{obj.name}: missing material slot")
+            if not obj.material_slots or any(slot.material is None for slot in obj.material_slots):
+                issues.append(f"{obj.name}: missing assigned material")
 
         if issues:
             self.report({'WARNING'}, f"Validation found {len(issues)} issue(s). See system console.")
@@ -110,6 +113,10 @@ class PIPELINE_OT_export_selected(bpy.types.Operator):
     bl_label = "Export Selected"
 
     def execute(self, context):
+        # 导出按钮必须执行和验证按钮相同的检查关卡。
+        if bpy.ops.pipeline.validate_assets() != {'FINISHED'}:
+            self.report({'WARNING'}, "Export blocked: resolve asset validation findings.")
+            return {'CANCELLED'}
         export_path = context.scene.pipeline_export_path
         bpy.ops.export_scene.gltf(
             filepath=export_path,
@@ -124,10 +131,12 @@ class PIPELINE_OT_export_selected(bpy.types.Operator):
 
 ### 命名审计报告
 ```python
+import re
+
 def build_naming_report(objects):
     report = {"ok": [], "problems": []}
     for obj in objects:
-        if "." in obj.name and obj.name[-3:].isdigit():
+        if re.search(r"\.[0-9]{3,}$", obj.name):
             report["problems"].append(f"{obj.name}: Blender duplicate suffix detected")
         elif " " in obj.name:
             report["problems"].append(f"{obj.name}: spaces in name")

@@ -159,7 +159,7 @@ class SupportAnalytics:
         # 质量指标
         self.metrics['first_contact_resolution_rate'] = (
             len(self.data[self.data['contacts_to_resolution'] == 1]) /
-            len(self.data) * 100
+            len(self.data) * 100 if len(self.data) else None
         )
 
         self.metrics['customer_satisfaction_score'] = self.data['csat_score'].mean()
@@ -180,27 +180,41 @@ class SupportAnalytics:
         return self.metrics
 
     def identify_support_trends(self):
-        """
-        识别支持数据中的趋势和模式
-        """
+        """按自然日历周期比较趋势，保留跨年边界与缺失证据。"""
+        dated = self.data.dropna(subset=['created_date']).set_index('created_date').sort_index()
+
+        def compare_recent_periods(values, lower_is_better=False):
+            if len(values) < 2 or values.iloc[-2:].isna().any():
+                return 'insufficient_data'
+            previous, current = values.iloc[-2], values.iloc[-1]
+            if current == previous:
+                return 'stable'
+            improving = current < previous if lower_is_better else current > previous
+            return 'improving' if improving else 'declining'
+
         trends = {}
+        # 假设首末日期之间的每一天都在数据采集范围内。
+        # 纳入零工单的自然日，比较截至最新观测日期的连续两个七天窗口，
+        # 而不是只比较有工单的七个日期。
+        daily_volume = dated.resample('D').size()
+        trends['volume_trend'] = 'insufficient_data'
+        if len(daily_volume) >= 14:
+            previous = daily_volume.iloc[-14:-7].mean()
+            current = daily_volume.iloc[-7:].mean()
+            trends['volume_trend'] = (
+                'stable' if current == previous else
+                'increasing' if current > previous else 'decreasing'
+            )
 
-        # 工单量趋势
-        daily_volume = self.data.groupby(self.data['created_date'].dt.date).size()
-        trends['volume_trend'] = 'increasing' if daily_volume.iloc[-7:].mean() > daily_volume.iloc[-14:-7].mean() else 'decreasing'
-
-        # 常见问题分类
-        issue_frequency = self.data['issue_category'].value_counts()
-        trends['top_issues'] = issue_frequency.head(5).to_dict()
-
-        # 客户满意度趋势
-        monthly_csat = self.data.groupby(self.data['created_date'].dt.month)['csat_score'].mean()
-        trends['satisfaction_trend'] = 'improving' if monthly_csat.iloc[-1] > monthly_csat.iloc[-2] else 'declining'
-
-        # 响应时间趋势
-        weekly_response_time = self.data.groupby(self.data['created_date'].dt.week)['first_response_time'].mean()
-        trends['response_time_trend'] = 'improving' if weekly_response_time.iloc[-1] < weekly_response_time.iloc[-2] else 'declining'
-
+        trends['top_issues'] = self.data['issue_category'].value_counts().head(5).to_dict()
+        # 按日历重采样可正确处理十二月到一月的跨年顺序，
+        # 缺失月份或周保留为 NaN，不混合不同年份，也不猜测趋势。
+        monthly_csat = dated['csat_score'].resample('MS').mean()
+        trends['satisfaction_trend'] = compare_recent_periods(monthly_csat)
+        weekly_response_time = dated['first_response_time'].resample('W').mean()
+        trends['response_time_trend'] = compare_recent_periods(
+            weekly_response_time, lower_is_better=True
+        )
         return trends
 
     def generate_improvement_recommendations(self):
@@ -220,7 +234,8 @@ class SupportAnalytics:
             })
 
         # 首次联系解决率建议
-        if self.metrics['first_contact_resolution_rate'] < 80:
+        if (self.metrics['first_contact_resolution_rate'] is not None and
+                self.metrics['first_contact_resolution_rate'] < 80):
             recommendations.append({
                 'area': '解决效率',
                 'issue': f"首次联系解决率为 {self.metrics['first_contact_resolution_rate']:.1f}%",
@@ -245,9 +260,10 @@ class SupportAnalytics:
         """
         识别需要主动支持外联的客户
         """
+        now = datetime.now(tz=self.data['created_date'].dt.tz)
         # 近期有多个工单的客户
         frequent_reporters = self.data[
-            self.data['created_date'] >= datetime.now() - timedelta(days=30)
+            self.data['created_date'] >= now - timedelta(days=30)
         ].groupby('customer_id').size()
 
         high_volume_customers = frequent_reporters[frequent_reporters >= 3].index.tolist()
@@ -255,13 +271,14 @@ class SupportAnalytics:
         # 满意度低的客户
         low_satisfaction = self.data[
             (self.data['csat_score'] <= 3) &
-            (self.data['created_date'] >= datetime.now() - timedelta(days=7))
+            (self.data['created_date'] >= now - timedelta(days=7))
         ]['customer_id'].unique()
 
-        # 超过 SLA 的未解决工单客户
+        # 状态已知为未解决、且已超过 SLA 的工单客户
         overdue_tickets = self.data[
+            self.data['status'].notna() &
             (self.data['status'] != 'resolved') &
-            (self.data['created_date'] <= datetime.now() - timedelta(hours=48))
+            (self.data['created_date'] <= now - timedelta(hours=48))
         ]['customer_id'].unique()
 
         return {

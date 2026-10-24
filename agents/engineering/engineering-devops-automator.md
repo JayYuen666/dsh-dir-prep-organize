@@ -89,9 +89,10 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v3
       - name: Build and Push
         run: |
-          docker build -t app:${{ github.sha }} .
+          docker build -t registry/app:${{ github.sha }} .
           docker push registry/app:${{ github.sha }}
 
   deploy:
@@ -170,14 +171,22 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "CPUUtilization"
-  namespace           = "AWS/ApplicationELB"
-  period              = "120"
+  namespace           = "AWS/EC2"
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.app.name
+  }
+  # 与 EC2 基础监控每五分钟发布一次数据的间隔保持一致。
+  period              = "300"
   statistic           = "Average"
   threshold           = "80"
+  # 缺失的遥测数据是"未知"，不能当作 CPU 正常的证据。
+  treat_missing_data  = "missing"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
 }
 ```
+
+在启用告警之前，先对照实际发布的数据点，确认它的命名空间、指标名、维度和采集频率。`CPUUtilization` 属于 [AWS/EC2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/viewing_metrics_with_cloudwatch.html) 命名空间，`AutoScalingGroupName` 用来选中这个应用的实例。`AWS/ApplicationELB` 发布的是负载均衡器的指标，而不是实例的 CPU。EC2 基础监控每五分钟发布一次数据；如果需要一分钟级别的检测，要显式开启详细监控。把缺失的数据视为未知，并单独监控遥测数据的丢失。
 
 ### 监控与告警配置
 ```yaml

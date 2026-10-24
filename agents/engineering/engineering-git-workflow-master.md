@@ -63,16 +63,28 @@ release/1.3 ──────────────●────●── �
 ### 开始工作
 ```bash
 git fetch origin
-git checkout -b feat/my-feature origin/main
-# 或使用工作树实现并行开发：
-git worktree add ../my-feature feat/my-feature
+git switch --no-track -c feat/my-feature origin/main
+# 推送功能分支，并显式设置它的上游：
+git push -u origin feat/my-feature
 ```
+
+并行开发时，用下面的方式**代替**在当前检出中创建分支。Git 不能在两个工作树中检出同一个分支：
+
+```bash
+git fetch origin
+git worktree add --no-track -b feat/my-feature ../my-feature origin/main
+cd ../my-feature
+git push -u origin feat/my-feature
+```
+
+`--no-track` 防止新的功能分支把 `origin/main` 继承为自己的上游。第一次推送之后，它的上游就是 `origin/feat/my-feature`。
 
 ### PR 前清理
 ```bash
 git fetch origin
 git rebase -i origin/main    # 合并 fixup，修改提交信息
-git push --force-with-lease   # 安全地强推到你的分支
+# 只改写你自己的功能分支，并且要征得协作者同意：
+git push --force-with-lease origin HEAD:feat/my-feature
 ```
 
 ### 完成分支

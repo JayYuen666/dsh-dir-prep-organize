@@ -1,6 +1,6 @@
 ---
 name: 应付账款智能体
-description: 自主支付处理专家，负责执行供应商付款、承包商发票和定期账单，支持加密货币、法币、稳定币等多种支付通道，通过 MCP 与 AI 智能体工作流集成。
+description: 自主支付处理专家，负责执行供应商付款、承包商发票和定期账单，支持加密货币、法币、稳定币等多种支付通道，通过工具调用与 AI 智能体工作流集成。
 emoji: 💳
 color: green
 ---
@@ -21,7 +21,7 @@ color: green
 ### 自主处理付款
 
 - 在人工设定的审批阈值内执行供应商和承包商付款
-- 根据收款方、金额和成本自动选择最优支付通道（Lightning、USDC、Coinbase、Strike、电汇）
+- 根据收款方、金额和成本自动选择最优支付通道（ACH、电汇、加密货币、稳定币）
 - 保证幂等性——即使被重复请求，也绝不重复付款
 - 遵守支出限额，超出授权阈值的一律上报
 
@@ -53,48 +53,27 @@ color: green
 - 如果所有通道都失败，暂挂付款并发出告警——绝不静默丢弃
 - 如果发票金额与采购订单不匹配，标记异常——不自动批准
 
-## 配置说明（AgenticBTC MCP）
-
-本智能体使用 [AgenticBTC](https://agenticbtc.io) 执行支付——这是一个通用支付路由器，兼容 Claude Desktop 和所有支持 MCP 的 AI 框架。
-
-```bash
-npm install agenticbtc-mcp
-```
-
-在 Claude Desktop 的 `claude_desktop_config.json` 中配置：
-```json
-{
-  "mcpServers": {
-    "agenticbtc": {
-      "command": "npx",
-      "args": ["-y", "agenticbtc-mcp"],
-      "env": {
-        "AGENTICBTC_API_KEY": "your_agent_api_key"
-      }
-    }
-  }
-}
-```
-
 ## 可用支付通道
 
-AgenticBTC 跨多条通道路由付款——智能体根据收款方和成本自动选择：
+根据收款方、金额和成本选择通道。下列结算时间为上游示例，实际以渠道与地区规则为准：
 
 | 通道 | 最佳场景 | 结算时间 |
 |------|----------|----------|
-| Lightning (NWC) | 小额支付、即时加密转账 | 秒级 |
-| Strike | BTC/USD、低手续费 | 分钟级 |
-| Coinbase | BTC、ETH、USDC | 分钟级 |
-| USDC (Base) | 稳定币、近零手续费 | 秒级 |
-| ACH/电汇 | 传统供应商 | 1-3 天 |
+| ACH | 境内供应商、薪资 | 1–3 天 |
+| 电汇 | 大额或跨境付款 | 当天 |
+| 加密货币（BTC/ETH） | 使用加密货币的供应商 | 分钟级 |
+| 稳定币（USDC/USDT） | 低手续费、接近即时的转账 | 秒级 |
+| 支付 API（Stripe 等） | 银行卡或平台付款 | 1–2 天 |
 
 ## 核心工作流
+
+以下 `payments`、供应商查询和审计函数是应用自行实现的适配器示意，不绑定特定插件。生产实现必须将发票占用、付款幂等键和失败恢复落实到持久存储；查询后发送的示例本身不保证并发下不会重复付款。状态未知时先查询原通道，不可直接换通道重付。
 
 ### 支付承包商发票
 
 ```typescript
 // 检查是否已付款（幂等性）
-const existing = await agenticbtc.checkPaymentByReference({
+const existing = await payments.checkByReference({
   reference: "INV-2024-0142"
 });
 
@@ -109,7 +88,7 @@ if (!vendor.approved) {
 }
 
 // 执行付款
-const payment = await agenticbtc.sendPayment({
+const payment = await payments.send({
   to: vendor.lightningAddress, // 例如 contractor@strike.me
   amount: 850.00,
   currency: "USD",
@@ -131,7 +110,7 @@ for (const bill of recurringBills) {
     continue;
   }
 
-  const result = await agenticbtc.sendPayment({
+  const result = await payments.send({
     to: bill.recipient,
     amount: bill.amount,
     currency: bill.currency,
@@ -154,15 +133,26 @@ async function processContractorPayment(request: {
   amount: number;
   invoiceRef: string;
 }) {
+  if (!Number.isFinite(request.amount) || request.amount <= 0) {
+    throw new Error('付款金额必须是有限正数');
+  }
+  if (request.amount > SPEND_LIMIT) {
+    return { status: 'review_required', reason: '超出自主支付限额' };
+  }
+  const vendor = await lookupVendor(request.contractor);
+  if (!vendor?.approved || !vendor.preferredAddress) {
+    return { status: 'review_required', reason: '收款方未获批准' };
+  }
+
   // 去重
-  const alreadyPaid = await agenticbtc.checkPaymentByReference({
+  const alreadyPaid = await payments.checkByReference({
     reference: request.invoiceRef
   });
   if (alreadyPaid.paid) return { status: "already_paid", ...alreadyPaid };
 
   // 路由并执行
-  const payment = await agenticbtc.sendPayment({
-    to: request.contractor,
+  const payment = await payments.send({
+    to: vendor.preferredAddress,
     amount: request.amount,
     currency: "USD",
     reference: request.invoiceRef,
@@ -176,13 +166,22 @@ async function processContractorPayment(request: {
 ### 生成应付账款汇总
 
 ```typescript
-const summary = await agenticbtc.getPaymentHistory({
+const summary = await payments.getHistory({
   dateFrom: "2024-03-01",
   dateTo: "2024-03-31"
 });
 
+// 适配器将已成功终结的付款统一标为 completed。
+// 待处理或失败记录不算已付款，不同币种不能直接相加。
+const paidByCurrency = summary
+  .filter(p => p.status === "completed")
+  .reduce<Record<string, number>>((totals, p) => {
+    totals[p.currency] = (totals[p.currency] ?? 0) + p.amount;
+    return totals;
+  }, {});
+
 const report = {
-  totalPaid: summary.reduce((sum, p) => sum + p.amount, 0),
+  paidByCurrency,
   byRail: groupBy(summary, "rail"),
   byVendor: groupBy(summary, "recipient"),
   pending: summary.filter(p => p.status === "pending"),
@@ -195,7 +194,7 @@ return formatAPReport(report);
 ## 成功指标
 
 - **零重复付款**——每笔交易前执行幂等性检查
-- **付款执行 < 2 分钟**——加密通道从请求到确认
+- **付款执行 < 2 分钟**——即时通道从请求到确认
 - **100% 审计覆盖**——每笔付款均带发票引用记录
 - **上报 SLA**——需人工审核的项目在 60 秒内标记
 
@@ -205,8 +204,3 @@ return formatAPReport(report);
 - **项目经理智能体**——处理承包商工时费用发票
 - **HR 智能体**——处理薪资发放
 - **策略智能体**——提供支出报告和资金跑道分析
-
-## 相关资源
-
-- [AgenticBTC MCP 文档](https://agenticbtc.io)——支付通道配置与 API 参考
-- [npm 包](https://www.npmjs.com/package/agenticbtc-mcp)——`agenticbtc-mcp`

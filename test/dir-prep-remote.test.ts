@@ -321,6 +321,108 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     assert.equal(mounts, 2, "被拒的挂载没有留在缓存里");
   });
 
+  it("并发读共用一枚失败的挂载：只挂一次、两个调用方都拿到原错，下一次读重新挂载", async () => {
+    let mounts = 0;
+    let fail: ((error: Error) => void) | undefined;
+    const namespace = {
+      defaults: async () => ({ ok: true, value: { templates: [] } }),
+      context: async () => ({ ok: true, value: {} }),
+      model: async () => ({ ok: true, value: {} }),
+      organize: async () => ({ ok: true, value: {} }),
+      importTemplates: async () => ({ ok: true, value: {} }),
+    };
+    const reader = createDirPrepReader({
+      get: (name: string): unknown => {
+        if (name === "remote") {
+          return {
+            $mount: (): Promise<void> => {
+              mounts += 1;
+              if (mounts > 1) {
+                return Promise.resolve();
+              }
+              // 用 withResolvers 而不是 new Promise：promise(avoid-new) 禁手写执行器，
+              // 而这里本来就不需要执行器——只要一枚由用例外部决定何时拒绝的挂起。
+              const gate = Promise.withResolvers<undefined>();
+              fail = (error: Error): void => {
+                gate.reject(error);
+              };
+              return gate.promise;
+            },
+          };
+        }
+        return name === SERVICE_KEY ? namespace : undefined;
+      },
+    });
+    assert.ok(reader !== undefined);
+    // 判据是「同一个在途挂载被两枚并发读共用」：$mount 只调一次，两个调用方都拿到原错，
+    // 且缓存被清过，所以下一次读会重新挂载。这条钉的是「失败不留在缓存里」与「并发
+    // 等待者不会各自挂一次」两件事同时成立。
+    const first = reader.defaults();
+    const second = reader.context("s1");
+    assert.ok(fail !== undefined, "两次读应当都挂到同一个在途挂载上");
+    fail(new Error("mount failed"));
+    await Promise.all([
+      assert.rejects(first, /mount failed/u),
+      assert.rejects(second, /mount failed/u),
+    ]);
+    assert.equal(mounts, 1, "同一枚在途挂载被两次读共用");
+    assert.deepEqual(await reader.defaults(), { templates: [] }, "缓存已清，下一次读重新挂载");
+    assert.equal(mounts, 2);
+  });
+
+  it("ok 分支缺 value 键 → 报形状不对，而不是把 undefined 当结果传下去", async () => {
+    const reader = createDirPrepReader({
+      get: (name: string): unknown =>
+        name === "remote"
+          ? { $mount: () => Promise.resolve() }
+          : {
+              defaults: async () => ({ ok: true }),
+              context: async () => ({ ok: true, value: {} }),
+              model: async () => ({ ok: true, value: {} }),
+              organize: async () => ({ ok: true, value: {} }),
+              importTemplates: async () => ({ ok: true, value: {} }),
+            },
+    });
+    assert.ok(reader !== undefined);
+    await assert.rejects(reader.defaults(), /ok 分支缺 value 字段/u);
+  });
+
+  it("查 remote 面时显式传 strict=false，与查命名空间的口径一致", async () => {
+    const seen: (boolean | undefined)[] = [];
+    const reader = createDirPrepReader({
+      get: (name: string, strict?: boolean): unknown => {
+        seen.push(strict);
+        if (name === "remote") {
+          return { $mount: () => Promise.resolve() };
+        }
+        return name === SERVICE_KEY
+          ? {
+              defaults: async () => ({ ok: true, value: {} }),
+              context: async () => ({ ok: true, value: {} }),
+              model: async () => ({ ok: true, value: {} }),
+              organize: async () => ({ ok: true, value: {} }),
+              importTemplates: async () => ({ ok: true, value: {} }),
+            }
+          : undefined;
+      },
+    });
+    assert.ok(reader !== undefined);
+    assert.deepEqual(seen, [false], "两次读都用同一个口径：显式传 false");
+    await reader.defaults();
+    assert.deepEqual(seen, [false, false], "查命名空间这次同样传 false");
+  });
+
+  it("反射面读到一半抛错 → 只少掉读面，不把异常抛给卡片", () => {
+    assert.equal(
+      createDirPrepReader({
+        get: (): unknown => {
+          throw new Error("reflect unavailable");
+        },
+      }),
+      undefined,
+    );
+  });
+
   it("宿主上下文没有注册口 → 只少掉读面，不抛错", () => {
     assert.equal(installDirPrepRemote({} as never, scopeOf() as never), false);
   });

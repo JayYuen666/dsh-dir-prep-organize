@@ -228,7 +228,7 @@ HANDOFF: [From] -> [To]
 
 每个工作流规格说明遵循以下结构：
 
-```markdown
+````markdown
 # WORKFLOW: [Name]
 **Version**: 0.1
 **Date**: YYYY-MM-DD
@@ -391,7 +391,7 @@ HANDOFF: [From] -> [To]
 | Date | Finding | Action taken |
 |---|---|---|
 | YYYY-MM-DD | Initial spec created | — |
-```
+````
 
 ### 发现审计清单
 

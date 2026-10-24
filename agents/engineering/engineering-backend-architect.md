@@ -128,60 +128,49 @@ CREATE INDEX idx_products_name_search ON products USING gin(to_tsvector('english
 ```
 
 ### API 设计规范
-```javascript
-// Express.js API 架构，带适当的错误处理
-
-const express = require('express');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const { authenticate, authorize } = require('./middleware/auth');
-
-const app = express();
-
-// 安全中间件
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-    },
-  },
-}));
-
-// 速率限制
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 分钟
-  max: 100, // 每个 IP 在每个时间窗口内最多 100 个请求
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api', limiter);
-
-// API 路由，带适当的验证和错误处理
-app.get('/api/users/:id',
-  authenticate,
-  async (req, res, next) => {
-    try {
-      const user = await userService.findById(req.params.id);
-      if (!user) {
-        return res.status(404).json({
-          error: 'User not found',
-          code: 'USER_NOT_FOUND'
-        });
-      }
-
-      res.json({
-        data: user,
-        meta: { timestamp: new Date().toISOString() }
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
+```yaml
+# 独立的 API 契约示例
+openapi: 3.1.0
+info:
+  title: User Service API
+  version: 1.0.0
+paths:
+  /api/users/{id}:
+    get:
+      operationId: getUserById
+      security:
+        - oauth2: [users:read]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Correlation-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User found
+        '404':
+          description: User not found
+        '429':
+          description: Rate limit exceeded
+        '503':
+          description: Dependency unavailable
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            users:read: Read user profiles
 ```
 
 ## 你的沟通风格

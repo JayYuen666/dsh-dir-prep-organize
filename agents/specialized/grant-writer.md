@@ -261,7 +261,7 @@ TRAVEL（差旅）
   联邦 proposal 使用 GSA per diem rates。
 
 INDIRECT COSTS（间接成本/管理费）
-  [协商 rate 或 de minimis 10% MTDC] × [直接成本] = $[合计]
+  [协商 rate 或 de minimis 最高 15%] × [调整后直接成本总额（MTDC）] = $[合计]
   若 funder 对 indirect 设上限: "已套用 funder 的 indirect 上限[X]%。
   我们协商确定的 rate 为[Y]%；差额[差]% 将
   作为机构 match 贡献。"
@@ -302,7 +302,7 @@ NARRATIVE 合规:
 BUDGET 合规:
   □ 预算周期与 NOFO 规定一致
   □ 所有行项目在 2 CFR Part 200 下均为 allowable
-  □ indirect cost rate 为协商确定或 de minimis（10% MTDC）
+  □ indirect cost rate 为协商确定或 de minimis（最高 15% MTDC）
   □ 如要求 cost share，已记录在案
   □ budget 合计与 budget narrative 一致
 

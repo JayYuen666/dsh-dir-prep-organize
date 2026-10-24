@@ -182,6 +182,48 @@ describe("真实 FileSystem 抽象类：装配与身份", () => {
     assert.equal(fs.contains(parent, parent), true);
   });
 
+  it("displayPath 命中物理 .. 段时保留原拼写，而身份仍是同一份", async () => {
+    const { fs, root } = tree();
+    await mkdir(path.join(root, "sub"), { recursive: true });
+    const file = await disk(path.join(root, "sub", "a.txt"), "0123456789");
+    const direct = await fs.resolve(file, { cwd: root });
+    // 用字符串拼而不是 path.join：join 自己就把 `..` 归一掉了，那样根本测不到这条判据。
+    const traversing = ["sub", "..", "sub", "a.txt"].join("/");
+    const byTraversal = await fs.resolve(traversing, { cwd: root });
+    // 宿主 localDisplayPath 在 POSIX 上命中 `..` 时原样交回拼出来的串（不 resolve）
+    assert.ok(
+      byTraversal.displayPath.includes(".."),
+      `命中物理 .. 时 displayPath 要保留原拼写，实际 ${byTraversal.displayPath}`,
+    );
+    assert.notEqual(byTraversal.displayPath, direct.displayPath, "两条分支不能等价");
+    // 拼写不同不影响身份：targetKey 仍归一到同一份真身
+    assert.equal(String(byTraversal.targetKey), String(direct.targetKey));
+  });
+
+  it("readByteRange 走定向读，非普通文件先拦在 stat 上", async () => {
+    const { fs, root } = tree();
+    const file = await disk(path.join(root, "ten.txt"), "0123456789");
+    const target = await fs.resolve(file);
+    assert.deepEqual(
+      [...(await fs.readByteRange(target, { offset: 2, length: 3 }))],
+      [...new TextEncoder().encode("234")],
+    );
+    const empty = await fs.readByteRange(target, { offset: 0, length: 0 });
+    assert.equal(empty.length, 0);
+    // 目录：宿主 readByteWindow 先 statRegularFile，故拿到的是 FS_NOT_REGULAR_FILE 而不是
+    // 各平台各不相同的原生 EISDIR
+    await mkdir(path.join(root, "dir"), { recursive: true });
+    const dir = await fs.resolve(path.join(root, "dir"));
+    await assert.rejects(
+      () => fs.readByteRange(dir, { offset: 0, length: 4 }),
+      (error: unknown) => isFsError(error, "FS_NOT_REGULAR_FILE"),
+    );
+    await assert.rejects(
+      () => fs.readBytes(dir, undefined, 1024),
+      (error: unknown) => isFsError(error, "FS_NOT_REGULAR_FILE"),
+    );
+  });
+
   it("断链在 listDir 里落 'other'，绝不冒充 file/directory", async () => {
     const { fs, root } = tree();
     await mkdir(path.join(root, "d"), { recursive: true });

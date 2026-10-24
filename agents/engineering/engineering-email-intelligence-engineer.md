@@ -98,8 +98,14 @@ def fetch_thread(imap_conn, thread_ids):
     """获取并解析原始消息，保留完整 MIME 结构。"""
     messages = []
     for msg_id in thread_ids:
-        _, data = imap_conn.fetch(msg_id, "(RFC822)")
-        raw = data[0][1]
+        status, data = imap_conn.fetch(msg_id, "(RFC822)")
+        if status != 'OK':
+            raise RuntimeError(f'IMAP fetch failed for message {msg_id}: {status}')
+        raw = next((item[1] for item in data or []
+                    if isinstance(item, tuple) and len(item) == 2
+                    and isinstance(item[1], bytes)), None)
+        if raw is None:
+            raise RuntimeError(f'IMAP returned no RFC822 body for message {msg_id}')
         parsed = email.message_from_bytes(raw, policy=policy.default)
         messages.append({
             "message_id": parsed["Message-ID"],
@@ -127,7 +133,28 @@ def reconstruct_thread(messages):
     - 引用回复导致内容重复（20 条消息的线程约产生 4-5 倍 token 膨胀）
     - 当不同人回复链中不同消息时，线程会产生分叉
     """
-    # 从 In-Reply-To 和 References 头构建回复图
+    # 在构建或修改回复图之前，先拒绝身份不明确的消息。
+    # 缺失或重复的 Message-ID 必须进入隔离/人工处理流程；
+    # 悄悄使用 None（或被重复使用的 ID）会覆盖掉一条不相关的消息。
+    messages = list(messages)  # 继续支持只能遍历一次的消息迭代器
+    message_ids = [msg.get("message_id") for msg in messages]
+    if any(not isinstance(mid, str) or not mid.strip() for mid in message_ids):
+        raise ValueError("Every message needs a nonempty Message-ID")
+    if len(set(message_ids)) != len(message_ids):
+        raise ValueError("Duplicate Message-ID: resolve identity before reconstruction")
+
+    parents = {msg["message_id"]: msg["in_reply_to"] for msg in messages}
+    checked = set()
+    for start in parents:
+        path = set()
+        current = start
+        while current in parents and current not in checked:
+            if current in path:
+                raise ValueError("Cyclic In-Reply-To headers: quarantine before reconstruction")
+            path.add(current)
+            current = parents[current]
+        checked.update(path)
+
     graph = {}
     for msg in messages:
         parent_id = msg["in_reply_to"]
@@ -160,6 +187,12 @@ def strip_quoted_content(body, parent_bodies):
     - Outlook XML 引用：带特定 class 的嵌套 <div> 块
     """
     lines = body.split("\n")
+    parent_lines = {
+        line.strip()
+        for parent in parent_bodies
+        for line in parent.splitlines()
+        if line.strip()
+    }
     unique_lines = []
     in_quote_block = False
 
@@ -170,7 +203,11 @@ def strip_quoted_content(body, parent_bodies):
         if in_quote_block and not line.strip():
             in_quote_block = False
             continue
-        if not in_quote_block and not line.startswith(">"):
+        if not in_quote_block:
+            # 新出现的引用仍然是这封邮件自己的证据。只有当带前缀的
+            # 引用行内容与某条父消息重复时，才把它去掉。
+            if line.startswith(">") and line[1:].strip() in parent_lines:
+                continue
             unique_lines.append(line)
 
     return "\n".join(unique_lines)

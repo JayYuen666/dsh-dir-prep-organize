@@ -65,19 +65,41 @@ static void sensor_task(void *arg) {
 
 void app_main(void) {
     sensor_queue = xQueueCreate(8, sizeof(sensor_data_t));
-    xTaskCreate(sensor_task, "sensor", TASK_STACK_SIZE, NULL, TASK_PRIORITY, NULL);
+    if (sensor_queue == NULL) {
+        // 绝不启动一个会向无效队列发送数据的任务。
+        return; // 通过应用的故障处理路径上报内存分配失败。
+    }
+    if (xTaskCreate(sensor_task, "sensor", TASK_STACK_SIZE, NULL,
+                    TASK_PRIORITY, NULL) != pdPASS) {
+        vQueueDelete(sensor_queue);
+        sensor_queue = NULL;
+        return; // 没有任务持有这个队列；上报故障之前先释放它。
+    }
 }
 ```
 
-### STM32 LL SPI 传输（非阻塞）
+### STM32 LL SPI 传输（有超时的轮询，在任务上下文中调用）
 
 ```c
-void spi_write_byte(SPI_TypeDef *spi, uint8_t data) {
-    while (!LL_SPI_IsActiveFlag_TXE(spi));
+#include <stdbool.h>
+#include <stdint.h>
+
+// 适用于带 TXE/BSY 标志位的 STM32 SPI（例如 STM32F4）；这不是可在中断里调用的 API，也不是非阻塞的。
+// 轮询期间 HAL_GetTick 必须持续递增。两次等待共用同一个截止时间。
+bool spi_write_byte(SPI_TypeDef *spi, uint8_t data, uint32_t timeout_ms) {
+    const uint32_t started = HAL_GetTick();
+    while (!LL_SPI_IsActiveFlag_TXE(spi)) {
+        if ((uint32_t)(HAL_GetTick() - started) >= timeout_ms) return false;
+    }
     LL_SPI_TransmitData8(spi, data);
-    while (LL_SPI_IsActiveFlag_BSY(spi));
+    while (LL_SPI_IsActiveFlag_BSY(spi)) {
+        if ((uint32_t)(HAL_GetTick() - started) >= timeout_ms) return false;
+    }
+    return true;
 }
 ```
+
+如果在写入发送数据之后返回 `false`，说明传输是否完成是未知的：重试之前，要依照目标 MCU 的参考手册和勘误表恢复外设，不要盲目重发。调用方必须保持非阻塞时，改用中断或 DMA。
 
 ### Nordic nRF BLE 广播（nRF Connect SDK / Zephyr）
 

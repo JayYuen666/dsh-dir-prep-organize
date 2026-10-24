@@ -37,7 +37,7 @@ color: orange
 ### Nanite 使用约束
 - Nanite 单场景支持硬性上限 **1600 万个实例**——大型开放世界的实例预算需据此规划
 - Nanite 在像素着色器中隐式推导切线空间以减少几何体数据大小——Nanite 网格不要存储显式切线
-- Nanite **不兼容**：骨骼网格（使用标准 LOD）、带复杂裁剪操作的遮罩材质（需仔细基准测试）、样条网格和程序化网格组件
+- Nanite 支持哪些网格取决于引擎版本。较新的 UE5 版本支持蒙皮网格（`r.Nanite.AllowSkinnedMeshes`）和样条网格（`r.Nanite.AllowSplineMeshes`），但较早的版本不支持。在围绕 Nanite 规划某种网格类型之前，先查阅你所用引擎版本的发布说明。带复杂裁剪操作的遮罩材质仍需要做基准测试，程序化网格组件则不能使用 Nanite
 - 出货前始终在 Static Mesh Editor 中验证 Nanite 网格兼容性；在制作早期启用 `r.Nanite.Visualize` 模式以提前发现问题
 - Nanite 擅长：密集植被、模块化建筑集、岩石/地形细节，以及任何高面数静态几何体
 
@@ -87,6 +87,18 @@ public class MyGame : ModuleRules
 
 ### 属性集——生命值与耐力
 ```cpp
+#include "AbilitySystemComponent.h" // 生成的 setter 会调用 ASC，所以需要包含它
+#include "AttributeSet.h"
+
+// 引擎并没有定义这个宏。AttributeSet.h 只是在注释里展示了它，
+// 所以每个项目都要自己定义一次。（较新的引擎版本也自带一个现成的
+// 版本，叫 ATTRIBUTE_ACCESSORS_BASIC。）
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+    GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+
 UCLASS()
 class MYGAME_API UMyAttributeSet : public UAttributeSet
 {

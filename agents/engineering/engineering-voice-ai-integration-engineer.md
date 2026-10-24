@@ -101,6 +101,7 @@ color: violet
 ```python
 import subprocess
 import json
+import math
 from pathlib import Path
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4", ".mov", ".webm"}
@@ -120,11 +121,16 @@ def validate_audio_file(file_path: str) -> dict:
         "ffprobe", "-v", "quiet",
         "-print_format", "json",
         "-show_streams", "-show_format",
-        str(path)
+        "-i", str(path)  # 让以短横线开头的文件名也被当作输入，而不是选项。
     ], capture_output=True, text=True, check=True)
 
     probe = json.loads(result.stdout)
-    duration = float(probe["format"]["duration"])
+    try:
+        duration = float(probe['format']['duration'])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError('Audio duration must be known, finite and positive') from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError('Audio duration must be known, finite and positive')
 
     if duration > MAX_DURATION_SECONDS:
         raise ValueError(f"文件超出最大时长: {duration:.0f}s > {MAX_DURATION_SECONDS}s")
@@ -170,14 +176,14 @@ def preprocess_audio(input_path: str, output_path: str) -> str:
         "-ar", "16000",               # 16kHz 采样率
         "-ac", "1",                   # 单声道
         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",  # EBU R128 响度规范化
-        output_path
+        str(Path(output_path).absolute())  # 输出路径不能看起来像命令行选项。
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     return output_path
 
 
 def chunk_audio(input_path: str, chunk_dir: str,
-                chunk_duration: int = 1800, overlap: int = 30) -> list[str]:
+                chunk_duration: int = 1800, overlap: int = 30) -> list[dict]:
     """
     将长音频拆分为有重叠的分块用于模型处理。
 
@@ -188,11 +194,17 @@ def chunk_audio(input_path: str, chunk_dir: str,
     overlap: 重叠窗口秒数（默认 30 秒）
     """
     import math, os
+    if not math.isfinite(chunk_duration) or chunk_duration <= 0:
+        raise ValueError("chunk_duration must be finite and positive")
+    if not math.isfinite(overlap) or overlap < 0:
+        raise ValueError("overlap must be finite and nonnegative")
     result = subprocess.run([
         "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", input_path
+        "-of", "default=noprint_wrappers=1:nokey=1", "-i", input_path
     ], capture_output=True, text=True, check=True)
     total_duration = float(result.stdout.strip())
+    if not math.isfinite(total_duration) or total_duration <= 0:
+        raise ValueError("Audio duration must be finite and positive")
 
     chunks = []
     start = 0
@@ -204,11 +216,12 @@ def chunk_audio(input_path: str, chunk_dir: str,
         out_path = f"{chunk_dir}/chunk_{chunk_index:04d}.wav"
         subprocess.run([
             "ffmpeg", "-y",
-            "-i", input_path,
             "-ss", str(start),
-            "-to", str(end),
-            "-acodec", "copy",
-            out_path
+            "-i", input_path,
+            "-t", str(end - start),
+            "-map", "0:a:0", "-vn",
+            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            str(Path(out_path).absolute())
         ], check=True, capture_output=True)
         chunks.append({"path": out_path, "start_offset": start, "index": chunk_index})
         start += chunk_duration
@@ -284,6 +297,7 @@ def assemble_chunks(chunk_results: list[dict],
                 start=adjusted_start,
                 end=seg.end + offset,
                 text=seg.text,
+                speaker=seg.speaker,
                 confidence=seg.confidence
             ))
     return merged
@@ -348,6 +362,7 @@ def assign_speakers(transcript_segments: list[TranscriptSegment],
 ```python
 import json
 import re
+import math
 
 def normalize_transcript(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
     """
@@ -374,20 +389,28 @@ def export_srt(segments: list[TranscriptSegment], output_path: str) -> str:
     """
     将转录文本导出为 SRT 字幕文件。
 
-    验证阅读速度（按广播标准每秒最多 20 个字符）。
-    将过长片段拆分以符合行长度限制。
+    以毫秒精度序列化已经过校验的字幕时间。
+    阅读速度和行长度的检查属于应用层的适配器；
+    这个序列化示例原样保留传入的文本，不做拆分。
     """
     def format_timestamp(seconds: float) -> str:
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        ms = int((seconds % 1) * 1000)
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("Subtitle timestamps must be finite and nonnegative")
+        milliseconds = round(seconds * 1000)
+        h, milliseconds = divmod(milliseconds, 3_600_000)
+        m, milliseconds = divmod(milliseconds, 60_000)
+        s, ms = divmod(milliseconds, 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     lines = []
     for i, seg in enumerate(segments, 1):
+        if seg.end <= seg.start:
+            raise ValueError("Subtitle cues need a positive duration")
+        start, end = format_timestamp(seg.start), format_timestamp(seg.end)
+        if start == end:
+            raise ValueError("Subtitle cue collapses at millisecond precision")
         lines.append(str(i))
-        lines.append(f"{format_timestamp(seg.start)} --> {format_timestamp(seg.end)}")
+        lines.append(f"{start} --> {end}")
         speaker_prefix = f"[{seg.speaker}] " if seg.speaker else ""
         lines.append(f"{speaker_prefix}{seg.text}")
         lines.append("")

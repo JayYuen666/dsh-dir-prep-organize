@@ -133,9 +133,14 @@ const request = (options) => {
           // token 过期，重新登录
           refreshToken().then(() => {
             request(options).then(resolve).catch(reject)
-          })
+          }).catch(reject)  // 刷新失败也要结束 Promise，不能让它一直挂起
         } else {
-          reject(new Error(res.data.message || '请求失败'))
+          // 错误响应体可能是空的、纯文本，或网关返回的 HTML 页面。
+          // 不要在 success 回调里抛错，否则 Promise 会一直挂起。
+          const message = res.data && typeof res.data === 'object' &&
+            typeof res.data.message === 'string' && res.data.message
+            ? res.data.message : '请求失败'
+          reject(new Error(message))
         }
       },
       fail: (err) => {

@@ -98,17 +98,20 @@ set -euo pipefail
 message_file="${1:?commit message file is required}"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 subject="$(head -n 1 "$message_file")"
+# 接受文档约定的 Codex 包装前缀，然后在其内部校验仓库的分支名。
+# 只去掉一层前缀；内部的分支名仍必须完整符合规范。
+validation_branch="${branch#codex/}"
 
 branch_regex='^(feature|bugfix|hotfix)/[A-Z]+-[0-9]+-[a-z0-9-]+$|^release/[0-9]+\.[0-9]+\.[0-9]+$'
 commit_regex='^(🚀|✨|🐛|♻️|📚|🧪|💄|🔧|📦) [A-Z]+-[0-9]+: .+$'
 
-if [[ ! "$branch" =~ $branch_regex ]]; then
+if [[ ! "$validation_branch" =~ $branch_regex ]]; then
   echo "Invalid branch name: $branch" >&2
   echo "Use feature/JIRA-ID-description, bugfix/JIRA-ID-description, hotfix/JIRA-ID-description, or release/version." >&2
   exit 1
 fi
 
-if [[ "$branch" != release/* && ! "$subject" =~ $commit_regex ]]; then
+if [[ "$validation_branch" != release/* && ! "$subject" =~ $commit_regex ]]; then
   echo "Invalid commit subject: $subject" >&2
   echo "Use: <gitmoji> JIRA-ID: short description" >&2
   exit 1

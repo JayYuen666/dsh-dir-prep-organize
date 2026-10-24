@@ -184,11 +184,21 @@ class ToolEvaluator:
         for feature in optional_features:
             score = self._test_feature(feature, tool_config)
             optional_scores.append(score)
-            test_notes.append(f"{feature}（可选）: {score}/10")
+            test_notes.append(f"{feature} (可选): {score}/10")
 
         optional_avg = np.mean(optional_scores) if optional_scores else 0
 
-        final_score = (required_avg * 0.8) + (optional_avg * 0.2)
+        # 缺少某类需求不等于该类测试失败，按实际存在的类别归一化权重。
+        active_scores = []
+        if feature_scores:
+            active_scores.append((required_avg, 0.8))
+        if optional_scores:
+            active_scores.append((optional_avg, 0.2))
+        if not active_scores:
+            raise ValueError("Define at least one feature before scoring functionality")
+        final_score = sum(score * weight for score, weight in active_scores) / sum(
+            weight for _, weight in active_scores
+        )
         notes = "; ".join(test_notes)
 
         return final_score, notes
@@ -197,17 +207,21 @@ class ToolEvaluator:
         """带量化指标的性能测试"""
         api_endpoint = tool_config.get("api_endpoint")
         if not api_endpoint:
-            return 5.0, "没有可测试的 API 端点"
+            return 5.0, "未提供用于性能测试的 API 端点"
 
         # 响应时间测试
         response_times = []
+        failed_requests = 0
         for _ in range(10):
-            start_time = time.time()
+            # 使用单调时钟，避免系统时间校正影响耗时。
+            start_time = time.perf_counter()
             try:
                 response = requests.get(api_endpoint, timeout=10)
-                end_time = time.time()
+                response.raise_for_status()
+                end_time = time.perf_counter()
                 response_times.append(end_time - start_time)
             except requests.RequestException:
+                failed_requests += 1
                 response_times.append(10.0)  # 超时惩罚
 
         avg_response_time = np.mean(response_times)
@@ -225,11 +239,18 @@ class ToolEvaluator:
         else:
             speed_score = 2
 
-        notes = f"平均: {avg_response_time:.2f}s, P95: {p95_response_time:.2f}s"
+        notes = (f"含失败惩罚的平均耗时： {avg_response_time:.2f}s, P95: {p95_response_time:.2f}s; "
+                 f"失败请求： {failed_requests}/{len(response_times)}")
         return speed_score, notes
 
     def calculate_total_cost_ownership(self, tool_config: Dict, years: int = 3) -> Dict:
-        """全面的总拥有成本分析"""
+        """仅在采用年限和用户数为有效正值时计算总拥有成本。"""
+        users = tool_config.get("expected_users", 1)
+        if isinstance(years, bool) or not isinstance(years, int) or years <= 0:
+            raise ValueError("years must be a positive integer")
+        if (isinstance(users, bool) or not isinstance(users, (int, float))
+                or not np.isfinite(users) or users <= 0):
+            raise ValueError("expected_users must be a positive finite number")
         costs = {
             "licensing": tool_config.get("annual_license_cost", 0) * years,
             "implementation": tool_config.get("implementation_cost", 0),
@@ -242,8 +263,7 @@ class ToolEvaluator:
 
         total_cost = sum(costs.values())
 
-        # 算每用户每年成本
-        users = tool_config.get("expected_users", 1)
+        # 计算每用户每年的成本
         cost_per_user_year = total_cost / (users * years)
 
         return {
@@ -266,7 +286,7 @@ class ToolEvaluator:
         ])
 
         # 排名
-        comparison_df["Rank"] = comparison_df["Weighted Score"].rank(ascending=False)
+        comparison_df["Rank"] = comparison_df["Weighted Score"].rank(method="min", ascending=False)
 
         # 找出各维度的优胜者
         analysis = {

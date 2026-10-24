@@ -51,8 +51,13 @@ export function rawOrganizeTimeoutMsOf(value: Record<string, unknown>): number |
  * @returns 可安全交给 setTimeout 的毫秒数
  */
 export function organizeFetchTimeoutMs(raw: number | undefined): number {
-  const base = raw ?? ORGANIZE_TIMEOUT_FALLBACK_MS;
+  // 非有限数与 ≤0 一律回落，不折算成极小值：`NaN + 余量` 是 NaN，而 `Math.max(NaN, 1)`
+  // 与 `Math.min(NaN, MAX_TIMER_MS)` 都还返回 NaN，`setTimeout(NaN)` 等价 0ms——正是本文件
+  // 要消灭的那种静默失败。0 与负数若只夹下界会得到 1ms + 余量，把「配错了」伪装成
+  // 「配了一个很小的合法值」；这里与 `rawOrganizeTimeoutMsOf` 回落到同一条默认值。
+  const usable = typeof raw === "number" && Number.isFinite(raw) && raw > 0;
+  const base = usable ? raw : ORGANIZE_TIMEOUT_FALLBACK_MS;
   // 两侧都要夹：上界防越界后被 V8 静默改成 1ms，下界防负数（或落进 (0,1) 的值）
   // 让 base + 余量算成 0 或负数——那同样是「立刻超时」，而调用方看起来是配了一个合法数字。
-  return Math.min(Math.max(base + ORGANIZE_TIMEOUT_SLACK_MS, 1), MAX_TIMER_MS);
+  return Math.trunc(Math.min(Math.max(base + ORGANIZE_TIMEOUT_SLACK_MS, 1), MAX_TIMER_MS));
 }

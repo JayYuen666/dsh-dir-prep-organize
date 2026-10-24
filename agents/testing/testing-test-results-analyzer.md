@@ -66,6 +66,8 @@ color: indigo
 
 ```python
 # 带统计建模的全面测试结果分析
+import json
+import math
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -76,32 +78,43 @@ from sklearn.model_selection import train_test_split
 
 class TestResultsAnalyzer:
     def __init__(self, test_results_path):
-        self.test_results = pd.read_json(test_results_path)
+        # 覆盖率报告是嵌套对象，不是二维 DataFrame。
+        with open(test_results_path, encoding='utf-8') as report:
+            self.test_results = json.load(report)
+        if not isinstance(self.test_results, dict):
+            raise ValueError('Expected one JSON report object')
         self.quality_metrics = {}
         self.risk_assessment = {}
 
     def analyze_test_coverage(self):
         """全面的测试覆盖率分析，含缺口识别"""
+        coverage = self.test_results.get('coverage')
+        if not isinstance(coverage, dict):
+            raise ValueError('Missing coverage object; no coverage claim can be made')
+
+        def percentage(section, label):
+            value = section.get('pct') if isinstance(section, dict) else None
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or not 0 <= value <= 100):
+                raise ValueError(f'{label}.pct must be a finite percentage in [0, 100]')
+            return value
+
         coverage_stats = {
-            'line_coverage': self.test_results['coverage']['lines']['pct'],
-            'branch_coverage': self.test_results['coverage']['branches']['pct'],
-            'function_coverage': self.test_results['coverage']['functions']['pct'],
-            'statement_coverage': self.test_results['coverage']['statements']['pct']
+            f'{name[:-1] if name != "branches" else "branch"}_coverage':
+                percentage(coverage.get(name), name)
+            for name in ('lines', 'branches', 'functions', 'statements')
         }
-
-        # 识别覆盖率缺口
-        uncovered_files = self.test_results['coverage']['files']
+        files = coverage.get('files')
+        if not isinstance(files, dict):
+            raise ValueError('coverage.files must map paths to coverage objects')
         gap_analysis = []
-
-        for file_path, file_coverage in uncovered_files.items():
-            if file_coverage['lines']['pct'] < 80:
-                gap_analysis.append({
-                    'file': file_path,
-                    'coverage': file_coverage['lines']['pct'],
-                    'risk_level': self._assess_file_risk(file_path, file_coverage),
-                    'priority': self._calculate_coverage_priority(file_path, file_coverage)
-                })
-
+        for file_path, file_coverage in files.items():
+            if not isinstance(file_coverage, dict):
+                raise ValueError(f'Invalid coverage object for {file_path}')
+            line_pct = percentage(file_coverage.get('lines'), file_path)
+            if line_pct < 80:
+                gap_analysis.append({'file': file_path, 'coverage': line_pct})
+        # 覆盖缺口表示未执行的代码，风险等级需结合实际业务关键程度。
         return coverage_stats, gap_analysis
 
     def analyze_failure_patterns(self):
@@ -191,6 +204,12 @@ class TestResultsAnalyzer:
         }
 
         return report
+```
+
+覆盖率入口接受一个 JSON 报告对象，各总览字段包含 `pct` 数值，`files` 按路径映射到文件覆盖率对象。缺失或无效测量值会报错，不能当成零覆盖率。其余 `_...` 方法是项目需自行实现的适配器；覆盖率本身不能推出风险等级或发布置信度。
+
+```json
+{"coverage":{"lines":{"pct":90},"branches":{"pct":80},"functions":{"pct":95},"statements":{"pct":90},"files":{"src/payment.py":{"lines":{"pct":60}}}}}
 ```
 
 ## 工作流程

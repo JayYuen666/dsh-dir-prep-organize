@@ -375,19 +375,41 @@ function builtinStatusRow(snap: TemplatesSnapshot, t: Translate): ReactNode | un
   return row;
 }
 
+/**
+ * 润色链路里由客户端自己产生的错误：messageKey 指向 ui-messages 的键，捕获侧用当前
+ * 语言的 t 渲染成 tooltip——把文案直接写进 Error.message 会让英文界面看到硬编码中文。
+ * 宿主回执携带的原文（ctxRes.error / modelRes.error）不翻译，作为 {message} 原样带出。
+ */
+class LocalizedOrganizeError extends Error {
+  public readonly messageKey: keyof UiMessages;
+  public readonly params: Record<string, unknown>;
+
+  public constructor(messageKey: keyof UiMessages, params: Record<string, unknown> = {}) {
+    super(messageKey);
+    this.name = "LocalizedOrganizeError";
+    this.messageKey = messageKey;
+    this.params = params;
+  }
+}
+
 function assertOrganizeReady(
   ctxRes: ContextResponse,
   modelRes: ModelResponse,
   prompt: string,
+  unknownReason: string,
 ): void {
   if (!ctxRes.ok) {
-    throw new Error(`目录上下文失败: ${ctxRes.error ?? "未知错误"}`);
+    throw new LocalizedOrganizeError("organizeErrContextFailed", {
+      message: ctxRes.error ?? unknownReason,
+    });
   }
   if (!modelRes.ok || modelRes.provider === undefined || modelRes.model === undefined) {
-    throw new Error(`读取模型失败: ${modelRes.error ?? "未知错误"}`);
+    throw new LocalizedOrganizeError("organizeErrModelFailed", {
+      message: modelRes.error ?? unknownReason,
+    });
   }
   if (prompt.trim().length === 0) {
-    throw new Error("输入框为空，无内容可润色");
+    throw new LocalizedOrganizeError("organizeErrEmpty");
   }
 }
 
@@ -411,7 +433,9 @@ async function requestOrganize(args: {
   );
   const orgRes = parseOrganizeResponse(organized);
   if (!orgRes.ok || orgRes.content === undefined) {
-    throw new Error(orgRes.error ?? "润色失败（未知错误）");
+    throw orgRes.error === undefined
+      ? new LocalizedOrganizeError("organizeErrUnknown")
+      : new Error(orgRes.error);
   }
   return orgRes.content;
 }
@@ -421,6 +445,7 @@ async function runOrganizeFlow(args: {
   sessionId: string;
   roleText?: string;
   timeoutMs: number;
+  unknownReason: string;
 }): Promise<string> {
   const reader = requireReader();
   const [ctxRaw, modelRaw] = await Promise.all([
@@ -429,7 +454,7 @@ async function runOrganizeFlow(args: {
   ]);
   const ctxRes = parseContextResponse(ctxRaw);
   const modelRes = parseModelResponse(modelRaw);
-  assertOrganizeReady(ctxRes, modelRes, args.prompt);
+  assertOrganizeReady(ctxRes, modelRes, args.prompt, args.unknownReason);
   return requestOrganize({
     ctxRes,
     prompt: args.prompt,
@@ -733,7 +758,10 @@ type Setter<Value> = Dispatch<SetStateAction<Value>>;
 type OrganizeRun = (roleText?: string) => Promise<void>;
 
 interface OrganizeRunArgs {
+  readonly t: Translate;
   readonly loading: boolean;
+  /** 同步的在途标记：`loading` 要等一次重渲染才生效，同一轮事件里两次点击读到的都还是 false。 */
+  readonly inFlight: RefObject<boolean>;
   readonly seq: RefObject<number>;
   readonly prompt: string;
   readonly sessionId: string;
@@ -748,7 +776,9 @@ interface OrganizeRunArgs {
 
 async function runOrganizeClick(args: OrganizeRunArgs): Promise<void> {
   const {
+    t,
     loading,
+    inFlight,
     seq,
     prompt,
     sessionId,
@@ -760,9 +790,12 @@ async function runOrganizeClick(args: OrganizeRunArgs): Promise<void> {
     flashTimer,
     writeDraft,
   } = args;
-  if (loading) {
+  if (loading || inFlight.current) {
     return;
   }
+  // 先置位再 await：`loading` 只是排了一次重渲染，同一轮事件里的第二次点击读到的仍是旧值，
+  // 两道门都拦不住，于是第二发请求真的打到宿主——模型侧已经计费，而用户只看到一份结果。
+  inFlight.current = true;
   seq.current += 1;
   const mySeq = seq.current;
   setLoading(true);
@@ -774,6 +807,7 @@ async function runOrganizeClick(args: OrganizeRunArgs): Promise<void> {
       sessionId,
       ...(roleText === undefined ? {} : { roleText }),
       timeoutMs,
+      unknownReason: t("organizeErrUnknownReason"),
     });
     if (seq.current !== mySeq) {
       return;
@@ -783,7 +817,11 @@ async function runOrganizeClick(args: OrganizeRunArgs): Promise<void> {
     if (seq.current !== mySeq) {
       return;
     }
-    setFailed(errorText(error));
+    setFailed(
+      error instanceof LocalizedOrganizeError
+        ? t(error.messageKey, error.params)
+        : errorText(error),
+    );
     if (flashTimer.current !== null) {
       clearTimeout(flashTimer.current);
     }
@@ -791,6 +829,7 @@ async function runOrganizeClick(args: OrganizeRunArgs): Promise<void> {
       setFailed(undefined);
     }, ERROR_FLASH_MS);
   } finally {
+    inFlight.current = false;
     if (seq.current === mySeq) {
       setLoading(false);
     }
@@ -927,6 +966,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
     const [failed, setFailed] = useState<string | undefined>(undefined);
     const [menuOpen, setMenuOpen] = useState(false);
     const seq = useRef(0);
+    const inFlight = useRef(false);
     const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const wrapRef = useRef<HTMLSpanElement | null>(null);
 
@@ -953,7 +993,9 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
 
     async function handleOrganize(roleText?: string): Promise<void> {
       await runOrganizeClick({
+        t: props.t,
         loading,
+        inFlight,
         seq,
         prompt: draft,
         sessionId: props.sessionId ?? "",
@@ -1608,7 +1650,7 @@ function cardFootLabels(t: Translate): CardFootLabels {
     saving: t("saving"),
     revert: t("revert"),
     reset: t("resetDefault"),
-    resetConfirm: t("resetConfirm"),
+    resetConfirm: t("resetConfirm", { seconds: RESET_CONFIRM_MS / 1000 }),
     saveTitleDirty: t("saveTitleDirty"),
     saveTitleClean: t("saveTitleClean"),
     resetTitle: t("resetTitle"),
@@ -1691,7 +1733,9 @@ function createDraftActions(
         id: newTemplateId(),
         name: t("newTemplateName", { index: draft.length + 1 }),
         description: "",
-        text: t("newTemplateText"),
+        // 正文留空：占位提示由 textarea 的 placeholder（rowPlaceholderText）承担。
+        // 默认提示语当正文会随保存落盘——sanitize 只剔除空正文，拦不住"正文是提示语"。
+        text: "",
         group: "",
         emoji: "",
       },
@@ -1902,7 +1946,7 @@ function createCardBody(view: CardBodyView): ReactNode {
         t,
         index: idx,
         template: tpl,
-        disabled: !editable,
+        disabled: !editable || busy,
         onCommit,
         onDelete,
       }),
@@ -1920,13 +1964,13 @@ function createCardBody(view: CardBodyView): ReactNode {
     }),
     createElement(ImportPanel, {
       t,
-      editable,
+      editable: editable && !busy,
       onImported,
     }),
     createElement(AllowRootsPanel, {
       t,
       roots: rootsDraft,
-      disabled: !editable,
+      disabled: !editable || busy,
       onChangeRoot: onRootChange,
       onDeleteRoot: onRootDelete,
       onAddRoot: onRootAdd,

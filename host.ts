@@ -422,7 +422,10 @@ function hasFnMember(value: unknown, member: string): boolean {
 type SettingsFormsService = Pick<SettingsForms, "describe" | "configure">;
 
 function isSettingsService(value: unknown): value is SettingsFormsService {
-  return hasFnMember(value, "describe");
+  // 两个成员都要核：谓词类型是 Pick<…, "describe" | "configure">，只核 describe 时
+  // 一枚「有 describe、没 configure」的残形会过闸，随后 configure() 直接把 TypeError
+  // 甩在装配期（实测 s.configure({auto:false}) → "s.configure is not a function"）。
+  return hasFnMember(value, "describe") && hasFnMember(value, "configure");
 }
 function isSessionsService(value: unknown): value is SessionsService {
   return hasFnMember(value, "get");
@@ -455,6 +458,18 @@ function isServiceGetter(value: unknown): value is ServiceGetter {
 /** 字典里的 `{name}` 占位填充（与卡片侧官方 Translate 同语义，host 侧没有官方 translator
  *  故自带）。用 split/join 而不是 replace：路径与模型回文里可能带 `$`，而字符串版
  *  replace 会把 `$&` / `$1` 当替换模式解释。 */
+/** 换行与控制字符（`Cc` 含 \r\n\t，`Zl`/`Zp` 是 Unicode 行分隔与段分隔）。 */
+const LINE_BREAKERS = /[\p{Cc}\p{Zl}\p{Zp}]+/gu;
+
+/** 把一段宿主文本压成单行。
+ *
+ *  system 槽里每条内容独占一行，模型按行读它——任何能从外部带的换行都能在 system 里凭空
+ *  造出下一行，而那正是最高信任位。cwd 取自会话工作目录，是文件名，POSIX 允许目录名带换行。
+ *  这里不改成转义序列：读的人只需要知道「这一行就是那个路径」，多出来的字节不必还原。 */
+function singleLine(text: string): string {
+  return text.replaceAll(LINE_BREAKERS, " ");
+}
+
 function fillTemplate(template: string, tokens: readonly (readonly [string, string])[]): string {
   let text = template;
   for (const [token, value] of tokens) {
@@ -895,8 +910,28 @@ async function escapesAllRoots(
   // 先把根解析成后端身份再逐个判包含：`for + await` 在这里既是 await-in-loop，
   // 也让「命中即返回」省掉后续 resolve——但根只有两三枚，一并 resolve 更简单，
   // 也不用在循环里背着取消语义。
-  const resolved = await Promise.all(roots.map((root) => fs.resolve(root.absolute)));
-  return !resolved.some((root) => fs.contains(root, target));
+  // 逐根降级：一条过期的 importAllowRoots 目录（已删/已卸载的盘）让 resolve 抛错时，
+  // 若让整批 reject，外层只会把它折成一句泛化的「导入失败」，**其它合法根**也一并
+  // 打死。解析不出来的根按「不命中」处理（它确实没在本次判包含里起作用），而全都不
+  // 命中仍然判逃逸 —— 这是 fail-closed 的方向：解析不出就不放行。
+  const resolved = await Promise.all(
+    roots.map(async (root) => {
+      try {
+        return await fs.resolve(root.absolute);
+      } catch {
+        // 用 null 而不是 undefined：本函数要「返回一个值」参与后面的逐根判包含，
+        // undefined 会同时被 consistent-return 与 no-useless-undefined 判成没返回。
+        return null;
+      }
+    }),
+  );
+  let anyHit = false;
+  for (const root of resolved) {
+    if (root !== null && fs.contains(root, target)) {
+      anyHit = true;
+    }
+  }
+  return !anyHit;
 }
 
 export function importPathError(
@@ -1112,7 +1147,7 @@ async function importFromFile(
     return { entries: [], truncated: true, skipped };
   }
   if (info === undefined) {
-    skipped.unnamed = 1;
+    skipped.unnamed += 1;
     return { entries: [], truncated: false, skipped, error: messages.missingRoleName };
   }
   const entry = agentEntryFromFile(
@@ -1201,7 +1236,8 @@ function pushReadResult(
 
 /** 目录路径扫描（顶层 + 一层子目录的 .md，第三层只清点）→ 条目列表。
  *  跳过计数**就地累加进调用方持有的 `skipped`**（而不是返回一份新表）：中途抛错时
- *  上层 catch 仍要报出已经数到的那部分。 */
+ *  上层 catch 仍要报出已经数到的那部分。这里的两层形状被 src/ui-messages.ts 的
+ *  skipDeeper / importHint（中英四键）写给用户，改扫描深度要同步那四处文案。 */
 async function importFromDirectory(
   fs: Pick<FsService, "listDir" | "readText" | "contains">,
   absolute: string,
@@ -1306,7 +1342,12 @@ export async function collectAgentTemplates(
     const entries = await importFromDirectory(fs, absolute, target, limits, skipped);
     return {
       entries,
-      truncated: skipped.tooLarge + skipped.unreadable + skipped.deeper + skipped.escaped > 0,
+      // unnamed 也必须进这条判据：目录里解析不出 name 的 .md 是**整份没进来**，
+      // 漏掉它时用户看到 truncated:false 而实际条目少了一份（单文件分支已单独回原因，
+      // 目录分支只能靠这一位告诉卡片「有东西被跳过」）。
+      truncated:
+        skipped.tooLarge + skipped.unreadable + skipped.deeper + skipped.escaped + skipped.unnamed >
+        0,
       skipped,
     };
   } catch (error: unknown) {
@@ -1355,7 +1396,7 @@ export function buildOrganizeSystem(
     messages.sysRuleNoListing,
     messages.sysRuleRoleView,
     messages.sysRuleDataNotInstruction,
-    fillTemplate(messages.sysCwdLine, [["{cwd}", input.cwd || messages.sysCwdMissing]]),
+    fillTemplate(messages.sysCwdLine, [["{cwd}", singleLine(input.cwd) || messages.sysCwdMissing]]),
   ]
     .filter((part) => part.length > 0)
     .join("\n");
@@ -1536,7 +1577,17 @@ export async function runOrganize(
     },
   ];
   const controller = new AbortController();
+  // 超时与「调用方取消」共用同一个 controller，所以必须区分成因：两者都让 llm 服务
+  // 以 AbortError 收尾，而那条英文串（实测 "This operation was aborted"）不是字典文案，
+  // 直接回给用户与「固定文案全部来自字典」的口径不符。timer 自己置位，catch 里据此换成
+  // 带 timeoutMs 的字典文案；调用方取消仍原样上抛。
+  let timedOut = false;
+  // 经函数读：直接 `if (timedOut)` 时类型检查把它收窄成字面量 false（赋值在另一个
+  // 回调里，tsc 看不见），于是那条判据会被判成「恒假」的死分支。经函数返回的
+  // boolean 不再收窄。
+  const hasTimedOut = (): boolean => timedOut;
   const timer = setTimeout(() => {
+    timedOut = true;
     controller.abort();
   }, timeoutMs);
   // 调用方主动取消也要中止：没有这条，一次已放弃的润色会继续烧满整个超时窗口和
@@ -1571,6 +1622,16 @@ export async function runOrganize(
       throw new Error(messages.emptyOrganizeResult);
     }
     return { content };
+  } catch (error: unknown) {
+    // 只有「本函数的 timer 到点」才换成字典文案；调用方取消（callerSignal）与流自身的
+    // 别的失败都原样上抛——把取消也说成超时会让界面报错指向错的成因。
+    if (hasTimedOut()) {
+      const seconds = String(Math.round(timeoutMs / 1000));
+      throw new Error(fillTemplate(messages.organizeTimeout, [["{seconds}", seconds]]), {
+        cause: error,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", onCallerAbort);

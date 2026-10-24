@@ -55,73 +55,108 @@ color: lime
 ### k6 压测脚本示例
 
 ```javascript
+// 使用 k6 进行全面的性能测试
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Rate, Trend } from 'k6/metrics';
+import { Rate, Trend, Counter } from 'k6/metrics';
 
-// 自定义指标
+// 自定义指标，用于细粒度分析
 const errorRate = new Rate('errors');
-const apiDuration = new Trend('api_duration');
+const responseTimeTrend = new Trend('response_time');
+const throughputCounter = new Counter('requests_per_second');
 
-// 测试配置：阶梯式负载
 export const options = {
   stages: [
-    { duration: '2m', target: 50 },   // 预热
-    { duration: '5m', target: 200 },   // 正常负载
-    { duration: '3m', target: 500 },   // 峰值负载
-    { duration: '2m', target: 800 },   // 压力测试
-    { duration: '3m', target: 0 },     // 冷却
+    { duration: '2m', target: 10 }, // 预热
+    { duration: '5m', target: 50 }, // 常规负载
+    { duration: '2m', target: 100 }, // 峰值负载
+    { duration: '5m', target: 100 }, // 持续峰值
+    { duration: '2m', target: 200 }, // 压力测试
+    { duration: '3m', target: 0 }, // 冷却
   ],
   thresholds: {
-    http_req_duration: ['p(95)<500', 'p(99)<1000'],
-    errors: ['rate<0.01'],  // 错误率 < 1%
+    http_req_duration: ['p(95)<500'], // 95% 的请求低于 500ms
+    http_req_failed: ['rate<0.01'], // 错误率低于 1%
+    'response_time': ['p(95)<200'], // 自定义指标阈值
+    checks: ['rate==1'], // 业务检查失败必须让 CI 失败，即使 HTTP 状态是 200
+    errors: ['rate<0.01'], // 自定义的应用错误指标也要卡住
   },
 };
 
-const BASE_URL = __ENV.BASE_URL || 'https://api.example.com';
-
 export default function () {
-  // 场景 1：获取用户列表（读操作，占 60% 流量）
-  const listResp = http.get(`${BASE_URL}/api/v1/users?page=1`, {
-    headers: { Authorization: `Bearer ${__ENV.TOKEN}` },
-    tags: { name: 'GET /users' },
+  const baseUrl = __ENV.BASE_URL || 'http://localhost:3000';
+
+  // 测试关键用户旅程
+  const loginResponse = http.post(`${baseUrl}/api/auth/login`, JSON.stringify({
+    email: 'test@example.com',
+    password: __ENV.TEST_USER_PASSWORD
+  }), { headers: { 'Content-Type': 'application/json' } });
+
+  // HTTP 状态成功，返回的也可能是无效 JSON 或没有 token。
+  let token;
+  try { token = loginResponse.json('token'); } catch (_) { /* 下面会检查 */ }
+
+  const loginOK = check(loginResponse, {
+    'login successful': (r) => r.status === 200,
+    'login token present': () => typeof token === 'string' && token.length > 0,
+    'login response time OK': (r) => r.timings.duration < 200,
   });
 
-  check(listResp, {
-    'list status is 200': (r) => r.status === 200,
-    'list has data': (r) => JSON.parse(r.body).data.length > 0,
-  });
+  errorRate.add(!loginOK);
+  responseTimeTrend.add(loginResponse.timings.duration);
+  throughputCounter.add(1);
 
-  errorRate.add(listResp.status !== 200);
-  apiDuration.add(listResp.timings.duration);
+  if (loginOK) {
 
-  sleep(1);
-
-  // 场景 2：创建资源（写操作，占 20% 流量）
-  if (Math.random() < 0.33) {
-    const createResp = http.post(
-      `${BASE_URL}/api/v1/items`,
-      JSON.stringify({
-        name: `test-item-${Date.now()}`,
-        description: '性能测试数据',
-      }),
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${__ENV.TOKEN}`,
-        },
-        tags: { name: 'POST /items' },
-      }
-    );
-
-    check(createResp, {
-      'create status is 201': (r) => r.status === 201,
+    // 测试登录后 API 的性能
+    const apiResponse = http.get(`${baseUrl}/api/dashboard`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
 
-    errorRate.add(createResp.status !== 201);
+    let data;
+    try { data = apiResponse.json('data'); } catch (_) { /* 下面会检查 */ }
+    const dashboardOK = check(apiResponse, {
+      'dashboard load successful': (r) => r.status === 200,
+      'dashboard response time OK': (r) => r.timings.duration < 300,
+      'dashboard data complete': () => Array.isArray(data) && data.length > 0,
+    });
+
+    errorRate.add(!dashboardOK);
+    responseTimeTrend.add(apiResponse.timings.duration);
   }
 
-  sleep(Math.random() * 3);
+  sleep(1); // 模拟真实用户的思考时间
+}
+
+export function handleSummary(data) {
+  return {
+    'performance-report.json': JSON.stringify(data),
+    'performance-summary.html': generateHTMLReport(data),
+  };
+}
+
+function generateHTMLReport(data) {
+  const number = (metric, key, scale = 1) => {
+    const value = data.metrics[metric]?.values?.[key];
+    return typeof value === 'number' && Number.isFinite(value)
+      ? (value * scale).toFixed(2) : 'N/A (no measurement)';
+  };
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head><title>Performance Test Report</title></head>
+    <body>
+      <h1>Performance Test Results</h1>
+      <h2>Key Metrics</h2>
+      <ul>
+        <li>Average Response Time: ${number('http_req_duration', 'avg')}ms</li>
+        <li>95th Percentile: ${number('http_req_duration', 'p(95)')}ms</li>
+        <li>Error Rate: ${number('http_req_failed', 'rate', 100)}%</li>
+        <li>Total Requests: ${number('http_reqs', 'count')}</li>
+      </ul>
+    </body>
+    </html>
+  `;
 }
 ```
 

@@ -30,7 +30,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import { request as createHttpRequest } from "node:http";
 import type { Fiber } from "@deepseek-ai/cordis";
-import { WebServer } from "@deepseek-ai/dsh-host-webserver";
+import { bindUrlHost, isWildcardHost, WebServer } from "@deepseek-ai/dsh-host-webserver";
 import { SessionStore } from "@deepseek-ai/dsh-session";
 import type { Session, SessionId } from "@deepseek-ai/dsh-session";
 import { LlmAdapter, LlmRuntime } from "@deepseek-ai/dsh-llm";
@@ -264,7 +264,14 @@ export async function bootHostStack(options: BootOptions = {}): Promise<HostStac
   if (port === undefined) {
     throw new Error("宿主还没绑定端口就取到了 webServer.port——夹具无法继续，这里不用 ! 抹平");
   }
-  const origin = `http://127.0.0.1:${String(port)}`;
+  // origin 从宿主自己那两面读：`host` 是配置字面量（`BootOptions.host` 允许非回环），
+  // `protocol` 跟 TLS 配置走。硬编码 `http://127.0.0.1` 时，局域网档用例会拿到
+  // ECONNREFUSED——那是夹具打错了地址，失败原因却长得像被测行为有网络问题。
+  // 通配绑定（`0.0.0.0` / `::`）本身不是可拨的地址，落回回环（`getOrigin` 也这么取）。
+  const boundHost = isWildcardHost(ctx.webServer.host)
+    ? "127.0.0.1"
+    : (bindUrlHost(ctx.webServer.host) ?? "127.0.0.1");
+  const origin = `${ctx.webServer.protocol}//${boundHost}:${String(port)}`;
 
   const urlOf = (route: string, query?: Record<string, string>): string => {
     const url = new URL(route, origin);

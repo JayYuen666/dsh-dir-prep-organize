@@ -472,7 +472,7 @@ async function createApprovalInstance(params: {
 // 查询审批实例详情
 async function getApprovalInstance(instanceCode: string) {
   const resp = await client.approval.instance.get({
-    params: { instance_id: instanceCode },
+    path: { instance_id: instanceCode },
   });
 
   if (resp.code !== 0) {
@@ -510,9 +510,17 @@ router.get('/login/feishu', (req, res) => {
 router.get('/callback/feishu', async (req, res) => {
   const { code, state } = req.query;
 
-  if (state !== req.session!.oauthState) {
+  const expectedState = req.session?.oauthState;
+  if (typeof code !== 'string' || !code ||
+      typeof state !== 'string' || !state ||
+      typeof expectedState !== 'string' || !expectedState ||
+      state !== expectedState) {
     return res.status(403).json({ error: 'state 不匹配，可能存在 CSRF 攻击' });
   }
+  // 在第一个 await 之前，就消费掉本次请求绑定的 state。
+  // 如果回调可能加载到各自独立的会话副本，还要在共享的会话存储中原子地让 state 失效；
+  // 仅删除这个对象做不到这一点。
+  delete req.session!.oauthState;
 
   const tokenResp = await client.authen.oidcAccessToken.create({
     data: {

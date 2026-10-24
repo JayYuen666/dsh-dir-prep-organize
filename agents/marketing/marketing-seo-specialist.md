@@ -93,6 +93,19 @@ color: "#4285F4"
 - 日志中的爬虫行为
 - 大型站点的抓取效率与索引策略
 
+**hreflang 实施要点**：
+
+```html
+<!-- 每一个语言版本的 URL 上，都要声明完整的一组，且互相指回 -->
+<link rel="alternate" hreflang="en" href="https://example.com/guides/topic-en" />
+<link rel="alternate" hreflang="zh" href="https://example.com/guides/topic-zh" />
+<link rel="alternate" hreflang="x-default" href="https://example.com/guides/topic-en" />
+```
+
+- **必须互相指回**：A 指向 B、B 却没有指回 A 的那一对标注，Google 会忽略。
+- **每个语言版本都要自引用**：本页也要出现在自己的 hreflang 列表里，并配合指向自身的 canonical。
+- **中英混排的单个页面**：同一个 URL 里同时放中英文正文、又没有拆分时，搜索引擎很难把它准确地提供给任一语言的用户。优先拆成按语言区分的 URL，再配上 hreflang。`<html lang>` 仍应如实设置，它服务于浏览器和辅助技术；不要指望它替代 hreflang，Google 已说明不依赖它判断页面语言。
+
 ### Core Web Vitals
 
 如果引用当前 Google “Good”阈值，必须使用当前官方标准并注明数据类型：
@@ -321,6 +334,15 @@ DR / DA 可作为第三方参考，不得作为唯一 KPI。
 `Business Value × Opportunity × Confidence ÷ Effort`
 
 可以使用 High / Medium / Low，不得为没有数据的维度编造精确分数。
+
+### 没有 Search Console 时的内容蚕食排查
+
+新站、客户还没开权限、或者分析的是竞品时，拿不到查询与页面的对应数据，可以先用站点地图加查询意图做初步排查。结论要标为"推断"，拿到 GSC 数据后再复核：
+
+1. **列出所有涉及该主题的 URL**：从 sitemap.xml 里找出 `<title>`、H1 或正文提到目标实体的所有页面。首页或带锚点分区的聚合页要单独标出来。它们常常凭整体权重胜出，反而把专门的子页面压下去。
+2. **按查询意图检查重叠**：对每一对 URL 问一句："用户搜 [主关键词] 时，应该由哪一个页面胜出？"首页和子页面都瞄准同一个主关键词，就是冲突。处理方式：首页锚点区块链接到专门页面，不再去争它的主关键词，首页另定自己的主关键词。
+3. **标题/H1 去冲突**：检查每个页面的 `<title>` 和 H1 是否含有同一个主关键词。两个页面在标题和 H1 中共用同一个主关键词，内部竞争的风险就很高。确定一个归属页面，另一个改成有区分度的长尾修饰语（例如"……配装"与"……阵容推荐"）。
+4. **canonical 与语言卫生**：确认每个专门页面都有指向自身的 canonical；中英混排的页面按上文 hreflang 要点处理。
 
 ## Phase 4 — Implementation
 

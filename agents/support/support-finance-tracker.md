@@ -69,9 +69,9 @@ WITH budget_actuals AS (
     actual_amount,
     DATE_TRUNC('quarter', date) as quarter,
     budget_amount - actual_amount as variance,
-    (actual_amount - budget_amount) / budget_amount * 100 as variance_percentage
+    (actual_amount - budget_amount) * 100.0 / NULLIF(budget_amount, 0) as variance_percentage
   FROM financial_data
-  WHERE fiscal_year = YEAR(CURRENT_DATE())
+  WHERE fiscal_year = EXTRACT(YEAR FROM CURRENT_DATE)
 ),
 department_summary AS (
   SELECT
@@ -80,7 +80,8 @@ department_summary AS (
     SUM(budget_amount) as total_budget,
     SUM(actual_amount) as total_actual,
     SUM(variance) as total_variance,
-    AVG(variance_percentage) as avg_variance_pct
+    (SUM(actual_amount) - SUM(budget_amount)) * 100.0 /
+      NULLIF(SUM(budget_amount), 0) as variance_pct
   FROM budget_actuals
   GROUP BY department, quarter
 )
@@ -90,10 +91,11 @@ SELECT
   total_budget,
   total_actual,
   total_variance,
-  avg_variance_pct,
+  variance_pct,
   CASE
-    WHEN ABS(avg_variance_pct) <= 5 THEN 'On Track'       -- 在轨
-    WHEN avg_variance_pct > 5 THEN 'Over Budget'           -- 超预算
+    WHEN variance_pct IS NULL THEN 'No Budget Baseline'
+    WHEN ABS(variance_pct) <= 5 THEN 'On Track'       -- 在轨
+    WHEN variance_pct > 5 THEN 'Over Budget'           -- 超预算
     ELSE 'Under Budget'                                     -- 低于预算
   END as budget_status,
   total_budget - total_actual as remaining_budget            -- 剩余预算
@@ -102,10 +104,13 @@ ORDER BY department, quarter;
 ```
 
 ### 现金流管理系统
+
+下面的上下浮动 15% 仅为示例情景区间，不是统计置信区间。示例中的季节系数、增长系数与初始现金余额需要由业务实现提供；历史数据需覆盖要预测的月份。
+
 ```python
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import matplotlib.pyplot as plt
 
 class CashFlowManager:
@@ -117,7 +122,9 @@ class CashFlowManager:
         """
         生成 12 个月滚动现金流预测
         """
-        forecast = pd.DataFrame()
+        rows = []
+        cumulative_cash = self.current_cash
+        start_month = pd.Timestamp(datetime.now()).to_period('M')
 
         # 历史模式分析
         monthly_patterns = self.data.groupby('month').agg({
@@ -128,7 +135,7 @@ class CashFlowManager:
 
         # 带季节性因子的预测
         for i in range(periods):
-            forecast_date = datetime.now() + timedelta(days=30*i)
+            forecast_date = (start_month + i).to_timestamp()
             month = forecast_date.month
 
             # 计算季节性系数
@@ -141,17 +148,21 @@ class CashFlowManager:
 
             net_flow = forecasted_receipts - forecasted_payments
 
-            forecast = forecast.append({
+            cumulative_cash += net_flow
+            rows.append({
                 'date': forecast_date,
                 'forecasted_receipts': forecasted_receipts,      # 预计收款
                 'forecasted_payments': forecasted_payments,      # 预计付款
                 'net_cash_flow': net_flow,                       # 净现金流
-                'cumulative_cash': self.current_cash + forecast['net_cash_flow'].sum() if len(forecast) > 0 else self.current_cash + net_flow,  # 累计现金
-                'confidence_interval_low': net_flow * 0.85,      # 置信区间下限
-                'confidence_interval_high': net_flow * 1.15      # 置信区间上限
-            }, ignore_index=True)
+                'cumulative_cash': cumulative_cash,  # 累计现金
+                'scenario_low': net_flow - abs(net_flow) * 0.15,  # 情景下限，不是置信区间
+                'scenario_high': net_flow + abs(net_flow) * 0.15  # 情景上限，不是置信区间
+            })
 
-        return forecast
+        return pd.DataFrame(rows, columns=[
+            'date', 'forecasted_receipts', 'forecasted_payments', 'net_cash_flow',
+            'cumulative_cash', 'scenario_low', 'scenario_high'
+        ])
 
     def identify_cash_flow_risks(self, forecast_df):
         """
@@ -220,14 +231,21 @@ class InvestmentAnalyzer:
         计算内部收益率（IRR）
         """
         from scipy.optimize import fsolve
+        import math
 
         def npv_function(rate):
             return sum([cf / ((1 + rate) ** (i + 1)) for i, cf in enumerate(cash_flows)]) - initial_investment
 
         try:
-            irr = fsolve(npv_function, 0.1)[0]
+            roots, info, status, _ = fsolve(npv_function, 0.1, full_output=True)
+            irr = float(roots[0])
+            scale = max(1.0, abs(initial_investment), sum(abs(cf) for cf in cash_flows))
+            if (status != 1 or not math.isfinite(irr) or irr <= -1 or
+                    not math.isfinite(float(info['fvec'][0])) or
+                    abs(float(info['fvec'][0])) > 1e-7 * scale):
+                return None
             return irr
-        except:
+        except (ValueError, TypeError, OverflowError, ZeroDivisionError):
             return None
 
     def payback_period(self, cash_flows, initial_investment):
@@ -257,7 +275,7 @@ class InvestmentAnalyzer:
             'project_name': project_name,
             'initial_investment': initial_investment,
             'npv': npv,
-            'irr': irr * 100 if irr else None,
+            'irr': irr * 100 if irr is not None else None,
             'payback_period': payback,
             'roi_percentage': roi,
             'risk_score': risk_score,

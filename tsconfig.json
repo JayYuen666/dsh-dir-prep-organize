@@ -1,9 +1,12 @@
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
   "compilerOptions": {
+    // DOM 只为 test/ 而开：test/client.test.ts、test/templates.test.ts 直接 import
+    // client-entry.ts（DOM/React 代码），整份程序共享一个 lib，host.ts 因此也能通过
+    // window/document 这类浏览器类型的检查——宿主进程里它们并不存在。把引用 client
+    // 的测试拆进单独工程前，别据此外推 host 侧真的运行在带 DOM 全局的环境里。
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "allowJs": true,
-    "verbatimModuleSyntax": false
+    "allowJs": true
   },
   "include": ["host.ts", "test/**/*.ts", "vitest.config.ts"]
 }
