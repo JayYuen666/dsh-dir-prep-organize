@@ -334,7 +334,7 @@ backup_database() {
     fi
 
     # 加密备份文件
-    if ! gpg --cipher-algo AES256 --compress-algo 1 --s2k-mode 3 \
+    if ! gpg --batch --cipher-algo AES256 --compress-algo 1 --s2k-mode 3 \
              --s2k-digest-algo SHA512 --s2k-count 65536 --symmetric \
              --passphrase-file "$ENCRYPTION_KEY" "$backup_file"; then
         handle_error "数据库 $db_name 备份加密失败"
@@ -360,7 +360,7 @@ backup_files() {
 
     # 压缩打包并加密
     if ! tar -czf - -C "$source_dir" . | \
-         gpg --cipher-algo AES256 --compress-algo 0 --s2k-mode 3 \
+         gpg --batch --cipher-algo AES256 --compress-algo 0 --s2k-mode 3 \
              --s2k-digest-algo SHA512 --s2k-count 65536 --symmetric \
              --passphrase-file "$ENCRYPTION_KEY" \
              --output "$backup_file"; then

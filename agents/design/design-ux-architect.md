@@ -225,7 +225,7 @@ body {
 // 主题管理系统
 class ThemeManager {
   constructor() {
-    this.currentTheme = this.getStoredTheme() || this.getSystemTheme();
+    this.currentTheme = this.getStoredTheme() || 'system';
     this.applyTheme(this.currentTheme);
     this.initializeToggle();
   }
@@ -235,17 +235,26 @@ class ThemeManager {
   }
 
   getStoredTheme() {
-    return localStorage.getItem('theme');
+    try {
+      const stored = localStorage.getItem('theme');
+      return stored === 'dark' || stored === 'light' ? stored : null;
+    } catch {
+      return null; // 在沙箱或受限环境中，存储可能不可用。
+    }
   }
 
   applyTheme(theme) {
     if (theme === 'system') {
       // 跟随系统时移除手动设置
       document.documentElement.removeAttribute('data-theme');
-      localStorage.removeItem('theme');
     } else {
       document.documentElement.setAttribute('data-theme', theme);
-      localStorage.setItem('theme', theme);
+    }
+    try {
+      if (theme === 'system') localStorage.removeItem('theme');
+      else localStorage.setItem('theme', theme);
+    } catch {
+      // 即使浏览器存储不可用，也要应用所选的主题。
     }
     this.currentTheme = theme;
     this.updateToggleUI();
@@ -255,9 +264,13 @@ class ThemeManager {
     const toggle = document.querySelector('.theme-toggle');
     if (toggle) {
       toggle.addEventListener('click', (e) => {
-        if (e.target.matches('.theme-toggle-option')) {
-          const newTheme = e.target.dataset.theme;
-          this.applyTheme(newTheme);
+        const option = e.target instanceof Element
+          ? e.target.closest('.theme-toggle-option') : null;
+        if (option && toggle.contains(option)) {
+          const newTheme = option.dataset.theme;
+          if (['system', 'light', 'dark'].includes(newTheme)) {
+            this.applyTheme(newTheme);
+          }
         }
       });
     }

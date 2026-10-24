@@ -23,14 +23,31 @@ jobs:
     # 批准的落点在仓库侧：required reviewers、部署分支等保护规则不在这个文件里，由
     # Settings → Environments 里同名环境的配置给出。这里只把 job 挂上去，名字必须与那边一致。
     environment: npm-publish
-    # 发布链里有 install + 完整 check + 等 registry 放出新版本（publish-wait-timeout 十分钟）。
+    # 发布链里有 install + 完整 check ；发布后由 registry 逐步可见。
     # 不设上限的话，卡住的那一步会烧满 runner 的上限才被杀，期间没有任何信号。
     timeout-minutes: 45
     steps:
+      # 发布只允许从默认分支派发：workflow_dispatch 能在任意分支/tag 上触发，而 publish 会把
+      # 检出时刻的那棵树原样推到 registry——版本号一旦占用就撤不回，只能弃号再发新版。
+      # 用「失败」而不是 job 级 `if:` 跳过：跳过在结论上是绿的，误点的人只会看到工作流"成功"。
+      - name: 确认发布只发生在默认分支
+        env:
+          TARGET_REF: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::发布只能从默认分支（$DEFAULT_BRANCH）派发，当前是 $TARGET_REF。要发版请先把改动合进默认分支再 dispatch。"
+            exit 1
+          fi
       # action 钉 commit SHA：tag 可以被上游移动，钉住之后「换了构建器」才是一次可评审的 diff。
       # 版本号写在同行注释里，升级时照改这一行。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
+          # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 12
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -39,8 +56,11 @@ jobs:
           registry-url: https://registry.npmjs.org
       # 静态 token 是 OIDC 失败时的兜底，不是发布的前提：仓库里没有这枚 secret 是正常状态，
       # 走 trusted publishing 的仓库本来就不该长期存它。所以这一步在值为空时放行，只把
-      # 「有值」这一支规范化后写进 GITHUB_ENV，让发布步与预检读同一份清洗结果。
+      # 凭据本身不跨步骤传递：步骤输出会落成 RUNNER_TEMP 下的文件，同 job 后续步骤
+      # （含 install 与 check 里跑的依赖脚本）都能枚举读到；写进 job 级环境同理。
+      # 所以这里只做形态校验，预检与发布各自从 secrets 取一次、各自就地清洗。
       - name: 规范化静态 token（存在才处理）
+        id: norm
         env:
           TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -51,6 +71,7 @@ jobs:
             exit 0
           fi
           if [ "$TOKEN" != "$TOKEN_TIDY" ]; then echo "注意：secret 里含空白/换行，已剔除后使用"; fi
+          echo "::add-mask::$TOKEN_TIDY"
           case "$TOKEN_TIDY" in
             npm_*) echo "token 形态：npm access token";;
             ghp_*|github_pat_*) echo "这是 GitHub token——发到公共 npm 需要 npm 站点自己的 token（www.npmjs.com → Access Tokens），GH 的 token 对 npmjs 无效"; exit 1;;
@@ -62,30 +83,38 @@ jobs:
             echo "凭据里混进了非 token 字符（引号、说明文字之类）——请只贴 npm_ 开头那一串，不要带引号"
             exit 1
           fi
-          printf 'NPM_TOKEN_TIDY=%s\n' "$TOKEN_TIDY" >> "$GITHUB_ENV"
+          # 只交出形态合格的结论；凭据本身留在本步骤，不写进任何可跨步骤读取的介质。
       # 静态 token 只是兜底，所以这里判的是「还能不能用」，不是「必须有效」：
-      #   · 200      → 规范化后留给发布步当回退凭据
+      #   · 200      → 规范化后交给发布步当回退凭据
       #   · 401/403  → 告警并清空，让发布步走 OIDC。凭据失效不是工作流该红的理由，
       #                OIDC 也没配好时发布步会在认证处以 ENEEDAUTH 红，那一步才是真判据。
       #   · 其它状态 → registry 侧异常，先查状态页，不发
       # 依赖库可见性的判据与凭据无关，三条路都跑。
       - name: registry 预检（身份与依赖库可见性）
+        id: precheck
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -n "${NPM_TOKEN_TIDY:-}" ]; then
+          USE_STATIC=false
+          PASS_TOKEN="$(printf '%s' "${TOKEN:-}" | tr -d '\r\n[:space:]')"
+          if [ -n "$PASS_TOKEN" ]; then echo "::add-mask::$PASS_TOKEN"; fi
+
+          if [ -n "$PASS_TOKEN" ]; then
             body="$(mktemp)"
-            code=$(curl -s -o "$body" -w "%{http_code}" -H "Authorization: Bearer $NPM_TOKEN_TIDY" "https://registry.npmjs.org/-/whoami")
+            code=$(curl -s -o "$body" -w "%{http_code}" -H "Authorization: Bearer $PASS_TOKEN" "https://registry.npmjs.org/-/whoami")
             case "$code" in
               200)
                 login=$(sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body")
                 rm -f "$body"
+                USE_STATIC=true
                 # 响应体里是账号名，CI 日志长期留存，只印脱敏摘要。
                 if [ -n "$login" ]; then echo "whoami: HTTP 200，账号 ${login:0:2}***"; else echo "whoami: HTTP 200（响应体未解析出账号名）"; fi
                 ;;
               401|403)
                 rm -f "$body"
                 echo "::warning::静态 token 被 registry 拒（HTTP $code）——本次不启用它，按 OIDC 发布。这枚 secret 已失效，用完请到 Settings → Secrets 删掉，否则每次发布都留一条本行告警。"
-                printf 'NPM_TOKEN_TIDY=\n' >> "$GITHUB_ENV"
+                PASS_TOKEN=""
                 ;;
               *)
                 rm -f "$body"
@@ -100,6 +129,8 @@ jobs:
           echo "读 @jayyuen66/dsh-plugin-shared：HTTP $code"
           echo "判读：200=依赖库已公开，可以发；404=shared 还没发到 npmjs，先发它（本包 pnpm install 会因此取不到依赖）"
           [ "$code" = "200" ] || exit 1
+          # 只交结论、不交凭据：发布步据此决定导不导出 NODE_AUTH_TOKEN。
+          printf 'use_static=%s\n' "$USE_STATIC" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       # prepack 会重建 host.js / client.js / types/，产物不入库也发得出去。
@@ -108,19 +139,18 @@ jobs:
       # 它根本不参与认证，交换失败才轮到它——留着是兜底，不是主路。
       # 注入方式只能是环境变量：setup-node 配了 registry-url 会把 `${NODE_AUTH_TOKEN}` 占位写进
       # RUNNER_TEMP/.npmrc 并用 NPM_CONFIG_USERCONFIG 指过去，$HOME/.npmrc 被忽略；真 token 留在
-      # 环境变量里。别往仓库里的 .npmrc 写明文——项目级 .npmrc 也不展开 `${...}` 占位。
-      # 这里读的是预检写进 GITHUB_ENV 的清洗结果，与 whoami 判过的那一份逐字节相同：预检用一份、
+      # 环境变量里。别往仓库里的 .npmrc 写明文——pnpm 不展开仓库级 .npmrc 里的 `${...}` 占位
+      # （npm 会展开，别照 npm 的行为读这一行）。
+      # 这里读的是预检传下来的清洗结果，与 whoami 判过的那一份逐字节相同：预检用一份、
       # publish 用另一份的话，secret 尾部一个换行就变成「whoami 通过、publish 401」。
       # 不带 --no-git-checks：那条旗标跳过「在发布分支上 / 工作区干净」这两项。发布是从默认分支
       # 手动 dispatch 出来的，检出就在那条分支上，frozen-lockfile 之后工作区里只有 .gitignore 挡着的
       # 产物，两项本来就该过；跳过它们只会让「发出去的树不是仓库里的树」这一类事故无人过问。
       # --provenance 取的是另一枚 id-token（audience 为 sigstore），与 npm 交换那枚互相独立，
       # 所以它不受 trusted publisher 是否已配影响；少了它，产物只剩 npm 自己的签名。
-      # --publish-wait-timeout：等 registry 真正放出这个版本并对 tarball 回 HEAD，
-      # 于是「发出去了但装不上」在 workflow 里就红，而不是等用户报障才发现。
+      # pnpm 12 的 publish 不接受 --publish-wait-timeout（CI 实测参数解析即退 2），
+      # 因此这里不带它；发布后由 registry 逐步可见。
       # 若要改成 staged 发布（CI 只 stage、人工 approve）：发布命令换成 `pnpm stage publish`。
-      # 本仓命令行还带着 --publish-wait-timeout，切换时一并去掉：stage 与它互斥，pnpm 以
-      # ERR_PNPM_PUBLISH_WAIT_WITH_STAGE 拒绝，不会静默忽略。
       # 切换前先到 npmjs 上该包 Settings → Trusted publishing 看一眼 Allowed actions：npm 文档在这里
       # 两处说法不一致（网页说 `npm stage publish` 一直允许；API 却把 createStagedPackage 列成一枚
       # 可选权限），本仓没有本地判据能判它，所以别假定默认值——stage 第一步就被拒时先回来查这一页。
@@ -128,13 +158,20 @@ jobs:
       #   本机  `pnpm stage approve <stage-id> [--otp <码>]`（多个 id 一批共用一枚 OTP）
       #   网页  npmjs.com → 该包 → Staged Packages → Approve
       - name: 发布
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+          USE_STATIC: ${{ steps.precheck.outputs.use_static }}
         run: |
           set -euo pipefail
-          if [ -n "${NPM_TOKEN_TIDY:-}" ]; then
-            NODE_AUTH_TOKEN="$NPM_TOKEN_TIDY"
-            export NODE_AUTH_TOKEN
+          # 只有确实拿到可用静态 token 时才导出 NODE_AUTH_TOKEN。导出空串会让 setup-node
+          # 写进 .npmrc 的 ${NODE_AUTH_TOKEN} 占位被填成空值，认证以空凭据发出——
+          # 那是「配了 OIDC 却没 token」这条正常路径上的失败，不是发布本身的失败。
+          TOKEN_TIDY="$(printf '%s' "${TOKEN:-}" | tr -d '\r\n[:space:]')"
+          if [ "$USE_STATIC" = "true" ] && [ -n "$TOKEN_TIDY" ]; then
+            echo "::add-mask::$TOKEN_TIDY"
+            export NODE_AUTH_TOKEN="$TOKEN_TIDY"
             echo "凭据：静态 token 已就位（OIDC 交换成功时 pnpm 仍优先用 OIDC）"
           else
             echo "凭据：OIDC trusted publishing"
           fi
-          pnpm publish --access public --provenance --publish-wait-timeout 600000
+          pnpm publish --access public --provenance

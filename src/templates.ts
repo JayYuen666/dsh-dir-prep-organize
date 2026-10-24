@@ -191,14 +191,21 @@ export function condenseRoleBody(body: string): string {
   const lines = body.split(/\r?\n/u);
   const out: string[] = [];
   let inFence = false;
-  for (const raw of lines) {
+  let fenceStart = 0;
+  for (const [index, raw] of lines.entries()) {
     if (raw.trim().startsWith("```")) {
+      // 进围栏时记下起始行，出围栏时清零：漏写结束围栏的角色文件后半篇会被整体丢弃，
+      // 而「提炼结果非空」那道判据看不出来——少了一半的正文照样非空。
+      fenceStart = inFence ? 0 : index + 1;
       inFence = !inFence;
     } else if (inFence) {
       // 围栏内容整体跳过（长代码样例对角色语境价值低）
     } else {
       out.push(raw.replaceAll("`", ""));
     }
+  }
+  if (inFence) {
+    throw new Error(`正文第 ${String(fenceStart)} 行的代码围栏没有结束标记（\`\`\`）`);
   }
   return out.join("\n").trim();
 }

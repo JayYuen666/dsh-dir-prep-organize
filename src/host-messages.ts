@@ -105,6 +105,8 @@ export interface HostMessages {
   readonly noModelSelected: string;
   /** 模型返回空白。 */
   readonly emptyOrganizeResult: string;
+  /** 润色整体超时（`{seconds}`）。 */
+  readonly organizeTimeout: string;
   /** fs 服务未就绪。 */
   readonly fsUnavailable: string;
   /** sessions 里查不到该会话。 */
@@ -130,7 +132,7 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     sysRuleNoAnswer:
       "- 若草稿本身是问题或待办指令，润色结果仍是同一问题/指令的清晰完整版本，不要把解答、方案或示例写进润色结果。",
     sysRuleKeepIntent:
-      "- 保留用户原意与语言（中文保持中文）；缺失的关键信息（如目标文件/模块）若能从目录结构或最近对话推断就补上，推断不了不要编造。",
+      "- 保留用户原意与语言（用草稿本身的文字写，不换语言）；缺失的关键信息（如目标文件/模块）若能从目录结构或最近对话推断就补上，推断不了不要编造。",
     sysRuleResolveRefs:
       '- 最近对话可能含相关指代（"上面说的""刚才那个文件"），润色时把指代解析成明确表述。',
     sysRuleNoListing: "- 目录结构与对话历史仅是参考，不要罗列它们本身。",
@@ -170,6 +172,7 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     emptyPrompt: "用户要求为空，无法润色",
     noModelSelected: "当前无可用模型选择",
     emptyOrganizeResult: "模型润色结果为空",
+    organizeTimeout: "润色超时：{seconds} 秒内模型未返回完整结果（可在设置里调大超时）",
     fsUnavailable: "fs 服务不可用",
     cwdUnknown: "无法确定会话 cwd（sessionId 缺失或会话不存在）",
     modelServiceUnavailable: "agentDefaultModel 服务不可用",
@@ -218,7 +221,7 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     rootLabelBuiltin: "built-in role library",
     rootLabelAllowed: "importAllowRoots allowed directory",
     outsideRoots:
-      "Import path out of bounds: absolute paths are refused by default, only inside {zones} are allowed; received: {absolute}",
+      'Import path out of bounds: absolute paths are refused by default; allowed only inside "{zones}"; received: {absolute}',
     zoneSeparator: ", ",
     emptyImportPath:
       'The import path cannot be empty (give a role .md or a directory path; an empty path only means the built-in role library when you press "Import roles" on the settings card)',
@@ -235,6 +238,8 @@ export const HOST_MESSAGES: MessagesCatalog<HostMessages> = {
     emptyPrompt: "The request is empty: nothing to polish",
     noModelSelected: "No model selection is available",
     emptyOrganizeResult: "The model returned an empty result",
+    organizeTimeout:
+      "Polishing timed out: the model did not finish within {seconds} seconds (the timeout is configurable in settings)",
     fsUnavailable: "fs service unavailable",
     cwdUnknown: "Cannot determine the session cwd (sessionId missing or session unknown)",
     modelServiceUnavailable: "agentDefaultModel service unavailable",

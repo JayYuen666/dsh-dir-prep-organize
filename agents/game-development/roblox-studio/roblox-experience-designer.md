@@ -218,21 +218,22 @@ return DailyRewardSystem
 -- 使用 AnalyticsService（Roblox 内置，无需第三方）
 local AnalyticsService = game:GetService("AnalyticsService")
 
-local function trackEvent(player: Player, eventName: string, params: {[string]: any}?)
-    -- Roblox 内置分析——在 Creator Dashboard 中可见
-    AnalyticsService:LogCustomEvent(player, eventName, params or {})
+local function trackEvent(player: Player, eventName: string, value: number?)
+    -- Roblox 内置分析——在 Creator Dashboard 中可见。
+    -- 第三个参数是用于聚合统计的数值（默认 1）。
+    AnalyticsService:LogCustomEvent(player, eventName, value or 1)
 end
 
 -- 追踪引导完成
-trackEvent(player, "OnboardingCompleted", {time_seconds = elapsedTime})
+trackEvent(player, "OnboardingCompleted", elapsedTime)  -- 秒
 
 -- 追踪首次购买
-trackEvent(player, "FirstPurchase", {pass_name = passName, price_robux = price})
+trackEvent(player, "FirstPurchase", price)  -- Robux
 
 -- 离开时追踪会话时长
 Players.PlayerRemoving:Connect(function(player)
     local sessionLength = os.time() - sessionStartTimes[player.UserId]
-    trackEvent(player, "SessionEnd", {duration_seconds = sessionLength})
+    trackEvent(player, "SessionEnd", sessionLength)  -- 秒
 end)
 ```
 

@@ -15,10 +15,11 @@ on:
 # cancel-in-progress: false）——发布不能中途取消。
 # 组的键里带 event_name：周度漂移检测与 main 上的 push 都落在 refs/heads/main 上，
 # 只按 ref 分组会让后到的把先到的取消掉，而周度那一跑是「上游变了没有」的唯一信号，
-# 被取消等于这一周没量到。cancel-in-progress 只给 push：其余事件各占一组，互不覆盖。
+# 被取消等于这一周没量到。取消只给 push 与 pull_request：同一分支连推几次时，旧那一轮
+# 的五格矩阵没有任何人还要它的结论；其余事件各占一组，互不覆盖。
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 # 门槛只需要读代码。写成白名单而不是省略：省略会拿到仓库默认权限，而默认可能是读写。
 permissions:
   contents: read
@@ -57,7 +58,11 @@ jobs:
       # action 钉 commit SHA：tag 可以被上游移动，钉住之后「换了构建器」才是一次可评审的
       # diff。版本号写在同行注释里，升级时照改这一行。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
+          # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 12
       # registry-url 留空：本仓 CI 不发布，装依赖走包自己的 .npmrc（@jayyuen66 指向公共 npm）。
@@ -85,7 +90,21 @@ jobs:
           name: coverage
           path: coverage/
           retention-days: 7
+          # 这里取 warn 而不是 error：这一步在 `if: always()` 下跑，而 coverage/
+          # 由 `pnpm run check` 里的 vitest 产出——typecheck / lint / build 任一先红时
+          # 目录根本不存在。此时判红会盖住真正的失败原因，还把后面的步骤一起中断。
+          # 缺产物本身就是「门禁没跑完」的信号，不需要这一步再报一次。
+          if-no-files-found: warn
+      # 门禁不该改写仓库内容。判据落在**跟踪文件**上：产物（host.js / client.js / types/）都在
+      # .gitignore 里，所以这里为「零」意味着构建没有回头动过被跟踪的字节。
+      # 只在 ubuntu 格判：win32 上 core.autocrlf 会让检出本身带上 CRLF，那与门禁无关
+      # （.gitattributes 已钉住 eol=lf，但这一步用的是 `test -z` 这条 POSIX 判据，非 ubuntu 格不适用）。
+      - name: 构建没有改动被跟踪的字节
+        if: matrix.os == 'ubuntu-latest'
+        run: test -z "$(git status --porcelain --untracked-files=no)"
       # 运行页顶部的摘要：把结果留在这一页，不必点进每一步的日志里找。
+      # 它必须排在 job 的最后一步：job.status 在执行到那一步时才求值，后面若还有判定步骤，
+      # 后续步骤失败而摘要早已写成 success——那一行会成为唯一的结论面，且是错的。
       - name: 运行摘要
         if: always()
         # 脚本体是 bash 写法（`{ …; } >> "$GITHUB_STEP_SUMMARY"`）；矩阵含 windows 格，
@@ -98,13 +117,6 @@ jobs:
             echo "- 门禁：${{ job.status }}"
             echo '- 门禁命令：pnpm run check'
           } >> "$GITHUB_STEP_SUMMARY"
-      # 门禁不该改写仓库内容。判据落在**跟踪文件**上：产物（host.js / client.js / types/）都在
-      # .gitignore 里，所以这里为「零」意味着构建没有回头动过被跟踪的字节。
-      # 只在 ubuntu 格判：win32 上 core.autocrlf 会让检出本身带上 CRLF，那与门禁无关
-      # （.gitattributes 已钉住 eol=lf，但这一步用的是 `test -z` 这条 POSIX 判据，非 ubuntu 格不适用）。
-      - name: 构建没有改动被跟踪的字节
-        if: matrix.os == 'ubuntu-latest'
-        run: test -z "$(git status --porcelain --untracked-files=no)"
 
   # install-probe：门禁绿了不等于「装出去能用」。判据只能在消费侧的安装布局上，
   # 所以这里打真包、进干净目录、真 import。
@@ -119,7 +131,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
+          # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 12
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -178,8 +194,20 @@ jobs:
           const patch = path.join(pkgDir, patchRel);
           if (!existsSync(patch)) throw new Error(`bundle patch 没随包发出：${patchRel}`);
           const text = readFileSync(patch, "utf8");
-          if (!/-\s*id:\s*\S/u.test(text)) throw new Error(`bundle patch 里没有 id 行：${patchRel}`);
-          if (!text.includes(NAME)) throw new Error(`bundle patch 没按裸包名引用 ${NAME}`);
+          // 守卫要判的是「有没有一条条目按裸包名引用本包」，不是「有没有 id 行」也不是
+          // 「全文出现过这个串」：注释里的 `# - id:` 会让前者过，而 `.../settings` 子路径
+          // 条目天然包含完整包名会让后者过——两种情况下主入口都丢了，条目却照样注册不上。
+          const patchLines = text.split(/\r?\n/u);
+          const entries = [];
+          for (let i = 0; i < patchLines.length - 1; i += 1) {
+            const idHit = /^[ \t]*-[ \t]*id:[ \t]*(\S+)[ \t]*$/u.exec(patchLines[i]);
+            if (idHit === null) continue;
+            const nameHit = /^[ \t]*name:[ \t]*(?:"([^"]*)"|(\S+))[ \t]*$/u.exec(patchLines[i + 1]);
+            if (nameHit === null) continue;
+            entries.push([idHit[1], nameHit[1] ?? nameHit[2]]);
+          }
+          if (entries.length === 0) throw new Error(`bundle patch 里没有 id/name 条目：${patchRel}`);
+          if (!entries.some(([, name]) => name === NAME)) throw new Error(`bundle patch 没有按裸包名引用 ${NAME} 的条目`);
           console.log("装载通过：apply / Config / bundle patch 均就位");
           '
 
@@ -194,13 +222,15 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # id-token 换 Sigstore 身份，attestations 落证明。
+      # 官方 README 要求三枚：id-token 换 Sigstore 身份，attestations 落证明，
+      # artifact-metadata 建产物存储记录。少最后一枚时证明仍能签，但存储记录那一步会失败。
       id-token: write
       attestations: write
+      artifact-metadata: write
     steps:
       # 不检出仓库：要签的是上面那一份产物的字节，与工作树无关。
       - name: 取回 tarball
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist-tarball
           path: /tmp/pkg
@@ -219,6 +249,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
+          # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
+          persist-credentials: false
       - name: 依赖审查
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
@@ -229,7 +263,7 @@ jobs:
   # 未知上下文、表达式语法、事件与输入拼写、shell 片段问题。job 级 if 里写 matrix
   # 就属于这一类——YAML 解析得过，但整份工作流在 GitHub 上加载不起来。
   #
-  # 用官方 docker 镜像并钉版本，不走 curl | bash。只读挂载：lint 不该有写仓库的能力。
+  # 只读权限：这个 job 只读工作流文件，不该有写仓库的能力。
   # 覆盖本仓全部工作流（含 publish.yml）：只忽略 SC2016（理由见下），其余提示照常判红。
   actionlint:
     runs-on: ubuntu-latest
@@ -238,13 +272,24 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
+          # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
+          persist-credentials: false
       - name: 跑 actionlint
         run: |
           set -euo pipefail
+          # 版本与字节都钉住：release 的标签可以被上游移动，而这一个 job 是「工作流文件合不合法」
+          # 的唯一判据——判据本身可换，等于没有判据。校验和取自该 release 的
+          # actionlint_<版本>_checksums.txt，与本机下载到的产物逐字节核对过。
+          version=1.7.12
+          sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$sha256" /tmp/actionlint.tar.gz | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           # -ignore SC2016：探针脚本刻意用单引号包住 JS（脚本体里有 JS 模板串，
           # 交给 shell 展开就坏了）。这是 shellcheck 的误报，而 shellcheck 指令在
           # 跨行单引号构造上不被采信（已实测），所以只忽略这一条规则。
-          # shell 在 runner 上先把 glob 展开，再把文件清单交给容器。
-          docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 \
-            -ignore 'SC2016' \
-            .github/workflows/*.yml
+          # shell 先把 glob 展开，再把文件清单交给它。
+          /tmp/actionlint -ignore 'SC2016' .github/workflows/*.yml

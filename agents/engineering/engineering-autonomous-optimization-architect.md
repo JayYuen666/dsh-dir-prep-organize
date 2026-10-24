@@ -43,39 +43,48 @@ color: "#673AB7"
 export async function optimizeAndRoute(
   serviceTask: string,
   providers: Provider[],
-  securityLimits: { maxRetries: 3, maxCostPerRun: 0.05 }
+  securityLimits: { maxRetries: number, maxCostPerRun: number }
 ) {
-  // 按历史"优化得分"排序（速度 + 成本 + 准确率）
+  if (!Number.isInteger(securityLimits.maxRetries) || securityLimits.maxRetries < 0 ||
+      !Number.isFinite(securityLimits.maxCostPerRun) || securityLimits.maxCostPerRun <= 0) {
+    throw new Error('重试次数必须是非负整数，预算必须是有限的正数');
+  }
   const rankedProviders = rankByHistoricalPerformance(providers);
+  let attempts = 0;
+  let spentCost = 0;
 
   for (const provider of rankedProviders) {
     if (provider.circuitBreakerTripped) continue;
-
+    if (attempts >= securityLimits.maxRetries + 1) break;
+    attempts += 1;
+    let result;
     try {
-      const result = await provider.executeWithTimeout(5000);
-      const cost = calculateCost(provider, result.tokens);
-
-      if (cost > securityLimits.maxCostPerRun) {
-         triggerAlert('WARNING', `供应商超出成本上限，正在切换路由。`);
-         continue;
-      }
-
-      // 后台自学习：异步用更便宜的模型测试输出，
-      // 看看后续能否进一步优化。
-      shadowTestAgainstAlternative(serviceTask, result, getCheapestProvider(providers));
-
-      return result;
-
+      result = await provider.executeWithTimeout(5000);
     } catch (error) {
-       logFailure(provider);
-       if (provider.failures > securityLimits.maxRetries) {
-           tripCircuitBreaker(provider);
-       }
+      logFailure(provider);
+      if (provider.failures > securityLimits.maxRetries) tripCircuitBreaker(provider);
+      continue;
     }
+
+    // 费用已经产生。停止路由；不要为了掩盖超支而再花一次钱。
+    const cost = calculateCost(provider, result.tokens);
+    if (!Number.isFinite(cost) || cost < 0) {
+      throw new Error('供应商费用未知或无效，停止路由');
+    }
+    spentCost += cost;
+    if (spentCost > securityLimits.maxCostPerRun) {
+      triggerAlert('WARNING', '本次运行超出预算，停止继续尝试供应商。');
+      throw new Error('本次运行超出预算');
+    }
+    // 影子评估需要单独预留的预算；返回生产结果之后，
+    // 这个路由循环不会再启动额外的付费工作。
+    return result;
   }
-  throw new Error('所有保险措施已触发，中止任务以防止成本失控。');
+  throw new Error('在重试预算内没有供应商成功。');
 }
 ```
+
+这是"扣费之后才停止"，并不能证明存在一个预付式的硬性成本上限。在调用付费供应商之前，先为每次尝试预留一个保守的 token/费用上限；把失败或超时产生的费用也记入供应商账本，并在下一次尝试之前核对清楚未知的费用。可选的影子评估要有单独、明确的预算和队列。仅靠 5 秒超时并不能取消远端的计费。
 
 ## 工作流程
 

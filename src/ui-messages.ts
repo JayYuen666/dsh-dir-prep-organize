@@ -10,10 +10,12 @@
 // 声明拿框架合成的 `t` seat，注册 label 用 thunk 跟随活动语言——见 client-entry.ts 的
 // apply）。刻意不进字典的两类：
 //   - 喂给模型的目录摘要（formatContextSummary）：它是 prompt 的一段，翻译它等于改
-//     模型看到的输入。润色前的三条前置错误（assertOrganizeReady）不属于这一类——它们
-//     经 organizeFailedTitle 渲染成按钮 tooltip，是给人看的文案，中英不分、这里是缺口；
+//     模型看到的输入；
 //   - 用户自填的模板正文/角色库数据（default-templates.generated.ts 与 agents/）——
 //     数据不做机翻。
+// 润色链路由客户端自己产生的错误（前置检查、坏回执的兜底话）全部走这里的键，由捕获侧
+// 用当前语言的 t 渲染；宿主回执携带的原文（ctxRes.error 等）不翻译、作为 {message}
+// 原样带出。
 import type { TranslateNS as OfficialTranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
@@ -51,8 +53,6 @@ export interface UiMessages {
   readonly saveFailed: string;
   /** 新增行的默认名称（整句模板）。 */
   readonly newTemplateName: string;
-  /** 新增行的默认正文（提示用户改写，落盘后即为数据）。 */
-  readonly newTemplateText: string;
   /** 写入回执不可确认（宿主未回读成功）。 */
   readonly persistUnconfirmed: string;
   /** 写入回执未生效（宿主拒绝写入，带 revision）。 */
@@ -153,6 +153,16 @@ export interface UiMessages {
   readonly organizeIdleTitle: string;
   /** 「润色」失败时 title 前缀（后接错误摘要）。 */
   readonly organizeFailedTitle: string;
+  /** 润色前置检查失败：目录上下文读取失败（{message} = 宿主原文，原样带出）。 */
+  readonly organizeErrContextFailed: string;
+  /** 润色前置检查失败：读取模型失败（{message} = 宿主原文）。 */
+  readonly organizeErrModelFailed: string;
+  /** 润色前置检查失败：输入框为空。 */
+  readonly organizeErrEmpty: string;
+  /** 润色链路兜底：宿主回执没带 error 字段时给 {message} 的占位原因。 */
+  readonly organizeErrUnknownReason: string;
+  /** 润色回执整体不是对象时的兜底错误。 */
+  readonly organizeErrUnknown: string;
   /** ▾ 角色菜单按钮的 aria-label。 */
   readonly organizeCaretAria: string;
   /** ▾ 角色菜单按钮的 title。 */
@@ -234,13 +244,12 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     revert: "撤销",
     resetTitle:
       "丢弃模板列表的全部自定义，回到内置默认（不影响已登记的导入允许目录；两步确认，点击即生效）",
-    resetConfirm: "确认恢复默认？再点一次（4 秒内）",
+    resetConfirm: "确认恢复默认？再点一次（{seconds} 秒内）",
     resetDefault: "恢复默认",
     footHint:
       "说明：编辑/新增/删除先在本地暂存，点「保存」一次写入（模板与导入允许目录同理）；清空名称或正文的条目保存时会被剔除（删除请用行内「删除」）；恢复默认只回滚模板列表。",
     saveFailed: "保存失败：",
     newTemplateName: "新模板 {index}",
-    newTemplateText: "（填写模板正文：点选后插入输入框、随消息发给模型的文字）",
     persistUnconfirmed: "{action}结果不可确认：设置源未就绪（宿主未回读成功）",
     persistRejected: "{action}未生效：宿主拒绝了本次写入（当前 revision {revision}）",
     rowAriaEmoji: "模板 {index} 视觉标记",
@@ -270,6 +279,8 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     importHint:
       "导入说明：留空导入内置角色库全部（agents/）；填路径时只放行「会话 cwd」「内置角色库 agents/」与下方「导入允许目录」之内的路径——绝对路径默认拒绝，越界会直接报「导入路径越界」并回显解析后的路径。本卡没有会话上下文，故只能填内置库或已登记目录里的路径。目录扫描顶层 + 一层子目录 .md（跳过隐藏项），文件须含 name 的 frontmatter，正文将提炼为模板正文。",
     skipDeeper: "{count} 个更深层 .md 未扫描（导入只扫两层）",
+    // 「两层」「顶层 + 一层子目录」是 host.ts importFromDirectory 的扫描形状写给用户的那一面：
+    // 改那边的扫描深度，这四个键（skipDeeper / importHint × zh / en）要同步改。
     skipTooLarge: "{count} 个文件超字节上限被跳过",
     skipUnreadable: "{count} 个文件读取失败",
     skipUnnamed: "{count} 个非角色文件（frontmatter 无 name）",
@@ -294,6 +305,11 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeFailedShort: "失败",
     organizeIdleTitle: "结合当前目录润色输入框内容（主键直接润色；▾ 可选角色风格）",
     organizeFailedTitle: "润色失败：{message}",
+    organizeErrContextFailed: "目录上下文读取失败：{message}",
+    organizeErrModelFailed: "读取模型失败：{message}",
+    organizeErrEmpty: "输入框为空，无内容可润色",
+    organizeErrUnknownReason: "未知错误",
+    organizeErrUnknown: "润色失败（未知错误）",
     organizeCaretAria: "选择润色的角色风格",
     organizeCaretTitle: "按某个角色的风格润色（角色来自下方模板库）",
     organizeMainAria: "润色输入框内容",
@@ -327,14 +343,12 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     revert: "Revert",
     resetTitle:
       "Discard every customization of the template list and go back to the built-in defaults (registered import directories are untouched; two-step confirm, takes effect on the next click)",
-    resetConfirm: "Restore defaults? Click once more (within 4s)",
+    resetConfirm: "Restore defaults? Click once more (within {seconds}s)",
     resetDefault: "Restore defaults",
     footHint:
       'Note: edits, additions and deletions are staged locally first and written in one go when you press "Save" (same for templates and import directories); entries whose name or body is empty are dropped on save (use the inline "Delete" instead); "Restore defaults" only rolls back the template list.',
     saveFailed: "Save failed: ",
     newTemplateName: "New template {index}",
-    newTemplateText:
-      "(Template body: the text inserted into the input box and sent to the model with your message)",
     persistUnconfirmed:
       "{action} cannot be confirmed: the settings source is not ready (host read-back failed)",
     persistRejected:
@@ -398,6 +412,11 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeIdleTitle:
       "Polish the input-box content against the current directory (main key polishes directly; ▾ picks a role style)",
     organizeFailedTitle: "Polish failed: {message}",
+    organizeErrContextFailed: "Failed to read the directory context: {message}",
+    organizeErrModelFailed: "Failed to read the model: {message}",
+    organizeErrEmpty: "The input box is empty; nothing to polish",
+    organizeErrUnknownReason: "unknown error",
+    organizeErrUnknown: "Polish failed (unknown error)",
     organizeCaretAria: "Choose a role style to polish with",
     organizeCaretTitle: "Polish in a role's style (roles come from the template library below)",
     organizeMainAria: "Polish the input-box content",

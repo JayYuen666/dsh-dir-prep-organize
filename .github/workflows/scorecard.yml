@@ -16,6 +16,12 @@ on:
     - cron: "23 4 * * 1"
   push:
     branches: [main]
+# push 与每周 cron 各成一组：同时到达时并行跑（cron 的全量扫描不被 push 取消），
+# 同组内的重跑才互相取消。publish_results: true 每次运行都会向 OpenSSF API 发一次结果，
+# 不设并发控制时两个 run 各发一份。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 # 工作流级全只读；两个写权限只挂在 analysis job 上。
 permissions: read-all
 jobs:
@@ -44,13 +50,20 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
+      # 两个上传步骤都 if: always()：发布环节（publish_results 走 OIDC 换身份）单独失败
+      # 时，已生成的 results.sarif 仍要进面板与 artifact，不被上游步骤的失败连坐跳过。
+      # artifact 上传额外 continue-on-error 且排在 SARIF 上传之后：面板更新优先于留档，
+      # artifact 服务抖动不得反过来挡面板。
+      - name: Upload to code-scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: results.sarif
       - name: Upload artifact
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scorecard-sarif
           path: results.sarif
           retention-days: 5
-      - name: Upload to code-scanning
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        with:
-          sarif_file: results.sarif

@@ -1,6 +1,13 @@
+# 构建产物：node build-client.mjs / build-host.mjs / build-types.mjs 写在包根（同名
+# 测试夹具、子目录同名文件不受牵连，故全部锚定到根）。构建脚本先写
+# <产物>.<pid>.<uuid>.tmp 再 rename，崩溃残留的临时文件靠最后一条通配收走。
 node_modules/
-client.js
-host.js
-templates.data.mjs
+/client.js
+/host.js
+/templates.data.mjs
+/types/
+/*.tmp
 coverage/
-types/
+
+# 统一构建件的原子落盘草稿目录（shared/lib/build-artifacts 的 writeArtifact）。
+/.tmp/

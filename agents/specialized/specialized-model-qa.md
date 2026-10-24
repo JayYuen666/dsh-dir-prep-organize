@@ -122,25 +122,38 @@ import pandas as pd
 
 def compute_psi(expected: pd.Series, actual: pd.Series, bins: int = 10) -> float:
     """
-    计算两个分布之间的群体稳定性指数。
+    按基线分位点计算 PSI；超出基线范围的观测值计入两端的尾部分箱。
 
     解读：
-      < 0.10  → 无显著偏移（绿灯）
-      0.10–0.25 → 中度偏移，建议调查（黄灯）
-      >= 0.25 → 显著偏移，需采取行动（红灯）
+      < 0.10  → 偏移很小（绿灯）
+      0.10–0.25 → 需要调查（黄灯）
+      >= 0.25 → 显著偏移（红灯）
+    这些只是监控用的经验阈值，不能证明模型有效。
     """
-    breakpoints = np.linspace(0, 100, bins + 1)
-    expected_pcts = np.percentile(expected.dropna(), breakpoints)
+    if not isinstance(bins, int) or isinstance(bins, bool) or bins < 2:
+        raise ValueError("bins must be an integer >= 2")
+    baseline = expected.dropna().to_numpy(dtype=float)
+    observed = actual.dropna().to_numpy(dtype=float)
+    if not len(baseline) or not len(observed):
+        raise ValueError("PSI requires nonempty baseline and observed samples")
+    if not np.isfinite(baseline).all() or not np.isfinite(observed).all():
+        raise ValueError("PSI samples must be finite")
 
-    expected_counts = np.histogram(expected, bins=expected_pcts)[0]
-    actual_counts = np.histogram(actual, bins=expected_pcts)[0]
-
-    # 拉普拉斯平滑避免除零
-    exp_pct = (expected_counts + 1) / (expected_counts.sum() + bins)
-    act_pct = (actual_counts + 1) / (actual_counts.sum() + bins)
-
-    psi = np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct))
-    return round(psi, 6)
+    # 用去重后的内部分位点，处理基线中重复值或常数值的情况。
+    interior = np.unique(np.percentile(baseline, np.linspace(0, 100, bins + 1)[1:-1]))
+    if np.all(baseline == baseline[0]):
+        # 基线集中在单一取值时，需要为它单独设一个"等于该值"的分箱。否则，
+        # 整体移到该值"之上"的分布会和它落进同一个开放尾箱。
+        value = baseline[0]
+        interior = np.array([value, np.nextafter(value, np.inf)])
+    edges = np.unique(np.concatenate(([-np.inf], interior, [np.inf])))
+    expected_counts = np.histogram(baseline, bins=edges)[0]
+    actual_counts = np.histogram(observed, bins=edges)[0]
+    bucket_count = len(edges) - 1
+    # 按实际不重复的分箱数对平滑项做归一化。
+    exp_pct = (expected_counts + 1) / (len(baseline) + bucket_count)
+    act_pct = (actual_counts + 1) / (len(observed) + bucket_count)
+    return round(float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct))), 6)
 ```
 
 ### 区分度指标（Gini & KS）
@@ -154,6 +167,12 @@ def discrimination_report(y_true: pd.Series, y_score: pd.Series) -> dict:
     计算二分类器的核心区分度指标。
     返回 AUC、Gini 系数和 KS 统计量。
     """
+    if y_true.empty or not y_true.index.equals(y_score.index):
+        raise ValueError("Discrimination requires nonempty, aligned observations")
+    if not y_true.isin([0, 1]).all() or y_true.nunique() != 2:
+        raise ValueError("Discrimination requires both binary outcome classes")
+    if not np.isfinite(y_score.to_numpy(dtype=float)).all():
+        raise ValueError("Discrimination scores must be finite")
     auc = roc_auc_score(y_true, y_score)
     gini = 2 * auc - 1
     ks_stat, ks_pval = ks_2samp(
@@ -170,6 +189,8 @@ def discrimination_report(y_true: pd.Series, y_score: pd.Series) -> dict:
 ### 校准检验（Hosmer-Lemeshow）
 
 ```python
+import numpy as np
+import pandas as pd
 from scipy.stats import chi2
 
 def hosmer_lemeshow_test(
@@ -178,8 +199,18 @@ def hosmer_lemeshow_test(
     """
     Hosmer-Lemeshow 拟合优度检验用于校准评估。
     p 值 < 0.05 表明存在显著的校准偏差。
+    结果不显著并不能证明校准良好。检验无法定义时抛出 ValueError，
+    而不是返回 NaN 和一个误导性的结论。
     """
+    if not isinstance(groups, int) or isinstance(groups, bool) or groups < 3:
+        raise ValueError("HL requires an integer group count >= 3")
+    if y_true.empty or not y_true.index.equals(y_pred.index):
+        raise ValueError("HL requires nonempty, aligned observations")
     data = pd.DataFrame({"y": y_true, "p": y_pred})
+    if not np.isfinite(data.to_numpy(dtype=float)).all():
+        raise ValueError("HL observations and probabilities must be finite")
+    if not data["y"].isin([0, 1]).all() or not data["p"].between(0, 1).all():
+        raise ValueError("HL requires binary outcomes and probabilities in [0, 1]")
     data["bucket"] = pd.qcut(data["p"], groups, duplicates="drop")
 
     agg = data.groupby("bucket", observed=True).agg(
@@ -188,13 +219,15 @@ def hosmer_lemeshow_test(
         expected=("p", "sum"),
     )
 
-    hl_stat = (
-        ((agg["observed"] - agg["expected"]) ** 2)
-        / (agg["expected"] * (1 - agg["expected"] / agg["n"]))
-    ).sum()
+    # 取值相同会让 qcut 分组塌缩；概率全为 0 或全为 1 的分组，期望方差为零。
+    # 这两种情况都无法得到常规的卡方检验结果。
+    variance = agg["expected"] * (1 - agg["expected"] / agg["n"])
+    if len(agg) < 3 or not (variance > 0).all():
+        raise ValueError("HL needs at least three groups with positive expected variance")
+    hl_stat = (((agg["observed"] - agg["expected"]) ** 2) / variance).sum()
 
     dof = len(agg) - 2
-    p_value = 1 - chi2.cdf(hl_stat, dof)
+    p_value = chi2.sf(hl_stat, dof)
 
     return {
         "HL_statistic": round(hl_stat, 4),
@@ -209,25 +242,30 @@ def hosmer_lemeshow_test(
 import shap
 import matplotlib.pyplot as plt
 
-def shap_global_analysis(model, X: pd.DataFrame, output_dir: str = "."):
+def shap_global_analysis(model, X: pd.DataFrame, output_dir: str = ".",
+                         output_index: int = 1):
     """
     通过 SHAP 值进行全局可解释性分析。
     生成汇总图（蜂群图）和平均 |SHAP| 柱状图。
     适用于树模型（XGBoost、LightGBM、RF），
     其他模型类型回退到 KernelExplainer。
+    多输出模型解释选定的那个输出（默认是二分类的正类）。
+    需要其他类别/输出时要显式指定；单输出回归不受影响。
     """
     try:
         explainer = shap.TreeExplainer(model)
     except Exception:
-        explainer = shap.KernelExplainer(
-            model.predict_proba, shap.sample(X, 100)
-        )
+        predict = model.predict_proba if hasattr(model, "predict_proba") else model.predict
+        explainer = shap.KernelExplainer(predict, shap.sample(X, 100))
 
     shap_values = explainer.shap_values(X)
 
     # 多输出时取正类
+    # 先选定输出再绘图和求平均，保证每个特征只有一个归因值。
     if isinstance(shap_values, list):
-        shap_values = shap_values[1]
+        shap_values = shap_values[output_index]
+    elif shap_values.ndim == 3:
+        shap_values = shap_values[..., output_index]
 
     # 蜂群图：展示每个特征的值方向和幅度
     shap.summary_plot(shap_values, X, show=False)
@@ -250,19 +288,23 @@ def shap_global_analysis(model, X: pd.DataFrame, output_dir: str = "."):
     return importance
 
 
-def shap_local_explanation(model, X: pd.DataFrame, idx: int):
+def shap_local_explanation(model, X: pd.DataFrame, idx: int,
+                           output_index: int = 1):
     """
     局部可解释性：解释单个预测。
     生成瀑布图展示每个特征如何将预测从基准值推移。
+    多输出模型使用与全局分析相同的选定输出。
     """
     try:
         explainer = shap.TreeExplainer(model)
     except Exception:
-        explainer = shap.KernelExplainer(
-            model.predict_proba, shap.sample(X, 100)
-        )
+        predict = model.predict_proba if hasattr(model, "predict_proba") else model.predict
+        explainer = shap.KernelExplainer(predict, shap.sample(X, 100))
 
     explanation = explainer(X.iloc[[idx]])
+    if explanation.values.ndim == 3:
+        # 对整个 Explanation 切片，让基准值和数据保持对齐。
+        explanation = explanation[..., output_index]
     shap.plots.waterfall(explanation[0], show=False)
     plt.tight_layout()
     plt.savefig(f"shap_waterfall_obs_{idx}.png", dpi=150)
@@ -297,7 +339,7 @@ def pdp_analysis(
             grid_resolution=grid_resolution,
             ax=ax,
         )
-        ax.set_title(f"偏依赖 - {feature}")
+        ax.set_title(f"Partial Dependence - {feature}")
         fig.tight_layout()
         fig.savefig(f"{output_dir}/pdp_{feature}.png", dpi=150)
         plt.close(fig)
@@ -317,7 +359,7 @@ def pdp_interaction(
     PartialDependenceDisplay.from_estimator(
         model, X, [feature_pair], ax=ax
     )
-    ax.set_title(f"PDP 交互 - {feature_pair[0]} x {feature_pair[1]}")
+    ax.set_title(f"PDP Interaction - {feature_pair[0]} × {feature_pair[1]}")
     fig.tight_layout()
     fig.savefig(
         f"{output_dir}/pdp_interact_{'_'.join(feature_pair)}.png", dpi=150
@@ -339,6 +381,8 @@ def variable_stability_report(
     标记相对首个观察期 PSI 超阈值的变量。
     """
     periods = sorted(df[date_col].unique())
+    if len(periods) < 2:
+        raise ValueError("Stability reporting requires a baseline and an observed period")
     baseline = df[df[date_col] == periods[0]]
 
     results = []
@@ -350,8 +394,8 @@ def variable_stability_report(
                 "variable": var,
                 "period": period,
                 "psi": psi,
-                "flag": "红灯" if psi >= psi_threshold else (
-                    "黄灯" if psi >= 0.10 else "绿灯"
+                "flag": "🔴" if psi >= psi_threshold else (
+                    "🟡" if psi >= 0.10 else "🟢"
                 ),
             })
 

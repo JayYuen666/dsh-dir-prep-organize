@@ -114,6 +114,9 @@ color: "#C5A572"
 ### 匹配技术
 
 ```python
+import math
+import re
+
 class IdentityMatcher:
     """
     身份解析的核心匹配逻辑。
@@ -121,7 +124,16 @@ class IdentityMatcher:
     """
 
     def score_pair(self, record_a: dict, record_b: dict, rules: list) -> float:
-        total_weight = 0.0
+        rules = list(rules)
+        if any(isinstance(rule["weight"], bool) or
+               not isinstance(rule["weight"], (int, float)) or
+               not math.isfinite(rule["weight"]) or rule["weight"] < 0
+               for rule in rules):
+            raise ValueError("Evidence weights must be finite and nonnegative")
+        # 缺失证据仍计入总权重，避免仅凭少数字段就得到满分。
+        total_weight = sum(rule['weight'] for rule in rules)
+        if not math.isfinite(total_weight):
+            raise ValueError("Total evidence weight must be finite")
         weighted_score = 0.0
 
         for rule in rules:
@@ -137,17 +149,26 @@ class IdentityMatcher:
             val_b = self.normalize(val_b, rule.get("normalizer", "generic"))
 
             # 使用指定方法对比
+            if not val_a or not val_b:
+                continue
             score = self.compare(val_a, val_b, rule.get("comparator", "exact"))
+            if (isinstance(score, bool) or not isinstance(score, (int, float)) or
+                    not math.isfinite(score) or not 0 <= score <= 1):
+                raise ValueError("Comparison scores must be finite and in [0, 1]")
             weighted_score += score * rule["weight"]
-            total_weight += rule["weight"]
 
         return weighted_score / total_weight if total_weight > 0 else 0.0
+
+    def compare(self, value_a: str, value_b: str, comparator: str) -> float:
+        if comparator != "exact":
+            raise ValueError(f"Unsupported comparator: {comparator}")
+        return 1.0 if value_a == value_b else 0.0
 
     def normalize(self, value: str, normalizer: str) -> str:
         if normalizer == "email":
             return value.lower().strip()
         elif normalizer == "phone":
-            return re.sub(r"[^\d+]", "", value)  # 只保留数字
+            return re.sub(r"[^\d+]", "", value)  # 保留数字与加号；不等同于完整的 E.164 校验
         elif normalizer == "name":
             return self.expand_nicknames(value.lower().strip())
         return value.lower().strip()

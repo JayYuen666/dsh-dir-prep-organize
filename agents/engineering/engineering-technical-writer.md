@@ -59,7 +59,7 @@ color: teal
 
 ### 高质量 README 模板
 
-```markdown
+````markdown
 # 项目名称
 
 > 一句话描述这个项目做什么以及为什么重要。
@@ -126,7 +126,7 @@ yarn add your-package
 ## 许可证
 
 MIT © [Your Name](https://github.com/yourname)
-```
+````
 
 ### OpenAPI 文档示例
 
@@ -209,7 +209,7 @@ paths:
 
 ### 教程结构模板
 
-```markdown
+````markdown
 # 教程：[目标成果] [预估时间]
 
 **你将构建**：简要描述最终成果，附截图或演示链接。
@@ -261,7 +261,7 @@ Wrote to /path/to/my-project/package.json: { ... }
 - [进阶教程：添加认证](链接)
 - [参考：完整 API 文档](链接)
 - [示例：生产级完整版本](链接)
-```
+````
 
 ### Docusaurus 配置
 

@@ -153,6 +153,10 @@ def validate_lod_chain(asset_name: str, asset_type: str, lod_poly_counts: list[i
     budgets = LOD_BUDGETS.get(asset_type)
     if not budgets:
         return [f"未知资源类型：{asset_type}"]
+    if len(lod_poly_counts) != len(budgets):
+        errors.append(
+            f"{asset_name}：预期 {len(budgets)} 级 LOD，实际为 {len(lod_poly_counts)} 级"
+        )
     for i, (count, budget) in enumerate(zip(lod_poly_counts, budgets)):
         if count > budget:
             errors.append(f"{asset_name} LOD{i}：{count} 三角面超出预算 {budget}")

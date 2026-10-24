@@ -264,9 +264,13 @@ export function trackEvent(eventName: string, properties?: Record<string, any>) 
 
 // 简单的 A/B 测试 hook
 export function useABTest(testName: string, variants: string[]) {
+  if (variants.length === 0) throw new Error('An experiment needs at least one variant');
   const [variant, setVariant] = useState<string>('');
+  // 内联数组每次渲染都是新的引用；依赖它的实际内容，而不是引用。
+  const variantsKey = JSON.stringify(variants);
 
   useEffect(() => {
+    const experimentVariants: string[] = JSON.parse(variantsKey);
     // 获取或创建用户 ID 以确保一致的体验
     let userId = localStorage.getItem('user_id');
     if (!userId) {
@@ -280,8 +284,8 @@ export function useABTest(testName: string, variants: string[]) {
       return a & a;
     }, 0);
 
-    const variantIndex = Math.abs(hash) % variants.length;
-    const assignedVariant = variants[variantIndex];
+    const variantIndex = Math.abs(hash) % experimentVariants.length;
+    const assignedVariant = experimentVariants[variantIndex];
 
     setVariant(assignedVariant);
 
@@ -291,7 +295,7 @@ export function useABTest(testName: string, variants: string[]) {
       variant: assignedVariant,
       user_id: userId,
     });
-  }, [testName, variants]);
+  }, [testName, variantsKey]);
 
   return variant;
 }

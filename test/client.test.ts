@@ -15,7 +15,7 @@
 //   · 被宿主拒绝的保存不得显示成功（mutate 不 reject，故复读快照比对）；
 //   · 导入省略计数必须显示；
 //   · crypto.randomUUID 不可用时新增模板仍可用。
-import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, it, vi } from "vitest";
 import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
@@ -169,12 +169,19 @@ function placeholders(template: string): Set<string> {
  * 之后 `TranslateNS<NS>` 的键域是「本包键 ∪ common 命名空间键」（官方 `LocaleKeysOf`），
  * 按 `UiMessages` 索引那条并集在编译期就红。展开成字面量是为了拿到隐式索引签名
  * （`UiMessages` 是 interface，本身给不出）。
+ *
+ * 每次取值都登记进 tCalls：文案里的占位符与调用侧 params 之间没有任何编译期约束
+ * （Translate 的 params 是 Record<string, unknown>），写错占位名只会把 `{skip}` 原样
+ * 渲染给用户。文件尾的 afterAll 按登记逐条比对两边集合。
  */
+const tCalls: { key: string; params: Record<string, unknown> }[] = [];
+
 function localeText(
   dict: Record<string, string>,
   key: string,
   params: Record<string, unknown>,
 ): string {
+  tCalls.push({ key, params });
   return fillTemplate(dict[key] ?? key, params);
 }
 
@@ -1085,6 +1092,20 @@ describe("rawOrganizeTimeoutMsOf 对同源超时位的快照净化", () => {
     );
     assert.ok(organizeFetchTimeoutMs(MAX_TIMER_MS) <= MAX_TIMER_MS);
   });
+
+  it("organizeFetchTimeoutMs：非有限数与 ≤0 一律回落，不折算成极小超时", () => {
+    // `NaN + 余量` 还是 NaN，而 `Math.max(NaN, 1)` 与 `Math.min(NaN, MAX_TIMER_MS)` 都返回
+    // NaN——`setTimeout(NaN)` 等价 0ms，正是本文件要消灭的那种静默失败。
+    for (const raw of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -5]) {
+      const timeout = organizeFetchTimeoutMs(raw);
+      assert.equal(
+        Number.isSafeInteger(timeout),
+        true,
+        `${String(raw)}：必须是可安全 setTimeout 的整数`,
+      );
+      assert.equal(timeout, 125_000, `${String(raw)}：回落到默认时限 + 余量，不折算成极小值`);
+    }
+  });
 });
 describe("persistError（写入回执核验，文本取自卡片字典）", () => {
   beforeEach(domFixtureSetup);
@@ -1456,7 +1477,7 @@ describe("OrganizeButton", () => {
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     assert.match(
       buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "",
-      /目录上下文失败: 无法确定会话 cwd/u,
+      /目录上下文读取失败：无法确定会话 cwd/u,
       "host 给的原文必须原样带出，不能吞成通用文案",
     );
 
@@ -1469,7 +1490,7 @@ describe("OrganizeButton", () => {
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     assert.match(
       buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "",
-      /读取模型失败: 没有可用的模型服务/u,
+      /读取模型失败：没有可用的模型服务/u,
     );
 
     stubFetch((url) =>
@@ -1480,7 +1501,7 @@ describe("OrganizeButton", () => {
     await press(buttonByField(FIELD_ORGANIZE_BTN));
     assert.match(
       buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "",
-      /目录上下文失败: 未知错误/u,
+      /目录上下文读取失败：未知错误/u,
       "非对象回执连 error 都取不到 → 回落未知错误而不是崩",
     );
 
@@ -1660,6 +1681,36 @@ describe("OrganizeButton", () => {
     const organizeCalls = fetchCalls.filter((call) => call.url.startsWith(ORGANIZE_URL));
     assert.equal(organizeCalls.length, 1, "第二次点击被 loading 门禁");
     assert.deepEqual(writes, ["迟到结果"], "未作废的首个结果照常写回");
+  });
+
+  it("同一轮事件里连点两次只发一次请求（渲染态 loading 拦不住同步重入）", async () => {
+    // `setLoading(true)` 只是排了一次重渲染：同一个事件循环里第二次点击读到的 `loading`
+    // 仍是旧值，两道门都拦不住，于是第二发请求真的打到宿主——用户只看到一份结果，
+    // 而模型侧已经计费两次。挡住它的是同步置位的 ref，不是渲染态。
+    const gate = Promise.withResolvers<undefined>();
+    stubFetch(async (url) => {
+      if (url.startsWith(ORGANIZE_URL)) {
+        await gate.promise;
+        return { body: { ok: true, content: "迟到结果" } };
+      }
+      return { body: { ok: true, csrf: "t", cwd: "/w", entries: [], provider: "p", model: "m" } };
+    });
+    const { organize } = mountAll();
+    await mount(React.createElement(organize, kitProps()));
+    const button = buttonByField(FIELD_ORGANIZE_BTN);
+    assert.ok(button, "主键存在");
+    await act(async () => {
+      const onClick = handlerOf(button, "onClick");
+      onClick();
+      onClick();
+    });
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await flush();
+    const calls = fetchCalls.filter((call) => call.url.startsWith(ORGANIZE_URL));
+    assert.equal(calls.length, 1, "同步重入只该发一枪");
+    assert.deepEqual(writes, ["迟到结果"], "在途那一发的结果照常写回");
   });
 
   it("在途成功响应被卸载作废（seq 代次校验：不写回、不 setState）", async () => {
@@ -2279,6 +2330,9 @@ describe("TemplatesCard 编辑与保存", () => {
     const { ctx } = await openCard();
     await press(buttonContaining("新增模板"));
     assert.equal(rowValue(CLS_NAME, 1), "新模板 2");
+    // 正文留空的新行会被 sanitize 剔除（占位提示只住在 placeholder），先填正文再存。
+    await type(inputByClass(CLS_TEXT, 1), "正文乙");
+    await blur(inputByClass(CLS_TEXT, 1));
     await press(saveButton());
     assert.match(writeJson(ctx, 0), /tpl-11111111-1111-4111-8111-111111111111/u);
     assert.equal(uuids.length, 1, "id 取自 crypto.randomUUID");
@@ -2292,9 +2346,19 @@ describe("TemplatesCard 编辑与保存", () => {
     });
     const { ctx } = await openCard();
     await press(buttonContaining("新增模板"));
+    await type(inputByClass(CLS_TEXT, 1), "正文乙");
+    await blur(inputByClass(CLS_TEXT, 1));
     await press(saveButton());
     assert.match(writeJson(ctx, 0), /"id":"tpl-[0-9a-z]+-[0-9a-z]+"/u, "兜底 id 形状");
     assert.equal(errText(), "", "兜底路径不报错");
+  });
+
+  it("新增模板不填正文直接保存 → 空正文行被剔除，占位提示不会变成数据", async () => {
+    const { ctx } = await openCard();
+    await press(buttonContaining("新增模板"));
+    assert.equal(rowValue(CLS_TEXT, 1), "", "新行正文为空，提示语只住在 placeholder");
+    await press(saveButton());
+    assert.deepEqual(ctx.scope.writes[0]?.value, [TPL], "空正文的新行不下发；落盘的只有原有条目");
   });
 
   it("外部改动且本地无编辑 → 草稿跟随；有未保存编辑 → 保留本地", async () => {
@@ -2392,6 +2456,36 @@ describe("TemplatesCard 恢复默认", () => {
     await flush();
     assert.equal(errText(), "", "保存本身不受影响");
     assert.equal(buttonContaining("恢复默认")?.disabled, false, "保存结束后恢复可用");
+  });
+
+  it("保存在途时正文也不可编辑：回写会整份覆盖在途期间的改动", async () => {
+    // 卡底三个按钮禁用只挡住了按钮。一次往返里用户仍能改行、改允许目录、导入角色，
+    // 而保存用的是点击那一刻的草稿快照，回写会把这些改动整份盖掉且没有任何提示。
+    stubBuiltinTemplates();
+    const gate = Promise.withResolvers<undefined>();
+    const { ctx } = await openCard();
+    await press(buttonContaining("新增模板"));
+    await flush();
+    assert.equal(inputByClass(CLS_NAME, 0)?.hasAttribute("disabled"), false, "空闲态正文可编辑");
+    const rootsInput = container.querySelector<HTMLElement>('[data-field="allow-roots"] input');
+    assert.ok(rootsInput, "允许目录输入框存在");
+    assert.equal(rootsInput.hasAttribute("disabled"), false, "空闲态允许目录可编辑");
+    ctx.scope.holdSet = gate.promise;
+    await press(saveButton());
+    assert.equal(inputByClass(CLS_NAME, 0)?.hasAttribute("disabled"), true, "在途期间行输入禁用");
+    assert.equal(inputByClass(CLS_TEXT, 0)?.hasAttribute("disabled"), true, "在途期间正文域禁用");
+    assert.equal(
+      inputByClass("input.dpic-importpath", 0)?.hasAttribute("disabled"),
+      true,
+      "在途期间导入框禁用",
+    );
+    assert.equal(rootsInput.hasAttribute("disabled"), true, "在途期间允许目录禁用");
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await flush();
+    assert.equal(errText(), "", "保存本身不受影响");
+    assert.equal(inputByClass(CLS_NAME, 0)?.hasAttribute("disabled"), false, "结束后恢复编辑");
   });
 });
 
@@ -3062,6 +3156,24 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
   beforeEach(domFixtureSetup);
 
   afterEach(domFixtureTeardown);
+
+  /** 调用侧参数与模板占位符的集合比对（见 tCalls 处的说明）。挂在本文件最后一个
+   *  describe 的 afterAll 上：全部用例跑完时登记面才是完整的。 */
+  afterAll(() => {
+    assert.ok(tCalls.length > 50, "登记面不该是空的：t 一次都没被调用说明桩接错了");
+    const table: Record<string, string> = UI_MESSAGES.zh;
+    for (const { key, params } of tCalls) {
+      const zh = table[key];
+      assert.ok(zh !== undefined, `t 落到字典外的键 ${key}（回落渲染键名本身给用户）`);
+      const expected = [...placeholders(zh)].toSorted();
+      const actual = Object.keys(params).toSorted();
+      assert.deepEqual(
+        actual,
+        expected,
+        `${key} 的调用参数 ${actual.join(",")} 与占位符 ${expected.join(",")} 不一致`,
+      );
+    }
+  });
 
   /** 数据全 ASCII 的快照：模板名/正文属用户数据（刻意不进字典），en 用例里
    *  整卡 textContent 因此必须一个汉字都没有。 */

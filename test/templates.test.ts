@@ -406,6 +406,14 @@ describe("condenseRoleBody", () => {
     assert.equal(condenseRoleBody("```\ncode\n```"), "");
     assert.equal(condenseRoleBody("   \n \t "), "");
   });
+
+  it("围栏没有结束标记时抛错，不静默丢掉后半篇", () => {
+    // 漏写结束围栏时旧实现会把其后每一行都当围栏内容跳过，而「提炼结果非空」那道判据
+    // 看不出来——少了一半的正文照样非空，生成物会静默失真。
+    const body = ["## 身份", "你是测试员。", "```python", "def f():", "    return 1"].join("\n");
+    assert.throws(() => condenseRoleBody(body), /代码围栏没有结束标记/u);
+    assert.throws(() => condenseRoleBody(body), /第 3 行/u, "报出的是围栏起始行");
+  });
 });
 
 // ── groupLabelOf / 目录映射 ────────────────────────────────────────────────

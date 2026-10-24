@@ -227,8 +227,8 @@ lifecycle_automation = {
 SELECT
     channel_code_name AS 渠道,
     COUNT(DISTINCT user_id) AS 新增好友数,
-    SUM(CASE WHEN first_reply_time IS NOT NULL THEN 1 ELSE 0 END) AS 首次互动数,
-    ROUND(SUM(CASE WHEN first_reply_time IS NOT NULL THEN 1 ELSE 0 END)
+    COUNT(DISTINCT CASE WHEN first_reply_time IS NOT NULL THEN user_id END) AS 首次互动数,
+    ROUND(COUNT(DISTINCT CASE WHEN first_reply_time IS NOT NULL THEN user_id END)
         * 100.0 / COUNT(DISTINCT user_id), 1) AS 互动转化率
 FROM scrm_user_channel
 WHERE add_date BETWEEN '{start_date}' AND '{end_date}'

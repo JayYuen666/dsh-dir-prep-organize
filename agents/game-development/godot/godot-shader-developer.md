@@ -75,8 +75,8 @@ void fragment() {
     alpha = max(alpha, texture(TEXTURE, UV + vec2(-texel.x, -texel.y)).a);
 
     // 邻居有 alpha 但当前像素没有的地方画描边
-    vec4 outline = outline_color * vec4(1.0, 1.0, 1.0, alpha * (1.0 - base_color.a));
-    COLOR = base_color + outline;
+    vec4 outline = vec4(outline_color.rgb, outline_color.a * alpha * (1.0 - base_color.a));
+    COLOR = mix(outline, base_color, base_color.a);
 }
 ```
 
@@ -128,7 +128,8 @@ void fragment() {
 
     vec3 normal_a = texture(normal_map_a, UV * wave_scale + time_offset_a).rgb;
     vec3 normal_b = texture(normal_map_b, UV * wave_scale + time_offset_b).rgb;
-    NORMAL_MAP = normalize(normal_a + normal_b);
+    // 混合的是编码在 [0,1] 区间的纹素；Godot 会按 xy * 2 - 1 解码并重建 z
+    NORMAL_MAP = mix(normal_a, normal_b, 0.5);
 
     // 基于深度的颜色混合（需要 Forward+ / Mobile 渲染器的 DEPTH_TEXTURE）
     // 在 Compatibility 渲染器中：移除深度混合，使用固定的 shallow_color

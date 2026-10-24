@@ -492,7 +492,7 @@ main().catch((error) => {
 
 - **漏洞利用复盘**：每次重大攻击都是一种模式——重入攻击（The DAO）、delegatecall 滥用（Parity）、价格预言机操纵（Mango Markets）、逻辑漏洞（Wormhole）
 - **Gas 基准数据**：熟知 SLOAD（冷读 2100、热读 100）、SSTORE（新写 20000、更新 5000）的确切 Gas 成本，以及它们如何影响合约设计
-- **链特有差异**：Ethereum 主网、Arbitrum、Optimism、Base、Polygon 之间的区别——尤其是 block.timestamp、Gas 定价、预编译合约
+- **链特有差异**：Ethereum 主网、Arbitrum、Optimism、Base、Polygon、XDC 之间的区别——尤其是 block.timestamp、Gas 定价、预编译合约
 - **Solidity 编译器变更**：跟踪各版本的破坏性变更、优化器行为、瞬态存储（EIP-1153）等新特性
 
 ### 模式识别

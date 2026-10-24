@@ -65,11 +65,12 @@ color: orange
 
 ## 技术交付物
 
-### Spark 管线（PySpark + Delta Lake）
+### Spark 管线（开源 PySpark + Delta Lake）
 
 ```python
+from datetime import date
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, sha2, concat_ws, lit
+from pyspark.sql.functions import col, current_timestamp, sha2, concat_ws, lit, input_file_name
 from delta.tables import DeltaTable
 
 spark = SparkSession.builder \
@@ -82,7 +83,7 @@ def ingest_bronze(source_path: str, bronze_table: str, source_system: str) -> in
     df = spark.read.format("json").option("inferSchema", "true").load(source_path)
     df = df.withColumn("_ingested_at", current_timestamp()) \
            .withColumn("_source_system", lit(source_system)) \
-           .withColumn("_source_file", col("_metadata.file_path"))
+           .withColumn("_source_file", input_file_name())
     df.write.format("delta").mode("append").option("mergeSchema", "true").save(bronze_table)
     return df.count()
 
@@ -106,8 +107,18 @@ def upsert_silver(bronze_table: str, silver_table: str, pk_cols: list[str]) -> N
         source.write.format("delta").mode("overwrite").save(silver_table)
 
 # ── Gold：业务聚合指标 ─────────────────────────────────────────
-def build_gold_daily_revenue(silver_orders: str, gold_table: str) -> None:
-    df = spark.read.format("delta").load(silver_orders)
+def build_gold_daily_revenue(
+    silver_orders: str, gold_table: str, start_date: date, end_date: date
+) -> None:
+    # 重新计算一个明确的左闭右开日期窗口，包括没有销售的日期。
+    # 如果从已完成的行推导边界，没有数据的那一天会残留过期的收入。
+    if start_date >= end_date:
+        raise ValueError("start_date must be earlier than end_date")
+    predicate = (
+        f"order_date >= '{start_date.isoformat()}' "
+        f"AND order_date < '{end_date.isoformat()}'"
+    )
+    df = spark.read.format("delta").load(silver_orders).filter(predicate)
     gold = df.filter(col("status") == "completed") \
              .groupBy("order_date", "region", "product_category") \
              .agg({"revenue": "sum", "order_id": "count"}) \
@@ -115,9 +126,13 @@ def build_gold_daily_revenue(silver_orders: str, gold_table: str) -> None:
              .withColumnRenamed("count(order_id)", "order_count") \
              .withColumn("_refreshed_at", current_timestamp())
     gold.write.format("delta").mode("overwrite") \
-        .option("replaceWhere", f"order_date >= '{gold['order_date'].min()}'") \
+        .option("replaceWhere", predicate) \
         .save(gold_table)
 ```
+
+`_source_file` 必须记录 Spark 实际读取的文件，而不是数据里一个名叫 `_metadata.file_path` 的字段。这个开源 Spark 示例使用 [PySpark `input_file_name`](https://spark.apache.org/docs/3.5.6/api/python/reference/pyspark.sql/api/pyspark.sql.functions.input_file_name.html)，这样即使源 JSON 里含有 `_metadata`，也无法冒充物理文件的 URI。请按你实际部署的运行环境调整来源记录方式；[Databricks 文件元数据 API](https://docs.databricks.com/aws/en/ingestion/file-metadata-column) 也说明了它与源数据中名为 `_metadata` 的列之间的冲突。
+
+针对请求的日期窗口，要基于完整的 Silver 快照刷新 Gold 层，而不是一批不完整的事件。Delta 的 `replaceWhere` 即使在聚合结果为空时，也会精确地替换这个窗口；窗口之外的日期必须保持不变。保持它默认开启的谓词约束检查。例如，一笔订单退款后刷新 `[2026-09-01, 2026-09-02)`，必须移除 9 月 1 日的旧收入，同时保留 9 月 2 日及之后的结果。参见 [Delta 选择性覆盖写入](https://docs.delta.io/delta-batch/#selective-overwrite)。
 
 ### dbt 数据质量契约
 

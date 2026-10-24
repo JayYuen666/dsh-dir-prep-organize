@@ -58,29 +58,36 @@ color: purple
 
 ### 全面的 API 测试套件示例
 ```javascript
-// 包含安全和性能的高级 API 测试自动化
+// 保存为 tests/api.spec.ts。只能在获得授权的测试环境中运行。
+// 包含安全与性能测试的高级 API 自动化测试
 import { test, expect } from '@playwright/test';
 import { performance } from 'perf_hooks';
 
-describe('User API Comprehensive Testing', () => {
+test.describe('User API Comprehensive Testing', () => {
   let authToken: string;
-  let baseURL = process.env.API_BASE_URL;
+  const baseURL = process.env.API_BASE_URL;
+  if (!baseURL || !process.env.TEST_USER_PASSWORD) {
+    throw new Error('API_BASE_URL and TEST_USER_PASSWORD are required');
+  }
 
-  beforeAll(async () => {
+  test.beforeAll(async () => {
     // 认证并获取 token
     const response = await fetch(`${baseURL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email: 'test@example.com',
-        password: 'secure_password'
+        password: process.env.TEST_USER_PASSWORD
       })
     });
+    expect(response.status).toBe(200);
     const data = await response.json();
+    expect(typeof data.token).toBe('string');
+    expect(data.token.length).toBeGreaterThan(0);
     authToken = data.token;
   });
 
-  describe('Functional Testing', () => {
+  test.describe('Functional Testing', () => {
     test('should create user with valid data', async () => {
       const userData = {
         name: 'Test User',
@@ -100,7 +107,7 @@ describe('User API Comprehensive Testing', () => {
       expect(response.status).toBe(201);
       const user = await response.json();
       expect(user.email).toBe(userData.email);
-      expect(user.password).toBeUndefined(); // 密码不应被返回
+      expect(user.password).toBeUndefined(); // 不应返回密码
     });
 
     test('should handle invalid input gracefully', async () => {
@@ -126,7 +133,7 @@ describe('User API Comprehensive Testing', () => {
     });
   });
 
-  describe('Security Testing', () => {
+  test.describe('Security Testing', () => {
     test('should reject requests without authentication', async () => {
       const response = await fetch(`${baseURL}/users`, {
         method: 'GET'
@@ -136,17 +143,20 @@ describe('User API Comprehensive Testing', () => {
 
     test('should prevent SQL injection attempts', async () => {
       const sqlInjection = "'; DROP TABLE users; --";
-      const response = await fetch(`${baseURL}/users?search=${sqlInjection}`, {
+      const response = await fetch(`${baseURL}/users?search=${encodeURIComponent(sqlInjection)}`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       expect(response.status).not.toBe(500);
-      // 应返回安全的结果或 400，而非崩溃
+      // 应返回安全的结果或 400，而不是崩溃
     });
 
     test('should enforce rate limiting', async () => {
+      // 使用单独的账号/token：耗尽它的配额不能影响其他测试。
+      const rateLimitToken = process.env.RATE_LIMIT_TEST_TOKEN;
+      if (!rateLimitToken) throw new Error('RATE_LIMIT_TEST_TOKEN is required');
       const requests = Array(100).fill(null).map(() =>
         fetch(`${baseURL}/users`, {
-          headers: { 'Authorization': `Bearer ${authToken}` }
+          headers: { 'Authorization': `Bearer ${rateLimitToken}` }
         })
       );
 
@@ -156,7 +166,7 @@ describe('User API Comprehensive Testing', () => {
     });
   });
 
-  describe('Performance Testing', () => {
+  test.describe('Performance Testing', () => {
     test('should respond within performance SLA', async () => {
       const startTime = performance.now();
 
@@ -164,30 +174,30 @@ describe('User API Comprehensive Testing', () => {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
 
+      await response.arrayBuffer(); // 把响应体的传输时间也计入延迟
       const endTime = performance.now();
       const responseTime = endTime - startTime;
 
       expect(response.status).toBe(200);
-      expect(responseTime).toBeLessThan(200); // 低于 200ms SLA
+      expect(responseTime).toBeLessThan(200); // 低于 200ms 的 SLA
     });
 
     test('should handle concurrent requests efficiently', async () => {
       const concurrentRequests = 50;
-      const requests = Array(concurrentRequests).fill(null).map(() =>
-        fetch(`${baseURL}/users`, {
+      const samples = await Promise.all(Array.from({ length: concurrentRequests }, async () => {
+        const start = performance.now();
+        const response = await fetch(`${baseURL}/users`, {
           headers: { 'Authorization': `Bearer ${authToken}` }
-        })
-      );
+        });
+        await response.arrayBuffer();
+        return { status: response.status, durationMs: performance.now() - start };
+      }));
 
-      const startTime = performance.now();
-      const responses = await Promise.all(requests);
-      const endTime = performance.now();
-
-      const allSuccessful = responses.every(r => r.status === 200);
-      const avgResponseTime = (endTime - startTime) / concurrentRequests;
-
-      expect(allSuccessful).toBe(true);
-      expect(avgResponseTime).toBeLessThan(500);
+      expect(samples.every(sample => sample.status === 200)).toBe(true);
+      const averageLatency = samples.reduce((sum, sample) => sum + sample.durationMs, 0)
+        / samples.length;
+      expect(averageLatency).toBeLessThan(500);
+      // 用整批耗时除以并发数衡量的是吞吐量，不是单个请求的延迟。
     });
   });
 });

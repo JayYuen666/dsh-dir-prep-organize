@@ -72,15 +72,22 @@ SELECT * FROM comments WHERE post_id = ?;
 EXPLAIN ANALYZE
 SELECT
     p.id, p.title, p.content,
-    json_agg(json_build_object(
-        'id', c.id,
-        'content', c.content,
-        'author', c.author
-    )) as comments
+    COALESCE(
+        json_agg(json_build_object(
+            'id', c.id,
+            'content', c.content,
+            'author', c.author
+        ) ORDER BY c.id) FILTER (WHERE c.id IS NOT NULL),
+        '[]'::json
+    ) AS comments
 FROM posts p
 LEFT JOIN comments c ON c.post_id = p.id
 WHERE p.user_id = 123
 GROUP BY p.id;
+
+-- 回归用例：没有评论 => []；两条评论 => 两个按顺序排列的对象。
+-- FILTER 去掉 LEFT JOIN 产生的那一行全为 NULL 的合成行；COALESCE 让空聚合
+-- 返回和有数据时相同形状的数组。
 
 -- 检查查询计划：
 -- 关注：Seq Scan(差)、Index Scan(好)、Bitmap Heap Scan(尚可)
@@ -152,11 +159,16 @@ const supabase = createClient(
   }
 );
 
-// Serverless 场景使用事务模式连接池
-const pooledUrl = process.env.DATABASE_URL?.replace(
-  '5432',
-  '6543' // 事务模式端口
-);
+// Serverless 场景使用服务商提供的事务模式连接池连接串。
+// 只有当服务商使用相同的主机/凭据、且端口为 6543 时才这样做：
+// 修改的是 URL 的端口，绝不能替换凭据或数据库名里恰好匹配的子串。
+function transactionPoolUrl(connectionString?: string): string | undefined {
+  if (!connectionString) return undefined;
+  const url = new URL(connectionString);
+  url.port = '6543';
+  return url.toString();
+}
+const pooledUrl = transactionPoolUrl(process.env.DATABASE_URL);
 ```
 
 ## 关键规则

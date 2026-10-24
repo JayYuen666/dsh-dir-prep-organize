@@ -106,6 +106,8 @@ public class PlayerController : NetworkBehaviour
 
     public override void OnNetworkSpawn()
     {
+        // 用出生点初始化权威位置，而不是 Vector3.zero
+        if (IsServer) _serverPosition.Value = transform.position;
         if (!IsOwner) return;
         _clientPredictedPosition = transform.position;
     }
@@ -144,6 +146,62 @@ public class PlayerController : NetworkBehaviour
 }
 ```
 
+### Lobby 与匹配集成
+
+以下是上游的最小集成示例，调用前需完成 UGS 初始化与认证。实际项目还应补齐退出房间、对象销毁时的心跳取消、异常处理及主机迁移；不要把这个循环直接视为完整的房间生命周期实现。
+
+```csharp
+public class LobbyManager : MonoBehaviour
+{
+    private Lobby _currentLobby;
+    private const string KEY_MAP = "SelectedMap";
+    private const string KEY_GAME_MODE = "GameMode";
+
+    public async Task<Lobby> CreateLobby(string lobbyName, int maxPlayers, string mapName)
+    {
+        var options = new CreateLobbyOptions
+        {
+            IsPrivate = false,
+            Data = new Dictionary<string, DataObject>
+            {
+                { KEY_MAP, new DataObject(DataObject.VisibilityOptions.Public, mapName) },
+                { KEY_GAME_MODE, new DataObject(DataObject.VisibilityOptions.Public, "Deathmatch") }
+            }
+        };
+
+        _currentLobby = await LobbyService.Instance.CreateLobbyAsync(lobbyName, maxPlayers, options);
+        StartHeartbeat(); // 定期发送心跳，保持房间活跃
+        return _currentLobby;
+    }
+
+    public async Task<List<Lobby>> QuickMatchLobbies()
+    {
+        var queryOptions = new QueryLobbiesOptions
+        {
+            Filters = new List<QueryFilter>
+            {
+                new QueryFilter(QueryFilter.FieldOptions.AvailableSlots, "1", QueryFilter.OpOptions.GE)
+            },
+            Order = new List<QueryOrder>
+            {
+                new QueryOrder(false, QueryOrder.FieldOptions.Created)
+            }
+        };
+        var response = await LobbyService.Instance.QueryLobbiesAsync(queryOptions);
+        return response.Results;
+    }
+
+    private async void StartHeartbeat()
+    {
+        while (_currentLobby != null)
+        {
+            await LobbyService.Instance.SendHeartbeatPingAsync(_currentLobby.Id);
+            await Task.Delay(15000); // 每 15 秒一次；上游示例按 30 秒活跃超时设计
+        }
+    }
+}
+```
+
 ### NetworkVariable 设计参考
 ```csharp
 // 持久且同步到所有客户端加入时的状态 → NetworkVariable
@@ -165,6 +223,15 @@ public void RequestFireServerRpc(Vector3 aimDirection)
     if (!CanFire()) return; // 服务端验证
     PerformFire(aimDirection);
     OnFireClientRpc(aimDirection);
+}
+
+// 避免：每帧设置 NetworkVariable
+private void Update()
+{
+    // 反例：每帧写入位置可能产生不必要的网络流量
+    // Position.Value = transform.position;
+
+    // 建议：使用 NetworkTransform 组件或自定义预测
 }
 ```
 

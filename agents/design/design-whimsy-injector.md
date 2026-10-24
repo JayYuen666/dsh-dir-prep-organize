@@ -199,6 +199,24 @@ color: pink
   50% { transform: translateX(-50%) translateY(-20px) scale(1.5); opacity: 1; }
   100% { transform: translateX(-50%) translateY(-30px) scale(1); opacity: 0; }
 }
+
+/* 尊重用户在系统/浏览器中设置的减少动效偏好，同时保留可见的反馈。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn-whimsy,
+  .btn-whimsy::before,
+  .loading-whimsy .dot,
+  .form-field-success::after,
+  .easter-egg-zone,
+  .easter-egg-zone:hover,
+  .progress-celebration.completed::after {
+    animation: none;
+    transition: none;
+  }
+  .btn-whimsy:hover,
+  .btn-whimsy:active {
+    transform: none;
+  }
+}
 ```
 
 ### 趣味文案库
@@ -318,7 +336,11 @@ class EasterEggManager {
     // 基于点击的彩蛋
     let clickSequence = [];
     document.addEventListener('click', (e) => {
-      if (e.target.classList.contains('easter-egg-zone')) {
+      // 区域内的图标和文字会把点击从它们自己的元素冒泡上来。
+      const zone = e.target instanceof Element
+        ? e.target.closest('.easter-egg-zone')
+        : null;
+      if (zone) {
         clickSequence.push(Date.now());
         // 只保留 2 秒内的点击
         clickSequence = clickSequence.filter(time => Date.now() - time < 2000);

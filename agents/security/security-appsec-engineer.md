@@ -187,7 +187,7 @@ app.post('/api/import', (req, res) => {
 #!/usr/bin/env python3
 """
 面向 CI/CD 流水线的依赖安全扫描集成。
-封装多款 SCA 工具并强制执行组织策略。
+封装多种 SCA 工具，并强制执行组织策略。
 """
 
 import json
@@ -229,54 +229,82 @@ class DependencyScanner:
 
     # 已知误报或已接受的风险（附理由）
     SUPPRESSED = {
-        "CVE-2023-XXXXX": "在我们的配置下不可利用 —— 已由 AppSec 团队于 2024-01-15 验证",
+        "CVE-2023-XXXXX": "Not exploitable in our configuration — validated by AppSec team 2024-01-15",
     }
 
-    def scan_npm(self, project_path: Path) -> list[VulnFinding]:
-        """使用 npm audit 扫描 Node.js 依赖。"""
+    @staticmethod
+    def audit_json(command: list[str], project_path: Path) -> dict:
+        """退出码 1 可能表示有发现；工具出错绝不能当作扫描通过。"""
         result = subprocess.run(
-            ["npm", "audit", "--json", "--production"],
-            cwd=project_path, capture_output=True, text=True
+            command, cwd=project_path, capture_output=True, text=True
         )
-        findings = []
-        if result.stdout:
+        try:
             audit = json.loads(result.stdout)
-            for vuln_id, vuln in audit.get("vulnerabilities", {}).items():
-                findings.append(VulnFinding(
-                    package=vuln_id,
-                    version=vuln.get("range", "unknown"),
-                    severity=Severity(vuln.get("severity", "low")),
-                    cve=vuln.get("via", [{}])[0].get("url", "N/A") if vuln.get("via") else "N/A",
-                    fixed_version=vuln.get("fixAvailable", {}).get("version", "N/A")
-                        if isinstance(vuln.get("fixAvailable"), dict) else "N/A",
-                    description=vuln.get("via", [{}])[0].get("title", "")
-                        if isinstance(vuln.get("via", [None])[0], dict) else str(vuln.get("via", "")),
-                ))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{command[0]} did not produce valid JSON") from exc
+        if result.returncode not in (0, 1) or not isinstance(audit, dict) or audit.get("error"):
+            raise RuntimeError(f"{command[0]} failed (exit {result.returncode})")
+        return audit
+
+    def scan_npm(self, project_path: Path) -> list[VulnFinding]:
+        """使用 npm audit 当前的 JSON 报告扫描 Node.js 依赖。"""
+        audit = self.audit_json(["npm", "audit", "--json", "--omit=dev"], project_path)
+        vulnerabilities = audit.get("vulnerabilities")
+        if not isinstance(vulnerabilities, dict):
+            raise RuntimeError("npm audit report is missing vulnerabilities")
+        findings = []
+        for package, vuln in vulnerabilities.items():
+            # via 里可能是安全公告对象，也可能是间接依赖的包名。
+            via = vuln.get("via", [])
+            advisories = [item for item in via if isinstance(item, dict)]
+            fix = vuln.get("fixAvailable")
+            # npm 的级别是 info、low、moderate、high 和 critical。
+            severity = {"info": "low", "moderate": "medium"}.get(vuln.get("severity"), vuln.get("severity"))
+            if severity not in {item.value for item in Severity}:
+                raise RuntimeError(f"npm audit returned unknown severity for {package}")
+            findings.append(VulnFinding(
+                package=package,
+                version=vuln.get("range", "unknown"),
+                severity=Severity(severity),
+                cve=advisories[0].get("url", "N/A") if advisories else "N/A",
+                fixed_version=(fix.get("version", "N/A") if isinstance(fix, dict)
+                               else "available" if fix is True else "N/A"),
+                description="; ".join(item.get("title", "") for item in advisories)
+                    or "Indirect dependency vulnerability: " + ", ".join(map(str, via)),
+            ))
         return findings
 
     def scan_python(self, project_path: Path) -> list[VulnFinding]:
-        """使用 pip-audit 扫描 Python 依赖。"""
-        result = subprocess.run(
-            ["pip-audit", "--format=json", "--desc"],
-            cwd=project_path, capture_output=True, text=True
-        )
+        """审计 requirements 文件；没有时审计已安装本项目的当前环境。"""
+        command = ["pip-audit", "--format=json", "--desc"]
+        if (project_path / "requirements.txt").exists():
+            command.extend(["-r", "requirements.txt"])
+        audit = self.audit_json(command, project_path)
+        dependencies = audit.get("dependencies")
+        if not isinstance(dependencies, list):
+            raise RuntimeError("pip-audit report is missing dependencies")
         findings = []
-        if result.stdout:
-            for vuln in json.loads(result.stdout):
+        for dependency in dependencies:
+            if dependency.get("skip_reason"):
+                raise RuntimeError(f"pip-audit skipped {dependency['name']}")
+            vulnerabilities = dependency.get("vulns")
+            if not isinstance(vulnerabilities, list):
+                raise RuntimeError("pip-audit dependency is missing vulns")
+            for vuln in vulnerabilities:
                 findings.append(VulnFinding(
-                    package=vuln["name"],
-                    version=vuln["version"],
-                    severity=Severity.HIGH,  # pip-audit 并不总是提供严重度
-                    cve=vuln.get("id", "N/A"),
-                    fixed_version=vuln.get("fix_versions", ["N/A"])[0],
+                    package=dependency["name"],
+                    version=dependency["version"],
+                    severity=Severity.HIGH,  # 本地的保守策略，并非工具给出的严重度
+                    cve=vuln["id"],
+                    fixed_version=", ".join(vuln.get("fix_versions", [])) or "N/A",
                     description=vuln.get("description", ""),
                 ))
         return findings
 
     def enforce_policy(self, findings: list[VulnFinding]) -> tuple[bool, list[str]]:
         """
-        将组织策略应用于扫描结果。
-        返回 (通过/不通过, 策略违规列表)。
+        对扫描结果应用组织策略。
+        返回（是否通过, 违规列表）。
         """
         violations = []
         for f in findings:
@@ -284,14 +312,14 @@ class DependencyScanner:
             if f.cve in self.SUPPRESSED:
                 continue
 
-            # Critical 和 High 且已有修复 = 必须阻断
+            # 严重和高危且已有修复版本 = 必须阻断
             if f.severity in (Severity.CRITICAL, Severity.HIGH) and f.fixed_version != "N/A":
                 violations.append(
                     f"BLOCKED: {f.package}@{f.version} has {f.severity.value} "
                     f"vulnerability {f.cve} — fix available: {f.fixed_version}"
                 )
 
-            # Critical 但无修复 = 警告但放行（并纳入跟踪）
+            # 严重但无修复版本 = 告警但放行（需跟踪）
             elif f.severity == Severity.CRITICAL and f.fixed_version == "N/A":
                 violations.append(
                     f"WARNING: {f.package}@{f.version} has CRITICAL vulnerability "
@@ -306,14 +334,19 @@ def main():
     scanner = DependencyScanner()
     project = Path(".")
 
-    # 检测项目类型并扫描
+    # 识别项目类型并扫描。扫描器不可用、报告格式错误、报告结构不受支持，
+    # 或有依赖被跳过，都意味着覆盖不完整。
     findings = []
-    if (project / "package.json").exists():
-        findings.extend(scanner.scan_npm(project))
-    if (project / "requirements.txt").exists() or (project / "pyproject.toml").exists():
-        findings.extend(scanner.scan_python(project))
+    try:
+        if (project / "package.json").exists():
+            findings.extend(scanner.scan_npm(project))
+        if (project / "requirements.txt").exists() or (project / "pyproject.toml").exists():
+            findings.extend(scanner.scan_python(project))
+    except (OSError, RuntimeError, KeyError, TypeError, ValueError) as exc:
+        print(f"SCAN INCOMPLETE: {exc}", file=sys.stderr)
+        sys.exit(2)
 
-    # 强制执行策略
+    # 执行策略
     passed, violations = scanner.enforce_policy(findings)
 
     for v in violations:
@@ -329,7 +362,6 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-
 ### 威胁模型模板（STRIDE）
 ```markdown
 # 威胁模型：[功能/系统名称]
