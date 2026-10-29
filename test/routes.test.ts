@@ -27,7 +27,7 @@ import { brandString } from "@deepseek-ai/dsh-brand";
 import type { FsVersion } from "@deepseek-ai/dsh-fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/locale";
-import { apply, createRemotePayloads, defaultTemplatesFrom } from "../host.ts";
+import { apply, createRemotePayloads, defaultTemplatesFrom, liveModelOf } from "../host.ts";
 import type {
   Config,
   DerivedMessageView,
@@ -920,6 +920,118 @@ describe("organize 端点", () => {
     assert.equal(firstCall.messages.length, 1, "只发一条 user 消息");
   });
 
+  /** 记录一次 organize 实际递进 llm.stream 的 provider/model（活线解析用例共用）。 */
+  async function organizeModelOf(agent: unknown): Promise<{
+    provider?: string | undefined;
+    model?: string | undefined;
+    reasoningEffort?: string | undefined;
+  }> {
+    const calls: LlmStreamOptions[] = [];
+    const recordingLlm = {
+      stream(options: LlmStreamOptions): AsyncIterable<StreamChunk> {
+        calls.push(options);
+        return okStream.stream();
+      },
+    } satisfies LlmService;
+    const handlers = createRouteHandlers(
+      depsOf({
+        llm: () => recordingLlm,
+        sessions: () => sessionsReturning({ header: { cwd: "/w" } }),
+        agentDefaultModel: () => ({
+          currentSelection: () => ({ provider: "default", model: "default-m" }),
+        }),
+        agents: () => ({ get: () => agent }),
+      }),
+      "tok",
+    );
+    const out = await callOrganize(
+      handlers,
+      makeReq({
+        method: "POST",
+        url: "/o",
+        headers: csrfHeaders,
+        body: bodyOf({ prompt: "x", sessionId: "s" }),
+      }),
+    );
+    assert.equal(parsed(out)["ok"], true, JSON.stringify(parsed(out)));
+    const [first] = calls;
+    assert.ok(first);
+    return { provider: first.provider, model: first.model, reasoningEffort: first.reasoningEffort };
+  }
+
+  it("liveModelOf：无会话 id / 无 agents 服务 / 查不到 Agent → undefined（回落默认）", () => {
+    const NO_AGENT = undefined;
+    assert.equal(liveModelOf(depsOf({}), null), undefined, "无会话 id");
+    assert.equal(liveModelOf(depsOf({}), "s"), undefined, "无 agents 服务");
+    assert.equal(
+      liveModelOf(depsOf({ agents: () => ({ get: () => NO_AGENT }) }), "s"),
+      undefined,
+      "查不到活 Agent",
+    );
+  });
+
+  it("会话活线优先于默认模型：agent.model.current()", async () => {
+    const got = await organizeModelOf({
+      model: { current: () => ({ provider: "live", model: "live-m", reasoningEffort: "high" }) },
+      options: { provider: "opt", model: "opt-m" },
+    });
+    assert.deepEqual(got, { provider: "live", model: "live-m", reasoningEffort: "high" });
+  });
+
+  it("旧版 Agent 只有 options → 用 options，不读不存在的 model", async () => {
+    const got = await organizeModelOf({ options: { provider: "opt", model: "opt-m" } });
+    assert.equal(got.provider, "opt");
+    assert.equal(got.model, "opt-m");
+  });
+
+  it("current() 还没记录选择 → 回落 options", async () => {
+    const noSelection = undefined;
+    const got = await organizeModelOf({
+      model: { current: () => noSelection },
+      options: { provider: "opt", model: "opt-m" },
+    });
+    assert.equal(got.provider, "opt");
+  });
+
+  it("没有活 Agent → 默认模型", async () => {
+    const got = await organizeModelOf(undefined);
+    assert.equal(got.provider, "default");
+    assert.equal(got.model, "default-m");
+  });
+
+  it("current() 抛错 → 润色失败回执，不静默换模型", async () => {
+    const handlers = createRouteHandlers(
+      depsOf({
+        llm: () => okStream,
+        sessions: () => sessionsReturning({ header: { cwd: "/w" } }),
+        agentDefaultModel: () => ({
+          currentSelection: () => ({ provider: "default", model: "default-m" }),
+        }),
+        agents: () => ({
+          get: () => ({
+            model: {
+              current: () => {
+                throw new Error("selection unavailable");
+              },
+            },
+          }),
+        }),
+      }),
+      "tok",
+    );
+    const out = await callOrganize(
+      handlers,
+      makeReq({
+        method: "POST",
+        url: "/o",
+        headers: csrfHeaders,
+        body: bodyOf({ prompt: "x", sessionId: "s" }),
+      }),
+    );
+    assert.equal(parsed(out)["ok"], false);
+    assert.match(String(parsed(out)["error"]), /selection unavailable/u);
+  });
+
   it("流以非 Error 值失败 → ok:false 原样回执（errorText 的 String() 支）", async () => {
     const failingLlm = {
       async *stream(): AsyncGenerator<StreamChunk> {
@@ -1361,6 +1473,61 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     const imp = parsed(await driveRoute(importRoute, impReq));
     assert.equal(imp["ok"], true);
     assert.equal(imp["count"], 0, "临时目录里没有角色 .md");
+  });
+
+  it("apply：agents 形状不符（无 get）→ 守卫挡回 undefined，润色照常回落默认模型", async () => {
+    // 与 sessions 同一条纪律：装了但形状不对的服务等同没装。若守卫漏掉这一支，
+    // `deps.agents()?.get` 会在请求中途炸成 "get is not a function"。
+    const root = await mkdtemp(path.join(tmpdir(), "dirprep-agents-"));
+    await writeFile(path.join(root, "a.ts"), "export const y = 2", "utf8");
+    const env = harness({
+      sessions: sessionsWithMessages(root, []),
+      fs: realFsService(),
+      llm: okStream,
+      agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+      agents: {},
+    });
+    applyTo(env);
+    const ctxOut = await driveRoute(routeOf(env, "context"), makeReq(getCtxQuery));
+    const csrf = String(parsed(ctxOut)["csrf"]);
+    const orgOut = await driveRoute(
+      routeOf(env, "organize"),
+      makeReq({
+        method: "POST",
+        url: "/o",
+        headers: { "x-dir-prep-csrf": csrf },
+        body: bodyOf({ prompt: "整理", sessionId: "s1" }),
+      }),
+    );
+    assert.equal(parsed(orgOut)["ok"], true, "形状不符的 agents 不得让润色失败");
+    assert.equal(parsed(orgOut)["content"], "已整理");
+    // 守卫的另一支：形状合格的 agents（这里查不到活 Agent）→ deps 交回服务本身，
+    // 润色照常成功并回落默认模型。
+    const valid = harness({
+      sessions: sessionsWithMessages(root, []),
+      fs: realFsService(),
+      llm: okStream,
+      agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+      agents: {
+        get: () => {
+          const NO_AGENT = undefined;
+          return NO_AGENT;
+        },
+      },
+    });
+    applyTo(valid);
+    const validCtxOut = await driveRoute(routeOf(valid, "context"), makeReq(getCtxQuery));
+    const validCsrf = String(parsed(validCtxOut)["csrf"]);
+    const validOut = await driveRoute(
+      routeOf(valid, "organize"),
+      makeReq({
+        method: "POST",
+        url: "/o",
+        headers: { "x-dir-prep-csrf": validCsrf },
+        body: bodyOf({ prompt: "整理", sessionId: "s1" }),
+      }),
+    );
+    assert.equal(parsed(validOut)["ok"], true);
   });
 
   it("apply：importAllowRoots 从 volatile 引用现读（登记目录内的路径可导入）", async () => {

@@ -187,7 +187,7 @@ export function stripPairQuotes(value) {
 }
 
 /** frontmatter 键名形状（镜像 templates.ts FRONTMATTER_KEY）。 */
-const FRONTMATTER_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+const FRONTMATTER_KEY = /^[A-Za-z][\w-]*$/u;
 
 /** 头部只解析前 20 行键值对（镜像 templates.ts FRONTMATTER_MAX_LINES）。 */
 const FRONTMATTER_MAX_LINES = 20;

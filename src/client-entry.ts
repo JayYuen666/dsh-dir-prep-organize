@@ -17,6 +17,8 @@ import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+import { CARD_UI_CSS, CardForm, SaveBar, Section } from "@jayyuen66/dsh-plugin-shared/lib/card-ui";
+import { hasDraftFace, hasInsertFace, useWriteBack } from "./input-writeback.ts";
 import { DIR_PREP_NAMESPACE, createDirPrepReader } from "./remote.ts";
 import type { DirPrepReader } from "./remote.ts";
 
@@ -352,7 +354,7 @@ function builtinStatusRow(snap: TemplatesSnapshot, t: Translate): ReactNode | un
     "button",
     {
       type: "button",
-      className: "dpic-btn",
+      className: "dsu-btn",
       "data-field": "dpi-builtin-retry",
       onClick: () => {
         void loadBuiltinTemplates();
@@ -608,14 +610,6 @@ export function rootsPersistError(
   return message;
 }
 
-export function applyTemplateToDraft(current: string, template: string): string {
-  const base = typeof current === "string" ? current.trimEnd() : "";
-  if (base.length === 0) {
-    return template;
-  }
-  return `${base}\n\n${template}`;
-}
-
 /** 菜单项文字：有 emoji 就前缀一个（emoji 是用户自填的视觉标记，空串 = 不显示）。 */
 function templateItemLabel(tpl: TemplateEntry): string {
   return `${tpl.emoji === "" ? "" : `${tpl.emoji} `}${tpl.name}`;
@@ -637,7 +631,7 @@ function groupTemplatesBy(
     bucket.push(tpl);
     buckets.set(key, bucket);
   }
-  return [...buckets.entries()].map(([group, items]) => ({ group, items }));
+  return Array.from(buckets.entries(), ([group, items]) => ({ group, items }));
 }
 
 // ── 组件 props（框架注入的 standard kit 子集，形状全部取自官方声明）───────────
@@ -645,8 +639,10 @@ function groupTemplatesBy(
 export interface KitProps {
   t: Translate;
   useCard: <TResult>(selector: (snap: TemplatesSnapshot) => TResult) => TResult;
-  useInput?: <TResult>(selector: (state: Pick<InputState, "draft">) => TResult) => TResult;
-  inputActions?: Pick<InputActions, "setDraft">;
+  useInput?: <TResult>(
+    selector: (state: Pick<InputState, "draft" | "draftRev" | "phase">) => TResult,
+  ) => TResult;
+  inputActions?: Pick<InputActions, "setDraft" | "captureInsertion" | "insertText">;
   sessionId?: string;
 }
 
@@ -960,6 +956,23 @@ function createOrganizeRoleMenu(ui: OrganizeUIView): ReactNode {
   );
 }
 
+interface OrganizeBadge {
+  readonly icon: ReactNode;
+  readonly label: string;
+  readonly state: string;
+}
+
+/** 主键的三态外观：失败 > 在途 > 空闲（三者互斥，按同一优先级判）。 */
+function organizeBadge(failed: string | undefined, loading: boolean, t: Translate): OrganizeBadge {
+  if (failed !== undefined) {
+    return { icon: createElement(FailIcon), label: t("organizeFailedShort"), state: "error" };
+  }
+  if (loading) {
+    return { icon: createElement(SpinIcon), label: t("organizeLoading"), state: "loading" };
+  }
+  return { icon: createElement(TidyIcon), label: t("organizeIdle"), state: "idle" };
+}
+
 function createOrganizeButton(): (props: KitProps) => ReactNode {
   return function OrganizeButton(props: KitProps): ReactNode {
     const [loading, setLoading] = useState(false);
@@ -974,8 +987,16 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
       props.useInput === undefined
         ? ""
         : (props.useInput((state): string | undefined => state.draft) ?? "");
+    const draftRev: number =
+      props.useInput === undefined ? 0 : props.useInput((state) => state.draftRev);
+    const phase: InputState["phase"] =
+      props.useInput === undefined ? "plain" : props.useInput((state) => state.phase);
     const snap = props.useCard((state) => state);
     const { templates } = snap;
+    const writeBack = useWriteBack(
+      { sessionId: props.sessionId ?? "", actions: props.inputActions, draftRev, phase },
+      { unavailable: props.t(NO_WRITE_BACK_TITLE_KEY), stale: props.t("organizeWriteBackStale") },
+    );
 
     useMenuDismiss(menuOpen, wrapRef, () => {
       setMenuOpen(false);
@@ -992,27 +1013,28 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
     );
 
     async function handleOrganize(roleText?: string): Promise<void> {
-      await runOrganizeClick({
-        t: props.t,
-        loading,
-        inFlight,
-        seq,
-        prompt: draft,
-        sessionId: props.sessionId ?? "",
-        timeoutMs: organizeFetchTimeoutMs(snap.organizeTimeoutMs),
-        roleText,
-        setLoading,
-        setMenuOpen,
-        setFailed,
-        flashTimer,
-        writeDraft: (content: string): void => {
-          const actions = props.inputActions;
-          if (actions === undefined || typeof actions.setDraft !== "function") {
-            throw new Error(props.t("organizeWriteBackUnavailable"));
-          }
-          actions.setDraft(content);
-        },
-      });
+      const ticket = writeBack.begin();
+      try {
+        await runOrganizeClick({
+          t: props.t,
+          loading,
+          inFlight,
+          seq,
+          prompt: draft,
+          sessionId: props.sessionId ?? "",
+          timeoutMs: organizeFetchTimeoutMs(snap.organizeTimeoutMs),
+          roleText,
+          setLoading,
+          setMenuOpen,
+          setFailed,
+          flashTimer,
+          writeDraft: (content: string): void => {
+            writeBack.commit(content, ticket);
+          },
+        });
+      } finally {
+        writeBack.finish(ticket);
+      }
     }
 
     function openMenu(): void {
@@ -1022,37 +1044,26 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
       setMenuOpen((prev) => !prev);
     }
 
-    let icon: ReactNode;
-    let label: string;
-    let state: string;
-    if (failed !== undefined) {
-      icon = createElement(FailIcon);
-      label = props.t("organizeFailedShort");
-      state = "error";
-    } else if (loading) {
-      icon = createElement(SpinIcon);
-      label = props.t("organizeLoading");
-      state = "loading";
-    } else {
-      icon = createElement(TidyIcon);
-      label = props.t("organizeIdle");
-      state = "idle";
-    }
-    const canWrite =
-      props.inputActions !== undefined && typeof props.inputActions.setDraft === "function";
+    const badge = organizeBadge(failed, loading, props.t);
+    const replaceable = hasDraftFace(props.inputActions);
+    // 提交期（adjudicating/claimed/submitting/sending）编辑面是只读的，此刻发起的润色即使
+    // 返回也无处可写；把不可写推回发起之前，省下一次真实的 LLM 往返。
+    const canWrite = replaceable && phase === "plain";
     let errTitle = props.t("organizeIdleTitle");
     if (failed !== undefined) {
       errTitle = props.t("organizeFailedTitle", { message: failed });
-    } else if (!canWrite) {
+    } else if (!replaceable) {
       // 写不回时 title 直接说明原因（idle 档那句太泛，用户看不出该做什么）。
       errTitle = props.t(NO_WRITE_BACK_TITLE_KEY);
+    } else if (phase !== "plain") {
+      errTitle = props.t("organizeBusyTitle");
     }
     const ui: OrganizeUIView = {
       t: props.t,
       errTitle,
-      icon,
-      label,
-      state,
+      icon: badge.icon,
+      label: badge.label,
+      state: badge.state,
       errClass: failed === undefined ? "" : " dpi-btn-err",
       directItemLabel: props.t("organizeDirectItem"),
       noTemplatesLabel: props.t("organizeNoTemplates"),
@@ -1078,10 +1089,8 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
   return function TemplateButton(props: KitProps): ReactNode {
     const [open, setOpen] = useState(false);
     const wrapRef = useRef<HTMLSpanElement | null>(null);
-    const draft: string =
-      props.useInput === undefined
-        ? ""
-        : (props.useInput((state): string | undefined => state.draft) ?? "");
+    const phase: InputState["phase"] =
+      props.useInput === undefined ? "plain" : props.useInput((state) => state.phase);
     const snap = props.useCard((state) => state);
     const { templates } = snap;
 
@@ -1092,15 +1101,22 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
     function pick(text: string): void {
       setOpen(false);
       const actions = props.inputActions;
-      if (actions === undefined || typeof actions.setDraft !== "function") {
+      if (!hasInsertFace(actions)) {
         return;
       }
-      actions.setDraft(applyTemplateToDraft(draft, text));
+      // 插入语义，不是整稿替换：宿主按发起的选区做版本校验，稿里的引用块与附件都留着；
+      // 它在提交期或草稿已变时交回 false，这里不回落 setDraft（那会丢掉引用块）。
+      actions.insertText(text, actions.captureInsertion());
     }
 
-    const canWrite =
-      props.inputActions !== undefined && typeof props.inputActions.setDraft === "function";
-    const title = canWrite ? props.t("templatesIdleTitle") : props.t("templatesBrokenTitle");
+    const insertable = hasInsertFace(props.inputActions);
+    const canWrite = insertable && phase === "plain";
+    let title = props.t("templatesBrokenTitle");
+    if (canWrite) {
+      title = props.t("templatesIdleTitle");
+    } else if (insertable) {
+      title = props.t("templatesBusyTitle");
+    }
 
     // 分组用 Map 而不是对象字面量：分组标签来自用户可填的 template.group，`__proto__`
     // 之类作为对象键会落进原型而不是成为一个分组（Map 无此问题）。
@@ -1174,7 +1190,7 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
   };
 }
 
-// ── 设置页「模板库」卡（quality-gate 卡同款骨架）────────────────────────
+// ── 设置页「角色库」卡（shared 卡片骨架）────────────────────────
 
 interface TemplatesCardProps {
   t: Translate;
@@ -1212,7 +1228,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
   const indexMark = createElement("span", { className: "dpic-idx" }, `#${rowNum}`);
   const emojiInput = createElement("input", {
     type: "text",
-    className: "dpic-emoji",
+    className: "dpic-emoji dsu-input",
     value: values.emoji,
     placeholder: EMOJI_PLACEHOLDER,
     disabled,
@@ -1225,7 +1241,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
   });
   const nameInput = createElement("input", {
     type: "text",
-    className: "dpic-name",
+    className: "dpic-name dsu-input",
     value: values.name,
     placeholder: t("rowPlaceholderName"),
     disabled,
@@ -1237,7 +1253,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
   });
   const groupInput = createElement("input", {
     type: "text",
-    className: "dpic-group",
+    className: "dpic-group dsu-input",
     value: values.group,
     placeholder: t("rowPlaceholderGroup"),
     disabled,
@@ -1252,7 +1268,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
     "button",
     {
       type: "button",
-      className: "dpic-del",
+      className: "dpic-del dsu-btn dsu-btnDanger",
       disabled,
       title: t("rowDeleteTitle"),
       onClick: () => {
@@ -1263,7 +1279,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
   );
   const descriptionInput = createElement("input", {
     type: "text",
-    className: "dpic-desc",
+    className: "dpic-desc dsu-input",
     value: values.description,
     placeholder: t("rowPlaceholderDescription"),
     disabled,
@@ -1274,7 +1290,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
     onBlur: view.onBlur,
   });
   const textArea = createElement("textarea", {
-    className: "dpic-text",
+    className: "dpic-text dsu-input dsu-textarea dsu-mono",
     value: values.text,
     rows: 6,
     placeholder: t("rowPlaceholderText"),
@@ -1286,7 +1302,7 @@ function createTemplateRowElement(view: TemplateRowView): ReactNode {
     onBlur: view.onBlur,
   });
   return createElement(
-    "li",
+    "div",
     { className: "dpic-row" },
     createElement(
       "div",
@@ -1430,7 +1446,7 @@ function ImportPanel(props: {
   const canImport = props.editable && !importBusy;
   const importPathInput = createElement("input", {
     type: "text",
-    className: CLASS_IMPORT_PATH,
+    className: `${CLASS_IMPORT_PATH} dsu-input`,
     value: importPath,
     placeholder: t("importPlaceholder"),
     disabled: !canImport,
@@ -1448,7 +1464,7 @@ function ImportPanel(props: {
     "button",
     {
       type: "button",
-      className: "dpic-btn",
+      className: "dsu-btn",
       disabled: !canImport,
       title: t("importBtnTitle"),
       onClick: onImport,
@@ -1467,7 +1483,7 @@ function ImportPanel(props: {
         );
   const importHintEl = createElement("div", { className: "dpic-hint" }, t("importHint"));
   return createElement(
-    "li",
+    "div",
     { className: "dpic-importrow" },
     createElement("div", { className: CLASS_ROW_HEAD }, importPathInput, importBtn),
     importMsgEl,
@@ -1495,7 +1511,7 @@ function AllowRootsPanel(props: {
     const rowAria = t("rootsAriaRow", { index: index + 1 });
     const rowInput = createElement("input", {
       type: "text",
-      className: CLASS_IMPORT_PATH,
+      className: `${CLASS_IMPORT_PATH} dsu-input`,
       value: root,
       placeholder: ROOT_PATH_PLACEHOLDER,
       disabled: props.disabled,
@@ -1509,7 +1525,7 @@ function AllowRootsPanel(props: {
       "button",
       {
         type: "button",
-        className: "dpic-del",
+        className: "dpic-del dsu-btn dsu-btnDanger",
         disabled: props.disabled,
         title: removeTitle,
         onClick: () => {
@@ -1531,7 +1547,7 @@ function AllowRootsPanel(props: {
   const addLabel = t("rootsAdd");
   const addInput = createElement("input", {
     type: "text",
-    className: CLASS_IMPORT_PATH,
+    className: `${CLASS_IMPORT_PATH} dsu-input`,
     value: pending,
     placeholder: addPlaceholder,
     disabled: props.disabled,
@@ -1550,7 +1566,7 @@ function AllowRootsPanel(props: {
     "button",
     {
       type: "button",
-      className: "dpic-btn",
+      className: "dsu-btn",
       disabled: !canAdd,
       title: addTitle,
       onClick: () => {
@@ -1562,7 +1578,7 @@ function AllowRootsPanel(props: {
   );
   const addRow = createElement("div", { className: CLASS_ROW_HEAD }, addInput, addButton);
   return createElement(
-    "li",
+    "div",
     { className: "dpic-importrow", "data-field": "allow-roots" },
     createElement("div", { className: "dpic-hint" }, t("rootsHeading")),
     rows,
@@ -1583,54 +1599,29 @@ interface CardFootLabels {
   resetTitle: string;
 }
 
-function CardFootBar(props: {
+/** 工具条：新增角色与恢复默认（保存/撤销交给卡片底部统一的 SaveBar）。 */
+function CardToolbar(props: {
   foot: CardFootLabels;
   editable: boolean;
-  anythingDirty: boolean;
   busy: boolean;
   confirmReset: boolean;
   onAdd: () => void;
-  onSave: () => Promise<void>;
-  onDiscard: () => void;
   onReset: () => void;
 }): ReactNode {
-  const { foot, editable, anythingDirty, busy, confirmReset } = props;
+  const { foot, editable, busy, confirmReset } = props;
   return createElement(
-    "li",
-    { className: "dpic-foot" },
+    "div",
+    { className: "dpic-toolbar" },
     createElement(
       "button",
-      { type: "button", className: "dpic-btn", disabled: !editable, onClick: props.onAdd },
+      { type: "button", className: "dsu-btn", disabled: !editable, onClick: props.onAdd },
       foot.add,
     ),
     createElement(
       "button",
       {
         type: "button",
-        className: "dpic-btn dpic-btn-primary",
-        "data-field": "save",
-        disabled: !editable || !anythingDirty || busy,
-        title: anythingDirty ? foot.saveTitleDirty : foot.saveTitleClean,
-        onClick: props.onSave,
-      },
-      busy ? foot.saving : foot.save,
-    ),
-    createElement(
-      "button",
-      {
-        type: "button",
-        className: "dpic-btn",
-        "data-field": "discard",
-        disabled: !editable || !anythingDirty || busy,
-        onClick: props.onDiscard,
-      },
-      foot.revert,
-    ),
-    createElement(
-      "button",
-      {
-        type: "button",
-        className: "dpic-btn dpic-btn-danger",
+        className: "dsu-btn dsu-btnDanger",
         // busy 门禁与保存/撤销同口径：两者写的是同一份表单（reset 走 unset、保存走
         // set），不挡住就能并发，于是 unset 与 set 落到同一字段上，最后写入者赢——
         // 而「恢复默认」是两步确认里的一步，用户极易在保存途中才想起来要点它。
@@ -1665,42 +1656,6 @@ function cardStatusHint(snap: TemplatesSnapshot, t: Translate): string {
     hint = t("statusNotReady");
   }
   return hint;
-}
-
-function createCardHeader(view: {
-  t: Translate;
-  open: boolean;
-  setOpen: Setter<boolean>;
-}): ReactNode {
-  const { t, open, setOpen } = view;
-  const headTitle = createElement("div", { className: "dpic-title" }, t("cardTitle"));
-  const headDesc = createElement("div", { className: "dpic-cardsub" }, t("cardDescription"));
-  const headBlock = createElement("div", { className: "dpic-head" }, headTitle, headDesc);
-  const chevronPath = createElement("path", svgPathProps("M3 5l4 4 4-4", true));
-  const chevron = createElement(
-    "svg",
-    {
-      width: 14,
-      height: 14,
-      viewBox: "0 0 14 14",
-      "aria-hidden": true,
-      className: `dpic-chevron${open ? " dpic-chevron-open" : ""}`,
-    },
-    chevronPath,
-  );
-  return createElement(
-    "button",
-    {
-      type: "button",
-      className: "dpic-header",
-      "aria-expanded": open,
-      onClick: () => {
-        setOpen((prev) => !prev);
-      },
-    },
-    headBlock,
-    chevron,
-  );
 }
 
 interface DraftActions {
@@ -1919,7 +1874,7 @@ interface CardBodyView {
   readonly persistActions: PersistActions;
 }
 
-/** 展开态正文（状态行 + 模板行表 + 卡底动作条 + 导入面 + 允许目录面 + 底部提示）。 */
+/** 卡片正文：状态提示 + 工具条 + 角色行表 + 导入面 + 允许目录面 + 保存条。 */
 function createCardBody(view: CardBodyView): ReactNode {
   const {
     t,
@@ -1936,55 +1891,70 @@ function createCardBody(view: CardBodyView): ReactNode {
   const { onCommit, onDelete, onAdd, onImported, onRootChange, onRootDelete, onRootAdd } =
     view.draftActions;
   const { onSave, onDiscard, onReset } = view.persistActions;
+  const footHint = createElement("p", { className: "dpic-hint" }, t("footHint"));
+  const saveBar = createElement(SaveBar, {
+    dirty: anythingDirty,
+    busy,
+    writable: editable,
+    error: saveError === "" ? null : `${t("saveFailed")}${saveError}`,
+    saveLabel: t("save"),
+    savingLabel: t("saving"),
+    revertLabel: t("revert"),
+    dirtyLabel: t("saveTitleDirty"),
+    cleanLabel: t("saveTitleClean"),
+    readOnlyLabel: t("statusReadOnly"),
+    onSave: () => {
+      void onSave();
+    },
+    onDiscard,
+  });
   return createElement(
-    "ul",
-    { className: "dpic-body" },
-    statusHint === "" ? null : createElement("li", { className: "dpic-hint" }, statusHint),
-    draft.map((tpl, idx) =>
-      createElement(TemplateRow, {
-        key: tpl.id,
-        t,
-        index: idx,
-        template: tpl,
-        disabled: !editable || busy,
-        onCommit,
-        onDelete,
+    CardForm,
+    null,
+    statusHint === "" ? null : createElement("p", { className: "dpic-hint" }, statusHint),
+    createElement(
+      Section,
+      { title: t("rolesSection"), hint: t("rolesHint") },
+      createElement(CardToolbar, {
+        foot,
+        editable,
+        busy,
+        confirmReset,
+        onAdd,
+        onReset,
       }),
+      draft.map((tpl, idx) =>
+        createElement(TemplateRow, {
+          key: tpl.id,
+          t,
+          index: idx,
+          template: tpl,
+          disabled: !editable || busy,
+          onCommit,
+          onDelete,
+        }),
+      ),
+      createElement(ImportPanel, {
+        t,
+        editable: editable && !busy,
+        onImported,
+      }),
+      createElement(AllowRootsPanel, {
+        t,
+        roots: rootsDraft,
+        disabled: !editable || busy,
+        onChangeRoot: onRootChange,
+        onDeleteRoot: onRootDelete,
+        onAddRoot: onRootAdd,
+      }),
+      footHint,
     ),
-    createElement(CardFootBar, {
-      foot,
-      editable,
-      anythingDirty,
-      busy,
-      confirmReset,
-      onAdd,
-      onSave,
-      onDiscard,
-      onReset,
-    }),
-    createElement(ImportPanel, {
-      t,
-      editable: editable && !busy,
-      onImported,
-    }),
-    createElement(AllowRootsPanel, {
-      t,
-      roots: rootsDraft,
-      disabled: !editable || busy,
-      onChangeRoot: onRootChange,
-      onDeleteRoot: onRootDelete,
-      onAddRoot: onRootAdd,
-    }),
-    createElement("li", { className: "dpic-hint" }, t("footHint")),
-    saveError === ""
-      ? null
-      : createElement("li", { className: "dpic-hint dpic-err" }, `${t("saveFailed")}${saveError}`),
+    saveBar,
   );
 }
 
 function TemplatesCard(props: TemplatesCardProps): ReactNode {
   const { t } = props;
-  const [open, setOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2061,31 +2031,20 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
     setConfirmReset,
   });
 
-  // 抽出头部/chevron/正文子树，避免 createElement 递归嵌套过深
-  const headerBtn = createCardHeader({ t, open, setOpen });
-  const bodyList = open
-    ? createCardBody({
-        t,
-        statusHint,
-        draft,
-        rootsDraft,
-        foot,
-        editable,
-        anythingDirty,
-        busy,
-        confirmReset,
-        saveError,
-        draftActions,
-        persistActions,
-      })
-    : null;
-
-  return createElement(
-    "li",
-    { className: `dpic-card${open ? " dpic-card-open" : ""}` },
-    headerBtn,
-    bodyList,
-  );
+  return createCardBody({
+    t,
+    statusHint,
+    draft,
+    rootsDraft,
+    foot,
+    editable,
+    anythingDirty,
+    busy,
+    confirmReset,
+    saveError,
+    draftActions,
+    persistActions,
+  });
 }
 
 // ── 插件 apply ─────────────────────────────────────────────────────────────
@@ -2145,7 +2104,7 @@ function injectDock(ctx: ClientCtx, store: TemplatesStore, t: Translate): void {
   });
 }
 
-/** 注入设置页的「模板库」卡（插件自带卡片，宿主不再生成自动表单页）。
+/** 注入设置页的「角色库」卡（插件自带卡片，宿主不再生成自动表单页）。
  *  这张卡管的就是「模板」下拉与「润色」▾ 共用的那一份列表。
  *
  * scope 作为参数传进来而不是就地取：卡片 inject 闭包里的 set/unset 必须落到
@@ -2188,7 +2147,7 @@ function apply(ctx: ClientCtx): void {
   ctx.effect(() => {
     const tag = document.createElement("style");
     tag.id = "dir-prep-organize-css";
-    tag.textContent = CARD_STYLES;
+    tag.textContent = `${CARD_STYLES}\n${CARD_UI_CSS}`;
     document.head.append(tag);
     return () => {
       tag.remove();

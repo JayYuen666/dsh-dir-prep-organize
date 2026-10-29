@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "输入框润色与模板",
+    "description": "发送前把输入框里的草稿润色一遍，并把精选模板插到光标处。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

@@ -8,6 +8,7 @@ import type {
   TypertCodec,
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { z } from "zod";
 
 /** Typert Remote 命名空间（client 半这一侧的唯一一枚）。
  *
@@ -18,15 +19,48 @@ export const DIR_PREP_NAMESPACE = "dirPrepOrganize";
 const DIR_PREP_SERVICE_KEY = `remote.${DIR_PREP_NAMESPACE}`;
 const PACKAGE_NAME = "@jayyuen66/dsh-dir-prep-organize";
 
+/** strict codec 的统一出口：失败交给 zod 的 `prettifyError`，读到的是一份带字段路径的说明。 */
+function parseOrThrow<Result>(schema: z.ZodType<Result>, value: unknown): Result {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new TypeError(z.prettifyError(parsed.error));
+  }
+  return parsed.data;
+}
+
+const SESSION_MESSAGE = "session request requires a string sessionId";
+const SESSION_SCHEMA = z.object(
+  { sessionId: z.string({ error: SESSION_MESSAGE }) },
+  { error: SESSION_MESSAGE },
+);
+
+const ORGANIZE_MESSAGE = "organize request requires string sessionId, prompt and entriesSummary";
+const ROLE_MESSAGE = "organize request roleText must be a string when present";
+const ORGANIZE_SCHEMA = z.object(
+  {
+    sessionId: z.string({ error: ORGANIZE_MESSAGE }),
+    prompt: z.string({ error: ORGANIZE_MESSAGE }),
+    entriesSummary: z.string({ error: ORGANIZE_MESSAGE }),
+    roleText: z.string({ error: ROLE_MESSAGE }).optional(),
+  },
+  { error: ORGANIZE_MESSAGE },
+);
+
+const IMPORT_MESSAGE = "import request requires string path and sessionId";
+const IMPORT_SCHEMA = z.object(
+  {
+    path: z.string({ error: IMPORT_MESSAGE }),
+    sessionId: z.string({ error: IMPORT_MESSAGE }),
+  },
+  { error: IMPORT_MESSAGE },
+);
+
 const SESSION_CODEC: TypertCodec<{ sessionId: string }> = {
   mode: "strict",
   typeSymbol: `${PACKAGE_NAME}#session-request`,
   create: () => ({
     parse(value: unknown): { sessionId: string } {
-      if (!isRecord(value) || typeof value["sessionId"] !== "string") {
-        throw new TypeError("session request requires a string sessionId");
-      }
-      return { sessionId: value["sessionId"] };
+      return parseOrThrow(SESSION_SCHEMA, value);
     },
   }),
 };
@@ -46,26 +80,16 @@ const ORGANIZE_CODEC: TypertCodec<{
       entriesSummary: string;
       roleText?: string;
     } {
-      if (
-        !isRecord(value) ||
-        typeof value["sessionId"] !== "string" ||
-        typeof value["prompt"] !== "string" ||
-        typeof value["entriesSummary"] !== "string"
-      ) {
-        throw new TypeError(
-          "organize request requires string sessionId, prompt and entriesSummary",
-        );
-      }
-      const { roleText } = value;
-      if (roleText !== undefined && typeof roleText !== "string") {
-        throw new TypeError("organize request roleText must be a string when present");
-      }
-      return {
-        sessionId: value["sessionId"],
-        prompt: value["prompt"],
-        entriesSummary: value["entriesSummary"],
-        ...(roleText === undefined ? {} : { roleText }),
-      };
+      const request = parseOrThrow(ORGANIZE_SCHEMA, value);
+      // zod 的 optional 输出带 `undefined` 这一臂，而请求类型在 exactOptionalPropertyTypes
+      // 下只能“缺席”或“有值”；这里显式收成原 parser 的形状。
+      return request.roleText === undefined
+        ? {
+            sessionId: request.sessionId,
+            prompt: request.prompt,
+            entriesSummary: request.entriesSummary,
+          }
+        : { ...request, roleText: request.roleText };
     },
   }),
 };
@@ -75,14 +99,7 @@ const IMPORT_CODEC: TypertCodec<{ path: string; sessionId: string }> = {
   typeSymbol: `${PACKAGE_NAME}#import-request`,
   create: () => ({
     parse(value: unknown): { path: string; sessionId: string } {
-      if (
-        !isRecord(value) ||
-        typeof value["path"] !== "string" ||
-        typeof value["sessionId"] !== "string"
-      ) {
-        throw new TypeError("import request requires string path and sessionId");
-      }
-      return { path: value["path"], sessionId: value["sessionId"] };
+      return parseOrThrow(IMPORT_SCHEMA, value);
     },
   }),
 };

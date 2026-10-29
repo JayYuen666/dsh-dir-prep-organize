@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import React from "react";
+import { z } from "zod";
 import { describe, it } from "vitest";
 
 const pkgDir = path.join(import.meta.dirname, "..", "..");
@@ -65,14 +66,18 @@ async function loadRegistration(): Promise<Registration> {
 }
 
 /**
- * 物化导出面：宿主只提供裸包名映射，所以除了 react 之外索取到任何说明符都当场抛——
- * 那正是「页面上整块不出现」的第一现场，回 undefined 只会把症状拖成更难查的空态。
+ * 物化导出面：宿主只提供平台模块表里的裸包名映射，所以除 react / zod 之外索取到任何
+ * 说明符都当场抛——那正是「页面上整块不出现」的第一现场，回 undefined 只会把症状拖成
+ * 更难查的空态。
  */
 async function materialize(): Promise<Record<string, unknown>> {
   const taken = await loadRegistration();
   return taken.factory((specifier: string): unknown => {
     if (specifier === "react") {
       return React;
+    }
+    if (specifier === "zod") {
+      return { z };
     }
     throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
   });
@@ -94,24 +99,31 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof taken.factory, "function", "工厂形产物才有可物化的导出面");
   });
 
-  it("物化只需要 react 这一枚外部依赖，并交出宿主会调的两位", async () => {
+  it("物化只需要 react / zod 这两枚平台依赖，并交出宿主会调的两位", async () => {
     const bundle = await materialize();
     assert.deepEqual(bundle["inject"], ["slots", "configForms", "locale"], "缺一位就少一个服务面");
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 
-  it("索取面恰好只有 react：多一枚外部依赖就是宿主装载不到的一块砖", async () => {
+  it("索取面恰好只有 react / zod：多一枚外部依赖就是宿主装载不到的一块砖", async () => {
     const taken = await loadRegistration();
     const asked: string[] = [];
     taken.factory((specifier: string): unknown => {
       asked.push(specifier);
-      if (specifier !== "react") {
-        throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
+      if (specifier === "react") {
+        return React;
       }
-      return React;
+      if (specifier === "zod") {
+        return { z };
+      }
+      throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
     });
-    // 判「问过了什么」而不是「有没有抛」：产物本来只该问 react，问了别的才会抛。
+    // 判「问过了什么」而不是「有没有抛」：产物本来只该问平台表里的那两枚，问了别的才会抛。
     // 这条同时是 build-client.mjs 外部化名单的下游锁——名单里多写一枚宿主包，这里就会红。
-    assert.deepEqual(asked.toSorted(), ["react"], "产物的外部依赖面应当恰好只有 react");
+    assert.deepEqual(
+      asked.toSorted(),
+      ["react", "zod"],
+      "产物的外部依赖面应当恰好只有 react / zod",
+    );
   });
 });

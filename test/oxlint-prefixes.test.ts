@@ -32,7 +32,7 @@ const TITLE_CALL =
 
 /** 标题里第一个大写起头的标识符形 run（术语、组件名或常量名）；没有则 undefined。 */
 function leadingUppercaseRun(title: string): string | undefined {
-  const match = /^[A-Z][A-Za-z0-9_$]*/u.exec(title);
+  const match = /^[A-Z][\w$]*/u.exec(title);
   return match?.[0];
 }
 
@@ -54,12 +54,13 @@ async function collectCaseFiles(dir: string, prefix: string): Promise<string[]> 
 
 async function titlePrefixesInConfig(): Promise<string[]> {
   const source = await readFile(path.join(pkgDir, "oxlint.config.ts"), "utf8");
-  const block = /titlePrefixes:\s*\[(?<block>[^\]]*)\]/su.exec(source);
+  const block = /titlePrefixes:\s*\[(?<block>[^\]]*)\]/u.exec(source);
   expect(block, "oxlint.config.ts 里应有 titlePrefixes 数组").not.toBeNull();
   const blockText = block?.groups?.["block"] ?? "";
-  const names = [...blockText.matchAll(/"(?<name>[^"]*)"/gu)]
-    .map((match) => match.groups?.["name"])
-    .filter((name): name is string => name !== undefined);
+  const names = Array.from(
+    blockText.matchAll(/"(?<name>[^"]*)"/gu),
+    (match) => match.groups?.["name"],
+  ).filter((name): name is string => name !== undefined);
   return names;
 }
 

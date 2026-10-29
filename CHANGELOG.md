@@ -3,6 +3,35 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。
 
+## 0.1.7
+
+这一版让润色跟随会话当前的模型选择，把模板写入改成宿主校验的光标插入，并把插件页展示面收进包内。
+
+### Changed
+
+- **润色模型来源改为会话活线优先**：`organize` 先读活 Agent 的 `model.current()`，旧宿主回落 `agent.options`，
+  两者都没有才用 `agentDefaultModel.currentSelection()`。
+- **模板改为光标插入**：`captureInsertion()` + `insertText()` 由宿主按发起的选区核验，草稿里的引用块与附件
+  不再被整稿替换抹平；输入框处于提交期时两个入口禁用，宿主拒绝插入时不回落 `setDraft`。
+- **润色结果写回增加版本凭据**：新增 `src/input-writeback.ts`，按会话 id、草稿版本、输入动作面身份与
+  `phase` 判定；请求期间继续输入、切换会话或进入提交期都会放弃写回，并提示「输入框内容已变化」。
+- **设置卡改用 shared 的卡片骨架**：正文改为「角色库」小节，保存与撤销走统一 `SaveBar`，样式使用
+  `CARD_UI_CSS` 与 `dsu-*` 控件类。
+- **Remote 参数校验改用 zod strict codec**：新增 `zod` 运行期依赖，client 产物按宿主 `PLATFORM_MODULES`
+  外部化；`THIRD_PARTY_NOTICES` 同步补声明。
+- **宿主开发依赖抬到 `0.2.2-alpha.2`**：catalog、overrides 与 devDependencies 同值；`engines.dsh` 与
+  peer 的支持窗口保持 `^0.2.1-rc.3`。
+- **插件页展示元数据进包**：新增 `locale/en.json`、`locale/zh.json` 与 `docs/DETAIL.md`、`docs/DETAIL.zh.md`；
+  `exports` 增加 `./locale/*.json`，`files` 收进 locale 与 docs。
+
+### Fixed
+
+- **请求在途时用户继续编辑，旧润色结果会覆盖新草稿**：写回改为读最新一帧并核对版本戳，过期结果不再落地。
+- **模板插入会重建整份草稿**：改走输入框的插入面后只插入文本，引用块与附件保持原样。
+- **干净 npm 安装与宿主品牌包的 cordis 线冲突**：`@deepseek-ai/cordis` 的 optional peer 改为
+  `~4.0.5 || 4.0.6-alpha.1`，既接受宿主当前要求的 `~4.0.5`，也接受编译所用的
+  `4.0.6-alpha.1`；编译期精确钉版仍留在 `devDependencies`。
+
 ## 0.1.6
 
 这一版收口客户端交互与错误文案，并把构建、CI 与伞工作区基线统一；模板数据与 85 条内置精选不变。

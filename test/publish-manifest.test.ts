@@ -383,18 +383,6 @@ describe("发布形态", () => {
   });
 });
 
-/**
- * 宿主包在 peer 与 dev 两张表里的并集。`dependencies` 是禁区（见下面那条门禁）：peer 记录
- * 「运行期由宿主提供」，dev 记录「本包编译与测试要用它」，两者都不会被消费方的 profile 安装。
- * 同名键以 peer 表为准，那才是消费方环境里真正提供的那一枚。
- *
- * @param manifest - 解析后的 package.json
- * @returns 宿主包名到版本区间
- */
-function hostRanges(manifest: Manifest): Record<string, string> {
-  return { ...manifest.devDependencies, ...manifest.peerDependencies };
-}
-
 describe("宿主依赖的版本形状（升级防线）", () => {
   it("@deepseek-ai/* 一律不进 dependencies：装出去会在宿主进程里物化第二份", async () => {
     // 钉的是「全绿但宿主瘫痪」这一类坑，别把它当风格偏好，更别把任何 @deepseek-ai/*「恢复」回
@@ -417,53 +405,42 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     expect(leaked, "这些宿主包会随消费方装进 profile，物化出第二份实例").toStrictEqual([]);
   });
 
-  it("dsh-* 家族一律精确钉，不留任何范围算子", async () => {
+  it("devDependencies 里的 dsh-* 家族一律精确钉，不留任何范围算子", async () => {
     // registry 上的 dist-tag 是实测出来的陷阱：`latest` 可能指向远早于宿主 ABI 的版本。
-    // 精确钉是让「不带版本地装成远古版本」这件事不可能发生的最小条件；一旦放宽成 `^`/`~`，
-    // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让消费方在没有测试的
-    // 情况下换掉宿主类型面。
+    // 精确钉是让「不带版本地装成远古版本」这件事不发生的最小条件；一旦放宽成 `^`/`~`，
+    // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让本包在没有测试的
+    // 情况下换掉编译用的宿主类型面。
+    // 只判 dev 这一侧：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
+    // 装什么版本由宿主决定，那一条判据在下面。
     const { manifest } = await readSurface();
-    // 判据读 peer ∪ dev，不读 dependencies——宿主包已经不在那张表里了（见上一条门禁），照着
-    // dependencies 读只会得到一个空集，于是这道门自己先静默失效。
-    // 过滤出违规项再一次性断言，而不是在循环里按条件 expect：失败时 diff 直接列出
-    // 「哪个包钉成了什么」，比逐条抛错更好读。
-    const dshDeps = Object.entries(hostRanges(manifest)).filter(([name]) =>
+    const dshDeps = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
       name.startsWith(DSH_PREFIX),
     );
-    expect(dshDeps.length, "至少要钉住一枚 dsh-* 宿主依赖，否则这道门是空转").toBeGreaterThan(0);
+    expect(dshDeps.length, "至少要钉住一枚 dsh-* 开发依赖，否则这道门是空转").toBeGreaterThan(0);
     const ranged = dshDeps.filter(([, range]) => !/^\d+\.\d+\.\d+-/u.test(range));
-    expect(ranged, "这些 dsh-* 依赖没有精确钉住版本").toStrictEqual([]);
+    expect(ranged, "这些 dsh-* 开发依赖没有精确钉住版本").toStrictEqual([]);
   });
 
-  it("运行期 dsh-* 彼此同版本、与构建版本一致、且不高于 peer 的下界", async () => {
+  it("devDependencies 里的 dsh-* 彼此同版本，且不高于 peer 支持窗口的下界", async () => {
     // 旧写法是「dsh-* 的版本号 == peer 去掉 ^/~ 后的版本号」。那在 peer 是**单点范围**
-    // （`^0.2.1-alpha.1`）时成立，因为那时「宿主支持哪个版本」和「本包构建于哪个版本」
-    // 是同一个数。peer 一旦放宽成 `>=0.2.0-rc.2` 这种区间，两个事实就分家了：
-    //   peer      = 对**宿主**的声明（本包声称能在哪些宿主上跑）
-    //   依赖钉版  = 对**自己**的声明（本包是在哪个宿主版本上构建并测过的）
-    // 混成一条断言的后果是二选一：要么放宽 peer 就必然误报，要么为了门禁绿而不敢放宽。
-    // 于是拆成三条各自成立的不变式。
+    // 时成立，因为那时「宿主支持哪个版本」和「本包构建于哪个版本」是同一个数。peer 放宽成
+    // 窗口范围之后，两个事实就分家了，混成一条断言的后果是二选一：要么放宽就必然误报，
+    // 要么为了门禁绿而不敢放宽。于是拆成各自成立的两条不变式。
     //
     // 真正要防的故障是「同一个会话里出现同一枚宿主包的两份拷贝」——它不报编译错，
-    // 只在运行期报「认不出这个 callId」，是本仓最难查的一类问题。
+    // 只在运行期报「认不出这个 callId」，是本仓最难查的一类问题。那一面读 dev：
+    // devDependencies 里的 dsh-* 才是编译期真实存在的那份类型面。
     const { manifest } = await readSurface();
     const peer = manifest.peerDependencies?.["@deepseek-ai/dsh"];
-    expect(peer, "peer 依赖缺失：宿主版本就失去基准了").toBeDefined();
-    const host = hostRanges(manifest);
-
-    // ①② 全部 dsh-*（运行期的 peer + 构建期的 dev）钉同一个版本。只比一张表不够——
-    // devDependencies 里的 dsh-* 同样是编译期真实存在的类型面，两边分家就会出现
-    // 「同一个会话里两份宿主包」，而它不报编译错、只在运行期报「认不出这个 callId」。
-    // 宿主包现在一律落 peer 与 dev（见上面那条门禁），hostRanges 的并集就是这两张表，
-    // 没有第三个来源要并进来；读 dependencies 只会拿到空集，①② 便成了空转。
-    const allDsh = Object.entries(host).filter(([name]) => name.startsWith(DSH_PREFIX));
-    expect(new Set(allDsh.map(([, range]) => range)).size, "dsh-* 钉在了不同版本上").toBe(1);
-    // ③ 的基准取**运行期**那一面：peer 表里的 dsh-* 才是消费方环境真正提供的那几枚。
-    const runtime = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) =>
+    expect(peer, "peer 依赖缺失：支持窗口就失去基准了").toBeDefined();
+    // ① 全部 dsh-* 开发依赖钉同一个版本。
+    const installed = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
       name.startsWith(DSH_PREFIX),
     );
-    const pinned = runtime[0]?.[1] ?? "";
-    // ③ 不高于 peer 下界：钉的版本比声称支持的宿主区间还高，就是「装得上、跑不了」。
+    expect(installed.length, "至少要钉住一枚 dsh-* 开发依赖，否则这条是空转").toBeGreaterThan(0);
+    expect(new Set(installed.map(([, range]) => range)).size, "dsh-* 钉在了不同版本上").toBe(1);
+    const pinned = installed[0]?.[1] ?? "";
+    // ② 不高于 peer 下界：钉的版本比声称支持的宿主区间还高，就是「装得上、跑不了」。
     const bound = lowerBoundOf(peer ?? "");
     // 空串必须在这里**直接**断言，不能指望下游 atLeast 顺带报警：versionKey("") 解析成
     // [0,0,0,1]，跟任何真实版本比都是「更大」，于是看不懂的区间会被静默判为通过——
@@ -471,7 +448,7 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     expect(bound, `peer 区间「${peer}」的写法认不出来（本门禁只支持 >=X / ^X / 裸 X）`).not.toBe(
       "",
     );
-    for (const [name] of runtime) {
+    for (const [name] of installed) {
       expect(
         atLeast(pinned, bound),
         `${name}@${pinned} 高于 peer 下界 ${bound}，会在更老的宿主上装出一个跑不了的包`,

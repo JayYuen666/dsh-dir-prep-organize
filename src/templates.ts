@@ -25,6 +25,10 @@
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { AGENT_DIR_GROUP_LABELS as GENERATED_GROUP_LABELS } from "./group-labels.generated.ts";
 
+/** frontmatter 的闭合围栏与正文行分隔。 */
+const FRONTMATTER_CLOSE = /^---[ \t]*$/mu;
+const LINE_BREAK = /\r?\n/u;
+
 export interface TemplateEntry {
   id: string;
   name: string;
@@ -87,7 +91,7 @@ function stripPairQuotes(value: string): string {
 }
 
 /** frontmatter 键名形状：字母开头，随后字母/数字/下划线/连字符。 */
-const FRONTMATTER_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+const FRONTMATTER_KEY = /^[A-Za-z][\w-]*$/u;
 
 /** 头部只解析前 20 行键值对（防御恶意超长头部拖慢）。 */
 const FRONTMATTER_MAX_LINES = 20;
@@ -163,7 +167,7 @@ export function parseAgentFrontmatter(text: string): AgentFileInfo | undefined {
   let result: AgentFileInfo | undefined;
   if (firstNl !== -1 && norm.slice(0, firstNl).trim() === "---") {
     const rest = norm.slice(firstNl + 1);
-    const closeIdx = rest.search(/^---[ \t]*$/mu);
+    const closeIdx = rest.search(FRONTMATTER_CLOSE);
     if (closeIdx !== -1) {
       const head = rest.slice(0, closeIdx);
       const bodyStart = rest.indexOf("\n", closeIdx) + 1;
@@ -188,7 +192,7 @@ export function parseAgentFrontmatter(text: string): AgentFileInfo | undefined {
  * - 结果 trim；空正文（全围栏/全空白）→ 空串。
  */
 export function condenseRoleBody(body: string): string {
-  const lines = body.split(/\r?\n/u);
+  const lines = body.split(LINE_BREAK);
   const out: string[] = [];
   let inFence = false;
   let fenceStart = 0;

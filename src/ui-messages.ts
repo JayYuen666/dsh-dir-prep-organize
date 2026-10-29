@@ -21,10 +21,9 @@ import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 本包设置卡产出的全部界面文案。 */
 export interface UiMessages {
-  /** 卡片标题（设置页插件列表里的那一行）：这份列表同时喂「模板」下拉与「润色」▾。 */
-  readonly cardTitle: string;
-  /** 卡片副标题：一句话说明这张卡管什么（数据源、空表回落、导入放行面）。 */
-  readonly cardDescription: string;
+  /** 角色库小节标题与说明（这份列表同时喂「模板」下拉与「润色」▾）。 */
+  readonly rolesSection: string;
+  readonly rolesHint: string;
   /** 设置源可写位为 false 时的状态条。 */
   readonly statusReadOnly: string;
   /** 设置源尚未就绪时的状态条。 */
@@ -177,10 +176,16 @@ export interface UiMessages {
   readonly organizeRoleItem: string;
   /** 润色成功但输入框动作缺失时抛出的错误（会闪烁在按钮上）。 */
   readonly organizeWriteBackUnavailable: string;
+  /** 润色结果因草稿版本变化或会话切换而没有写回时的错误。 */
+  readonly organizeWriteBackStale: string;
+  /** 「润色」按钮 title（输入框处于提交期，编辑面只读）。 */
+  readonly organizeBusyTitle: string;
   /** 「模板」按钮 title（可写时）。 */
   readonly templatesIdleTitle: string;
   /** 「模板」按钮 title（输入框动作缺失）。 */
   readonly templatesBrokenTitle: string;
+  /** 「模板」按钮 title（输入框处于提交期，编辑面只读）。 */
+  readonly templatesBusyTitle: string;
   /** 空分组名的归组名。 */
   readonly templatesGroupCommon: string;
   /** 「模板」按钮的 aria-label。 */
@@ -231,8 +236,8 @@ export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
-    cardTitle: "模板库（输入框「模板」下拉与「润色」▾ 共用）",
-    cardDescription:
+    rolesSection: "角色库",
+    rolesHint:
       "输入框「模板」下拉与「润色」▾ 角色菜单共用这一份列表，空表即回落到内置精选角色集（生成自插件 agents/ 角色库）。留空点「导入角色」可一键导入内置全部；填路径则按「会话 cwd + 内置角色库 + 下方导入允许目录」放行。编辑后点「保存」生效，重启不丢。",
     statusReadOnly: "设置源不可写：编辑已禁用；下拉仍按当前列表生效。",
     statusNotReady: "设置源未就绪：显示当前生效列表，就绪后可编辑。",
@@ -317,18 +322,21 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeNoTemplates: "无模板可选作角色风格",
     organizeRoleItem: "以「{name}」的风格润色",
     organizeWriteBackUnavailable: "输入框动作不可用，无法写回",
-    templatesIdleTitle: "选择一条模板插入输入框（空则填入，非空则空一行追加；按分组展示）",
+    organizeWriteBackStale: "输入框内容已变化，润色结果未写回",
+    organizeBusyTitle: "输入框正在提交，暂不能润色",
+    templatesIdleTitle: "选择一条模板插入光标处（按分组展示）",
     templatesBrokenTitle: "输入框动作不可用，无法插入",
+    templatesBusyTitle: "输入框正在提交，暂不能插入模板",
     templatesGroupCommon: "通用",
     templatesAria: "插入模板",
-    templatesEmptyHint: "无模板：在设置页「模板库」中添加或恢复默认",
+    templatesEmptyHint: "无模板：在设置页「角色库」中添加或恢复默认",
     builtinLoading: "正在载入内置角色模板…",
     builtinFailed: "内置模板加载失败：{message}",
     builtinRetry: "重试",
   },
   en: {
-    cardTitle: 'Template library (shared by the "Template" dropdown and the "Polish" ▾ menu)',
-    cardDescription:
+    rolesSection: "Role library",
+    rolesHint:
       'The input-box "Template" dropdown and the "Polish" ▾ role menu share this one list; an empty list falls back to the built-in curated role set (generated from this plugin\'s agents/ role library). Leave the path empty and press "Import roles" to import the whole built-in library; an explicit path is allowed within "session cwd + built-in role library + the import allowed directories below". Press "Save" after editing — it survives restarts.',
     statusReadOnly:
       "Settings source is read-only: editing is disabled; the dropdown still uses the current list.",
@@ -424,13 +432,15 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeNoTemplates: "No templates available as a role style",
     organizeRoleItem: 'Polish in the style of "{name}"',
     organizeWriteBackUnavailable: "Input-box actions unavailable; cannot write back",
-    templatesIdleTitle:
-      "Pick a template to insert into the input box (an empty draft is filled, a non-empty one gets a blank line plus the template; shown grouped)",
+    organizeWriteBackStale: "The input box changed; the polished text was not applied",
+    organizeBusyTitle: "The input box is submitting; cannot polish right now",
+    templatesIdleTitle: "Pick a template to insert at the caret (shown grouped)",
     templatesBrokenTitle: "Input-box actions unavailable; cannot insert",
+    templatesBusyTitle: "The input box is submitting; cannot insert a template",
     templatesGroupCommon: "General",
     templatesAria: "Insert a template",
     templatesEmptyHint:
-      'No templates: add or restore defaults under "Template library" in the settings page',
+      'No templates: add or restore defaults under "Role library" in the settings page',
     builtinLoading: "Loading built-in role templates…",
     builtinFailed: "Failed to load built-in templates: {message}",
     builtinRetry: "Retry",

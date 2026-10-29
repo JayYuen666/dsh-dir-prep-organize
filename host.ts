@@ -351,6 +351,26 @@ export interface SessionsService {
   get: (id: SessionId) => SessionLike | undefined;
 }
 
+/** 活 Agent 的模型选择面（新版 `model.current()`；旧版只有 `options`）。 */
+export interface LiveModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: ModelSelection["reasoningEffort"];
+}
+/** 活 Agent 的只读投影：本包只碰模型这两位。 */
+export interface LiveAgent {
+  readonly model?: { readonly current: () => LiveModelSelection | undefined } | null;
+  readonly options?: {
+    readonly provider?: string;
+    readonly model?: string;
+    readonly reasoningEffort?: ModelSelection["reasoningEffort"];
+  };
+}
+/** 宿主 agent 注册表读面：按会话 id 取活 Agent。 */
+export interface AgentsService {
+  get: (id: SessionId) => LiveAgent | undefined;
+}
+
 /** 会话 id 的官方品牌构造：把边界上读来的裸 string 送进 `SessionStore.get`。 */
 const sessionIdOf = (value: string): SessionId => brandString<SessionId>(value);
 /** `ReasoningEffortId` 取官方真品牌（`Branded<'ReasoningEffortId'>`，以 dsh-brand 的
@@ -433,6 +453,9 @@ function isSettingsService(value: unknown): value is SettingsFormsService {
   return hasFnMember(value, "describe") && hasFnMember(value, "configure");
 }
 function isSessionsService(value: unknown): value is SessionsService {
+  return hasFnMember(value, "get");
+}
+function isAgentsService(value: unknown): value is AgentsService {
   return hasFnMember(value, "get");
 }
 // stat 与 resolve 同为硬依赖：单文件导入的字节上限只有 stat 能给（见 FsService 注释）。
@@ -824,12 +847,15 @@ export interface ImportResult {
  * 门禁后仍要求每个文件能解析出非空 frontmatter name（parseAgentFrontmatter），
  * 否则跳过并计数——绝不返回任意文件原文，只产出模板条目形状。
  */
+/** 两种路径分隔符（win32 与 POSIX）。 */
+const PATH_SEPARATOR = /[\\/]/u;
+
 /** 路径拆段（**逐段**比较而非字符串前缀：`/home/dev/project-two/x.md` 会骗过
  *  `startsWith("/home/dev/project")`，前缀式包含判断等于放行兄弟目录）。
  *  两种分隔符都拆：win32 的 `path.resolve`/`path.relative` 产出 `\`，只按 `/` 拆会
  *  把整条路径当成一段，于是合法子路径被判成越界、`..\` 也漏过逐段校验。 */
 function pathSegments(absolute: string): string[] {
-  return absolute.split(/[\\/]/u).filter((token) => token.length > 0);
+  return absolute.split(PATH_SEPARATOR).filter((token) => token.length > 0);
 }
 
 /** 逐段校验：段为 "." / ".." 一律拒（归一前必须先拦，否则 path.resolve 吃掉 `..`）；
@@ -1750,6 +1776,8 @@ export interface RouteDeps {
   fs?: () => FsService | undefined;
   llm?: () => LlmService | undefined;
   agentDefaultModel?: () => AgentDefaultModel | undefined;
+  /** 会话活线：有活 Agent 时润色跟随它的模型，没有才回落默认模型。 */
+  agents?: () => AgentsService | undefined;
   /** 设置里登记的额外导入允许根（每次请求现读，改设置无需重启）。 */
   importAllowRoots?: () => readonly string[];
   /** 部署值（Config 化）：润色超时 / 摘要字节上限 / 读取并发。
@@ -1764,8 +1792,30 @@ export interface RouteDeps {
  *  切文案（不重启、不加插件自己的 locale 设置项；与 importAllowRoots 的现读同构）。 */
 export type MessagesOf = () => HostMessages;
 
+/** 会话活线模型：新版读 `agent.model.current()`（含待切换选择），旧版回落
+ *  `agent.options`。没有活 Agent、或两处都答不全时 undefined（调用方回落默认模型）。
+ *  与 rescue 同一条规则：`current()` 交回 undefined 是「还没记录过选择」，不是读失败。 */
+export function liveModelOf(deps: RouteDeps, sessionId: string | null): ModelSelection | undefined {
+  const agent = sessionId === null ? undefined : deps.agents?.()?.get(sessionIdOf(sessionId));
+  const selected = agent?.model?.current();
+  const raw = selected ?? agent?.options;
+  const result =
+    raw !== undefined &&
+    typeof raw.provider === "string" &&
+    raw.provider.length > 0 &&
+    typeof raw.model === "string" &&
+    raw.model.length > 0
+      ? {
+          provider: raw.provider,
+          model: raw.model,
+          ...(raw.reasoningEffort === undefined ? {} : { reasoningEffort: raw.reasoningEffort }),
+        }
+      : undefined;
+  return result;
+}
+
 /** 当前默认模型解析（缺服务/抛错 → undefined）。 */
-function resolveModel(deps: RouteDeps): ModelSelection | undefined {
+function defaultModelOf(deps: RouteDeps): ModelSelection | undefined {
   // 单 return 满足 consistent-return；取不到/抛错则 result 保持 undefined。
   const current = deps.agentDefaultModel?.();
   let result: ModelSelection | undefined;
@@ -1782,6 +1832,11 @@ function resolveModel(deps: RouteDeps): ModelSelection | undefined {
     }
   }
   return result;
+}
+
+/** 润色的模型来源：会话活线优先，没有才用默认模型。 */
+function resolveModel(deps: RouteDeps, sessionId: string | null): ModelSelection | undefined {
+  return liveModelOf(deps, sessionId) ?? defaultModelOf(deps);
 }
 
 /** 会话最近对话文本提取（deriveMessages 尾部；缺会话/无方法/抛错 → 空串）。 */
@@ -1963,7 +2018,7 @@ async function organizePayload(
     if (cwd === undefined) {
       return { ok: false, error: messages.cwdUnknown };
     }
-    const model = resolveModel(scope.deps);
+    const model = resolveModel(scope.deps, sessionIdText);
     try {
       const result = await runOrganize(
         llm,
@@ -2250,6 +2305,10 @@ export function apply(ctx: Context, config: Config): void {
     agentDefaultModel: () => {
       const service = getService("agentDefaultModel");
       return isAgentDefaultModel(service) ? service : undefined;
+    },
+    agents: () => {
+      const service = getService("agents");
+      return isAgentsService(service) ? service : undefined;
     },
     // 导入允许根：每次请求现读 volatile 引用（改设置不必重启插件）。引用背后仍可能
     // 是存量脏配置，故过 importAllowRootsOf 收成字符串表——读不到就是空表，绝不因为

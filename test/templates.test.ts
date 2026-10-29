@@ -11,7 +11,6 @@
 //   condenseRoleBody      角色正文提炼：去代码围栏与行内反引号、不设字符上限（全量）
 //   groupLabelOf          仓库目录名 → 中文分组标签
 //   mergeImportedTemplates 导入并入草稿的 id 碰撞改写（不改输入）
-//   applyTemplateToDraft  空草稿整段填入；非空 trimEnd 后空两行追加，不覆盖已写内容
 
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
@@ -29,7 +28,6 @@ import {
 } from "../src/templates.ts";
 import { AGENT_DIR_GROUP_LABELS } from "../src/group-labels.generated.ts";
 import type { TemplateEntry } from "../src/templates.ts";
-import { applyTemplateToDraft } from "../src/client-entry.ts";
 
 /** 插件根目录（agents/ 与 src/ 的父目录，供「默认与真实文件一致」锁使用）。 */
 const PLUGIN_DIR = path.dirname(import.meta.dirname);
@@ -487,35 +485,6 @@ describe("mergeImportedTemplates", () => {
     assert.equal(out[3]!.name, "丁");
     assert.equal(out[3]!.id, "x-i-i", "原 id 为 x-i 的条目碰撞后按 baseId 重建为 x-i-i");
     assert.deepEqual(existing, existingSnapshot, "不改输入");
-  });
-});
-
-// ── applyTemplateToDraft ───────────────────────────────────────────────────
-
-describe("applyTemplateToDraft", () => {
-  const template = "模板正文第一行\n- 条目";
-
-  it("空草稿 → 整段填入", () => {
-    assert.equal(applyTemplateToDraft("", template), template);
-  });
-
-  it("纯空白草稿 → 视为空，整段填入且不带前导换行", () => {
-    assert.equal(applyTemplateToDraft("   \n\t ", template), template);
-  });
-
-  it("非空草稿 → 原内容 trimEnd + 空两行追加，原内容保留", () => {
-    assert.equal(applyTemplateToDraft("已写内容", template), `已写内容\n\n${template}`);
-  });
-
-  it("草稿尾随空白/空行被收敛，不产生多余空行", () => {
-    assert.equal(applyTemplateToDraft("已写内容\n\n \n", template), `已写内容\n\n${template}`);
-    assert.equal(applyTemplateToDraft("已写内容   ", template), `已写内容\n\n${template}`);
-  });
-
-  it("模板正文原样插入（不受草稿影响、内部换行保留）", () => {
-    const out = applyTemplateToDraft("草稿", template);
-    assert.ok(out.endsWith(template));
-    assert.ok(out.includes("模板正文第一行\n- 条目"));
   });
 });
 

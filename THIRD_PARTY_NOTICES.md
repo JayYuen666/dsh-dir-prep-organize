@@ -47,6 +47,8 @@ SOFTWARE.
 ## 运行期依赖
 
 运行期依赖的许可由各自包随包分发，本包不再重复其文本：`@deepseek-ai/cosmokit`、
-`@deepseek-ai/dsh-brand`、`@deepseek-ai/schemastery`、`@jayyuen66/dsh-plugin-shared`。
+`@deepseek-ai/dsh-brand`、`@deepseek-ai/schemastery`、`@jayyuen66/dsh-plugin-shared`、`zod`。
+`zod` 由设置卡的 `src/remote.ts` 以值引入（strict codec 的形状校验），client 产物按宿主
+`PLATFORM_MODULES` 保持 `require("zod")` 外部化。
 其中 `@deepseek-ai/cosmokit` 仅出现在本包发布的类型声明里——schemastery 的 `Schema` 类型
 把 `Dict` 取自 cosmokit，声明文件点名它就必须让它可解析，故列为运行期依赖而非开发依赖。

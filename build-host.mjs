@@ -60,15 +60,16 @@ export async function buildHost() {
 async function main() {
   const artifacts = await buildHost();
   await Promise.all(
-    [...artifacts].map(async ([file, code]) => {
+    Array.from(artifacts, async ([file, code]) => {
       await writeArtifact(file, code);
     }),
   );
   console.info(
     "written:",
-    [...artifacts]
-      .map(([file, code]) => `${path.basename(file)} ${Buffer.byteLength(code, "utf8")} bytes`)
-      .join(", "),
+    Array.from(
+      artifacts,
+      ([file, code]) => `${path.basename(file)} ${Buffer.byteLength(code, "utf8")} bytes`,
+    ).join(", "),
   );
 }
 

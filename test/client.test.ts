@@ -2,8 +2,7 @@
 // src/client-entry.ts 契约测试（真实 React 19 + happy-dom 渲染，不写假 React）。
 //
 // 分层（与 session-rescue 的 client-ui.test.ts 同款）：
-//   · 纯函数（formatContextSummary / applyTemplateToDraft / persistError /
-//     formatImportSkips）直调断言；
+//   · 纯函数（formatContextSummary / persistError / formatImportSkips）直调断言；
 //   · 组件走 apply(ctx) 装配出来的真实 slot 组件树挂载，按 DOM 断言；
 //     交互优先直调 React props（happy-dom 合成事件到不了 React 19 root 监听器，
 //     已在前一个包里实证），button.click() 在真实链路上可用；
@@ -25,7 +24,6 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import {
   apply as clientApply,
-  applyTemplateToDraft,
   builtinTemplatesSnapshot,
   formatContextSummary,
   formatImportSkips,
@@ -138,7 +136,8 @@ async function profileBundleName(): Promise<string> {
 /** 本包 cordis.patch.yml 声明的裸条目 id（0.1.7 的 settings 命名空间）。 */
 async function patchEntryIds(): Promise<string[]> {
   const patch = await readFile(path.join(PKG_DIR, "cordis.patch.yml"), "utf8");
-  return [...patch.matchAll(/^\s*(?:-\s+)?id:\s*(?<id>\S+)\s*$/gmu)].map(
+  return Array.from(
+    patch.matchAll(/^\s*(?:-\s+)?id:\s*(?<id>\S+)\s*$/gmu),
     (row) => row.groups?.["id"] ?? "",
   );
 }
@@ -239,6 +238,7 @@ const ENTRY_ID = "dir-prep-organize";
 const FIELD_ORGANIZE_BTN = "dpi-organize-btn";
 const FIELD_ORGANIZE_CARET = "dpi-organize-caret";
 const FIELD_ORGANIZE_MENU = "dpi-organize-menu";
+const FIELD_ORGANIZE_ROLE_DIRECT = "dpi-organize-role-direct";
 const FIELD_ORGANIZE_ROLE_ITEM = "dpi-organize-role-item";
 const FIELD_TEMPLATE_ITEM = "dpi-template-item";
 const FIELD_TEMPLATE_MENU = "dpi-template-menu";
@@ -803,6 +803,8 @@ let container: HTMLDivElement;
 
 /** 草稿写入记录（kitProps 的 setDraft 落点；beforeEach 清空）。 */
 const writes: string[] = [];
+/** 插入记录（模板入口的 captureInsertion/insertText 落点；beforeEach 清空）。 */
+const inserts: { text: string; span: InsertSpan }[] = [];
 
 async function mount(ui: React.ReactElement): Promise<void> {
   await act(async () => {
@@ -946,6 +948,7 @@ function domFixtureSetup(): void {
   container = document.createElement("div");
   document.body.append(container);
   writes.length = 0;
+  inserts.length = 0;
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     value: true,
     configurable: true,
@@ -1011,21 +1014,6 @@ describe("formatContextSummary", () => {
   it("无 cwd / 无 entries → 仍产出可发送的摘要头", () => {
     assert.equal(formatContextSummary({ ok: true }).split("\n")[0], "当前目录: (未提供)");
     assert.match(formatContextSummary({ ok: true, entries: [] }), /文件 0 个, 目录 0 个/u);
-  });
-});
-describe("applyTemplateToDraft", () => {
-  beforeEach(domFixtureSetup);
-
-  afterEach(domFixtureTeardown);
-
-  it("空草稿整段填入；非空末尾空两行追加", () => {
-    assert.equal(applyTemplateToDraft("", "T"), "T");
-    assert.equal(applyTemplateToDraft("草稿  ", "T"), "草稿\n\nT");
-  });
-
-  it("宿主给的草稿不是字符串 → 按空草稿整段填入（不拼出 undefined 前缀）", () => {
-    const odd: unknown = undefined;
-    assert.equal(applyTemplateToDraft(odd as string, "模板正文"), "模板正文");
   });
 });
 
@@ -1274,14 +1262,57 @@ describe("inject 声明", () => {
 
 // ── 「润色」分段按钮 ────────────────────────────────────────────────────────
 
+/** 输入框状态的最小形状（与 KitProps.useInput 的 selector 入参同构）。 */
+interface InputView {
+  readonly draft: string;
+  readonly draftRev: number;
+  readonly phase: "plain" | "adjudicating" | "claimed" | "submitting" | "sending";
+}
+
+/** 宿主版本校验插入接口交回的选区快照。 */
+interface InsertSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly draftRev: number;
+}
+
+interface InputActionsFace {
+  setDraft: (text: string) => void;
+  captureInsertion: () => InsertSpan;
+  insertText: (text: string, span: InsertSpan) => boolean;
+}
+
+/** exactOptionalPropertyTypes 下"显式给 undefined"要写进字段类型里，才能模拟宿主中途摘面。 */
+type MutableActions = { [Key in keyof InputActionsFace]?: InputActionsFace[Key] | undefined };
+
 interface KitProps {
   /** locale seat 的测试替身：mountAll 每轮从 dock 注册的 inject 抽取（见 dockKit）。 */
   t: Translate;
   /** hooks.card → useCard 的等价适配（useCardOf，真 store）。 */
   useCard: (selector: (snap: SnapshotView) => unknown) => unknown;
-  useInput?: <TResult>(selector: (state: { draft: string }) => TResult) => TResult;
-  inputActions?: { setDraft: (text: string) => void };
+  useInput?: <TResult>(selector: (state: InputView) => TResult) => TResult;
+  inputActions?: InputActionsFace;
   sessionId?: string;
+}
+
+/** 输入面替身：默认空闲、草稿版本 0；用例只覆盖自己关心的那几位。 */
+function inputView(state: Partial<InputView> = {}): KitProps["useInput"] {
+  return <TResult>(selector: (view: InputView) => TResult): TResult =>
+    selector({ draft: "原始草稿", draftRev: 0, phase: "plain", ...state });
+}
+
+/** 一套自洽的输入面替身：captureInsertion 读的是同一份活版本号，供"在途改稿"用例驱动。 */
+function liveActions(live: { rev: number }): InputActionsFace {
+  return {
+    setDraft: (value: string): void => {
+      writes.push(value);
+    },
+    captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: live.rev }),
+    insertText: (value: string, span: InsertSpan): boolean => {
+      inserts.push({ text: value, span });
+      return true;
+    },
+  };
 }
 
 /** kitProps 的覆盖面：exactOptionalPropertyTypes 下"显式给 undefined"与"缺省"
@@ -1297,10 +1328,15 @@ function kitProps(over: KitOverrides = {}): Record<string, unknown> {
   return {
     ...dockKit,
     sessionId: "s1",
-    useInput: (selector: (state: { draft: string }) => string) => selector({ draft: "原始草稿" }),
+    useInput: inputView(),
     inputActions: {
       setDraft: (value: string): void => {
         writes.push(value);
+      },
+      captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: 0 }),
+      insertText: (value: string, span: InsertSpan): boolean => {
+        inserts.push({ text: value, span });
+        return true;
       },
     },
     ...over,
@@ -1328,6 +1364,43 @@ async function expectStaleDiscarded(orgBody: unknown): Promise<void> {
     gate.resolve(undefined);
   });
   await flush();
+}
+
+/** 在途润色：`whilePending` 里把输入面换成新状态（草稿版本 / 阶段 / 会话）并重挂，
+ *  再让响应落地。每次重挂读到的都是"最新一帧"，不是发起时的闭包。 */
+async function expectWriteBackSkipped(
+  initial: KitOverrides,
+  whilePending: (pending: {
+    props: Record<string, unknown>;
+    rerenderWith: () => Promise<void>;
+  }) => Promise<void>,
+): Promise<string> {
+  const gate = Promise.withResolvers<undefined>();
+  stubFetch(async (url) => {
+    if (url.startsWith(ORGANIZE_URL)) {
+      await gate.promise;
+      return { body: { ok: true, content: "润色结果" } };
+    }
+    return { body: { ok: true, csrf: "t", cwd: "/w", entries: [], provider: "p", model: "m" } };
+  });
+  const { organize } = mountAll();
+  const props = kitProps(initial);
+  await mount(React.createElement(organize, props));
+  await act(async () => {
+    buttonByField(FIELD_ORGANIZE_BTN)?.click();
+  });
+  await flush();
+  await whilePending({
+    props,
+    rerenderWith: async (): Promise<void> => {
+      await rerender(React.createElement(organize, props));
+    },
+  });
+  await act(async () => {
+    gate.resolve(undefined);
+  });
+  await flush();
+  return buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "";
 }
 describe("OrganizeButton", () => {
   beforeEach(domFixtureSetup);
@@ -1653,6 +1726,24 @@ describe("OrganizeButton", () => {
     assert.deepEqual(writes, [], "内容没有写回去");
   });
 
+  it("宿主只给 setDraft 时润色仍写回（版本按最近一帧核对）", async () => {
+    // 三个受支持版本都带 captureInsertion；这里守的是"插入面缺席"的降级路：
+    // 仍按会话、阶段与最近一帧的草稿版本核对，不因为读不到活版本就整条拒绝。
+    stubOrganizeOk();
+    const { organize } = mountAll();
+    const props: Record<string, unknown> = {
+      ...kitProps(),
+      inputActions: {
+        setDraft: (value: string): void => {
+          writes.push(value);
+        },
+      },
+    };
+    await mount(React.createElement(organize, props));
+    await press(buttonByField(FIELD_ORGANIZE_BTN));
+    assert.deepEqual(writes, ["整理后的要求"]);
+  });
+
   it("loading 期间重复点击被门禁（DOM disabled + 组件内 seq 双保险）", async () => {
     const gate = Promise.withResolvers<undefined>();
     stubFetch(async (url) => {
@@ -1724,18 +1815,88 @@ describe("OrganizeButton", () => {
     assert.equal(byField(FIELD_ORGANIZE_BTN), null, "组件已卸载，无残留失败态");
   });
 
+  it("润色期间草稿被编辑 → 不覆盖新草稿，并报「未写回」", async () => {
+    const live = { rev: 0 };
+    const title = await expectWriteBackSkipped(
+      { inputActions: liveActions(live) },
+      async ({ props, rerenderWith }) => {
+        live.rev = 1;
+        props["useInput"] = inputView({ draft: "用户新输入", draftRev: 1 });
+        await rerenderWith();
+      },
+    );
+    assert.deepEqual(writes, [], "用户的新草稿不被覆盖");
+    assert.match(title, /输入框内容已变化/u, "失败反馈说明没有写回");
+  });
+
+  it("润色期间进入提交态 → 不写回；退回 plain 后旧结果仍不写", async () => {
+    const live = { rev: 0 };
+    const title = await expectWriteBackSkipped(
+      { inputActions: liveActions(live) },
+      async ({ props, rerenderWith }) => {
+        props["useInput"] = inputView({ phase: "sending" });
+        await rerenderWith();
+        // 发送失败/取消退回编辑态：草稿版本没变，只靠"当前是不是 plain"判会漏掉这一段
+        props["useInput"] = inputView({ phase: "plain" });
+        await rerenderWith();
+      },
+    );
+    assert.deepEqual(writes, [], "整段提交期内返回的结果一律不写");
+    assert.match(title, /输入框内容已变化/u);
+  });
+
+  it("润色期间切换会话 → 结果不落进另一个会话", async () => {
+    const live = { rev: 0 };
+    const title = await expectWriteBackSkipped(
+      { inputActions: liveActions(live) },
+      async ({ props, rerenderWith }) => {
+        props["sessionId"] = "s2";
+        props["inputActions"] = liveActions(live);
+        props["useInput"] = inputView({ draft: "另一个会话的草稿" });
+        await rerenderWith();
+      },
+    );
+    assert.deepEqual(writes, [], "旧会话的润色结果不写进新会话");
+    assert.match(title, /输入框内容已变化/u);
+  });
+
+  it("提交态下主按钮与菜单项都禁用，并说明原因", async () => {
+    stubOrganizeOk();
+    const { organize } = mountAll();
+    const props = kitProps({ useInput: inputView({ phase: "sending" }) });
+    await mount(React.createElement(organize, props));
+    const btn = buttonByField(FIELD_ORGANIZE_BTN);
+    assert.ok(btn, "润色按钮在位");
+    assert.equal(btn.disabled, true, "提交中不发起润色");
+    assert.match(btn.title, /输入框正在提交/u);
+    await press(buttonByField(FIELD_ORGANIZE_CARET));
+    const items = [byField(FIELD_ORGANIZE_ROLE_DIRECT), ...byFields(FIELD_ORGANIZE_ROLE_ITEM)];
+    assert.equal(items.length, 2, "直接润色 + 一个角色项");
+    for (const item of items) {
+      assert.equal((item as HTMLButtonElement | null)?.disabled, true, "菜单项与主键同一道门");
+    }
+    assert.deepEqual(writes, []);
+  });
+
   it("useInput 返回 undefined → 草稿按空串处理", async () => {
     stubOrganizeOk();
     const { organize } = mountAll();
     const kit: Record<string, unknown> = {
       ...dockKitProps(),
       sessionId: undefined,
-      useInput: (selector: (state: { draft: string | undefined }) => string | undefined) =>
-        selector({ draft: undefined }),
+      useInput: (
+        selector: (state: {
+          draft: string | undefined;
+          draftRev: number;
+          phase: "plain";
+        }) => string,
+      ) => selector({ draft: undefined, draftRev: 0, phase: "plain" }),
       inputActions: {
         setDraft: (value: string): void => {
           writes.push(value);
         },
+        captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: 0 }),
+        insertText: (): boolean => true,
       },
     };
     await mount(React.createElement(organize, kit));
@@ -1774,7 +1935,7 @@ describe("OrganizeButton", () => {
     const { organize } = mountAll();
     await mount(React.createElement(organize, kitProps({ inputActions: undefined })));
     await press(buttonByField(FIELD_ORGANIZE_CARET));
-    const direct = buttonByField("dpi-organize-role-direct");
+    const direct = buttonByField(FIELD_ORGANIZE_ROLE_DIRECT);
     const role = buttonByField(FIELD_ORGANIZE_ROLE_ITEM);
     assert.ok(direct && role, "菜单项已渲染");
     assert.equal(direct.disabled, true, "写不回时不允许从菜单直接发请求");
@@ -1804,7 +1965,7 @@ describe("OrganizeButton", () => {
     assert.equal(stateOf(FIELD_ORGANIZE_BTN), "loading");
     // 在途时 caret 在 DOM 上已禁用，直调 React onClick 才能把菜单展开到这一态。
     await clickViaProps(buttonByField(FIELD_ORGANIZE_CARET));
-    const direct = buttonByField("dpi-organize-role-direct");
+    const direct = buttonByField(FIELD_ORGANIZE_ROLE_DIRECT);
     const role = buttonByField(FIELD_ORGANIZE_ROLE_ITEM);
     assert.ok(direct && role, "菜单项已渲染");
     assert.equal(direct.disabled, true, "在途时不动另一个请求");
@@ -1824,7 +1985,7 @@ describe("TemplateButton", () => {
 
   afterEach(domFixtureTeardown);
 
-  it("按分组渲染；空 group 归入通用；点选追加到草稿", async () => {
+  it("按分组渲染；空 group 归入通用；点选插入光标处", async () => {
     const snapshot: FormSnapshot = snap({
       writable: true,
       value: {
@@ -1840,7 +2001,7 @@ describe("TemplateButton", () => {
     await mount(React.createElement(template, kitProps({ sessionId: undefined })));
     assert.equal(buttonContaining("模板")?.disabled, false);
     await press(buttonContaining("模板"));
-    const groups = [...container.querySelectorAll<HTMLElement>(".dpi-grouph")].map((node) =>
+    const groups = Array.from(container.querySelectorAll<HTMLElement>(".dpi-grouph"), (node) =>
       textOf(node),
     );
     assert.deepEqual(groups, ["工程", "通用"]);
@@ -1849,7 +2010,12 @@ describe("TemplateButton", () => {
     assert.equal(items[0]?.title, "说明甲");
     assert.equal(items[1]?.title, "正文B", "description 缺省时 title 回落正文");
     await press(items[1]);
-    assert.deepEqual(writes, [`原始草稿\n\n正文B`]);
+    assert.deepEqual(
+      inserts.map((entry) => entry.text),
+      ["正文B"],
+      "模板走宿主插入面（保留稿里的引用块与附件）",
+    );
+    assert.deepEqual(writes, [], "不再整稿 setDraft");
   });
 
   it("宿主回空表 → 下拉仍取内置精选集（回归：0.1.7 里未设置的形状就是 []）", async () => {
@@ -1870,7 +2036,7 @@ describe("TemplateButton", () => {
     assert.match(text(), /无模板：在设置页/u);
   });
 
-  it("宿主未注入 useInput + 从未设置过模板 → 按内置精选集渲染、按空草稿整段插入", async () => {
+  it("宿主未注入 useInput + 从未设置过模板 → 按内置精选集渲染、按插入面落地", async () => {
     stubBuiltinTemplates();
     const { template } = mountAll(snap({ revision: 0 }));
     writes.length = 0;
@@ -1882,28 +2048,46 @@ describe("TemplateButton", () => {
     const [firstItem] = items;
     assert.ok(firstTpl && firstItem, "首条存在");
     await press(firstItem);
-    assert.deepEqual(writes, [firstTpl.text], "缺 useInput 时草稿按空串处理（不拼 undefined）");
+    assert.deepEqual(
+      inserts.map((entry) => entry.text),
+      [firstTpl.text],
+      "缺 useInput 不影响插入（插入面不读草稿文本）",
+    );
   });
 
-  it("宿主 useInput 返回 undefined → 模板按空草稿插入", async () => {
+  it("宿主 useInput 返回 undefined → 模板仍按插入面落地", async () => {
     const { template } = mountAll();
     writes.length = 0;
     await mount(
       React.createElement(template, {
         ...dockKitProps(),
         sessionId: "s1",
-        useInput: (selector: (state: { draft: string | undefined }) => string | undefined) =>
-          selector({ draft: undefined }),
+        useInput: (
+          selector: (state: {
+            draft: string | undefined;
+            draftRev: number;
+            phase: "plain";
+          }) => string,
+        ) => selector({ draft: undefined, draftRev: 0, phase: "plain" }),
         inputActions: {
           setDraft: (value: string): void => {
             writes.push(value);
+          },
+          captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: 0 }),
+          insertText: (value: string, span: InsertSpan): boolean => {
+            inserts.push({ text: value, span });
+            return true;
           },
         },
       }),
     );
     await press(buttonContaining("模板"));
     await press(byFields(FIELD_TEMPLATE_ITEM)[0] ?? null);
-    assert.deepEqual(writes, ["正文甲"], "undefined 草稿 → 整段填入");
+    assert.deepEqual(
+      inserts.map((entry) => entry.text),
+      ["正文甲"],
+    );
+    assert.deepEqual(writes, []);
   });
 
   it("inputActions 缺失 → 按钮禁用并给出原因", async () => {
@@ -1912,7 +2096,7 @@ describe("TemplateButton", () => {
       React.createElement(template, {
         ...dockKitProps(),
         sessionId: "s1",
-        useInput: (selector: (state: { draft: string }) => string) => selector({ draft: "" }),
+        useInput: inputView({ draft: "" }),
       }),
     );
     const btn = buttonContaining("模板");
@@ -1923,26 +2107,62 @@ describe("TemplateButton", () => {
     assert.equal(byField(FIELD_TEMPLATE_MENU), null, "禁用时点了也不展开");
   });
 
-  it("展开后点选时写回动作已失效 → 静默不炸", async () => {
+  it("提交态下模板入口禁用并说明忙碌原因", async () => {
     const { template } = mountAll();
-    const actions: { setDraft?: ((value: string) => void) | undefined } = {
+    const props = kitProps({ useInput: inputView({ phase: "sending" }) });
+    await mount(React.createElement(template, props));
+    const btn = buttonContaining("模板");
+    assert.ok(btn, "模板按钮在位");
+    assert.equal(btn.disabled, true, "提交中不插入");
+    assert.match(btn.title, /输入框正在提交/u);
+    await press(btn);
+    assert.equal(byField(FIELD_TEMPLATE_MENU), null);
+    assert.deepEqual(inserts, []);
+  });
+
+  it("展开后点选时插入面已失效 → 静默不炸，也不回落整稿覆盖", async () => {
+    const { template } = mountAll();
+    const actions: MutableActions = {
       setDraft: (value: string): void => {
         writes.push(value);
+      },
+      captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: 0 }),
+      insertText: (value: string, span: InsertSpan): boolean => {
+        inserts.push({ text: value, span });
+        return true;
       },
     };
     await mount(
       React.createElement(template, {
         ...dockKitProps(),
         sessionId: "s1",
-        useInput: (selector: (state: { draft: string }) => string) => selector({ draft: "旧内容" }),
+        useInput: inputView({ draft: "旧内容" }),
         inputActions: actions,
       }),
     );
     await press(buttonContaining("模板"));
-    actions.setDraft = undefined;
+    actions.insertText = undefined;
     const [item] = byFields(FIELD_TEMPLATE_ITEM);
     await press(item ?? null);
     assert.equal(byField(FIELD_TEMPLATE_MENU), null, "选完即关菜单");
+    assert.deepEqual(writes, [], "不回落 setDraft（那会丢掉引用块）");
+    assert.deepEqual(inserts, []);
+  });
+
+  it("宿主判定锁稿/改稿拒绝插入 → 不写、不回落 setDraft", async () => {
+    const { template } = mountAll();
+    const rejects: InputActionsFace = {
+      setDraft: (value: string): void => {
+        writes.push(value);
+      },
+      captureInsertion: (): InsertSpan => ({ start: 0, end: 0, draftRev: 0 }),
+      insertText: (): boolean => false,
+    };
+    await mount(React.createElement(template, kitProps({ inputActions: rejects })));
+    await press(buttonContaining("模板"));
+    await press(byFields(FIELD_TEMPLATE_ITEM)[0] ?? null);
+    assert.deepEqual(writes, [], "宿主说不可写就不整稿覆盖");
+    assert.equal(byField(FIELD_TEMPLATE_MENU), null, "菜单照常关闭");
   });
 
   it("外部点击关闭模板菜单", async () => {
@@ -2002,8 +2222,8 @@ function injectOf(mounted: { cardInject: () => Record<string, unknown> }): CardI
   return injected;
 }
 
-/** 打开设置卡并挂上（refresh = 外部快照变化后重挂，驱动草稿跟随）。
- *  translator 决定卡片语言；展开走 .dpic-header，与标题文案（语言）无关。 */
+/** 挂上设置卡（refresh = 外部快照变化后重挂，驱动草稿跟随）。
+ *  translator 决定卡片语言；卡片正文直接渲染，不再有折叠头。 */
 async function openCard(
   initial?: FormSnapshot,
   translator: Translate = tZh,
@@ -2014,7 +2234,6 @@ async function openCard(
   const mounted = mountAll(initial, translator);
   const props = cardPropsOf(injectOf(mounted));
   await mount(React.createElement(mounted.card, props));
-  await press(container.querySelector<HTMLButtonElement>(".dpic-header"));
   return {
     ctx: mounted.ctx,
     refresh: async () => {
@@ -2064,12 +2283,12 @@ function writeEntry(ctx: MockCtx, index: number): { field: string; value: string
 }
 
 function errText(): string {
-  const node = container.querySelector<HTMLElement>(".dpic-err");
+  const node = container.querySelector<HTMLElement>(".dpic-err, .dsu-statusError");
   return textOf(node);
 }
 
 function hintList(): string[] {
-  return [...container.querySelectorAll<HTMLElement>(".dpic-hint")].map((node) => textOf(node));
+  return Array.from(container.querySelectorAll<HTMLElement>(".dpic-hint"), (node) => textOf(node));
 }
 describe("TemplatesCard 状态提示", () => {
   beforeEach(domFixtureSetup);
@@ -2212,7 +2431,6 @@ describe("TemplatesCard 编辑与保存", () => {
     vi.spyOn(injected, "set").mockRejectedValue(rejection);
     const props = cardPropsOf(injected);
     await mount(React.createElement(mounted.card, props));
-    await press(buttonContaining("模板库"));
     await type(inputByClass(CLS_NAME, 0), "改名");
     await blur(inputByClass(CLS_NAME, 0));
     await press(saveButton());
@@ -3197,14 +3415,14 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
     // 这里被解析成非空元素类型），而且真缺席时它会退化成 undefined ≠ string 的软失败。
     const localeCall = ctx.localeCalls.at(0);
     assert.ok(localeCall, "字典注册记录在位（上一句已钉恰好一次）");
-    assert.equal(localeCall.dicts.zh.cardTitle, UI_MESSAGES.zh.cardTitle);
-    assert.equal(localeCall.dicts.en.cardTitle, UI_MESSAGES.en.cardTitle);
+    assert.equal(localeCall.dicts.zh.rolesSection, UI_MESSAGES.zh.rolesSection);
+    assert.equal(localeCall.dicts.en.rolesSection, UI_MESSAGES.en.rolesSection);
   });
 
   it("en 字典渲染整张设置卡：标题/按钮/面板是英文，且不残留中文", async () => {
     await openCard(READY_ASCII, tEn);
     const body = text();
-    assert.match(body, /Template library/u, "英文标题");
+    assert.match(body, /Role library/u, "英文标题");
     assert.match(body, /Save/u, "英文保存按钮");
     assert.match(body, /Import roles/u, "英文导入按钮");
     assert.match(body, /Import allowed directories/u, "英文允许目录标题");
@@ -3213,7 +3431,7 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
 
   it("zh 字典渲染同一张设置卡：中文标题在位（两语走同一渲染路径）", async () => {
     await openCard(READY_ASCII);
-    assert.match(text(), /模板库（输入框「模板」下拉与「润色」▾ 共用）/u);
+    assert.match(text(), /角色库/u);
   });
 
   it("两语模板的 {占位符} 集合一致（翻译不会漏掉插值）", () => {

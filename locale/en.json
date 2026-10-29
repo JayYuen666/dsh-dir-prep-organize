@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Draft polish and templates",
+    "description": "Polishes the draft in the input box before you send it and inserts curated templates at the cursor.",
+    "detail": "docs/DETAIL.md"
+  }
+}
