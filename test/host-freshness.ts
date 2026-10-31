@@ -26,7 +26,7 @@
 // 引入非确定性，改为规范哈希比较并在 build-host.mjs 里输出 canonical 形态。
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -52,8 +52,10 @@ export interface HostFreshnessOptions {
 const DEFAULT_BUILDER = "buildHost";
 const DEFAULT_ARTIFACT = "host.js";
 
-/** 磁盘上没有这份产物时的占位正文：让门禁红在比对里，而不是红在 ENOENT 的栈里。 */
-const ABSENT = "[产物缺失：运行 node build-host.mjs]";
+/** 磁盘上没有这份产物时的占位正文：让门禁红在比对里，而不是红在 ENOENT 的栈里。
+ *  两侧都带 NUL 起止符：占位串与真实产物正文完全相同的概率本来极低，加了控制字符之后
+ *  连「源码里恰好写着一模一样的占位串」这种碰撞也排除掉（JS 源里可以有 NUL，但没人会写）。 */
+const ABSENT = "\u0000[产物缺失：运行 node build-host.mjs]\u0000";
 
 /**
  * 读一份文本产物；不存在时交回缺失占位。
@@ -61,10 +63,13 @@ const ABSENT = "[产物缺失：运行 node build-host.mjs]";
  * @returns 正文，或 ABSENT
  */
 function readText(file: string): string {
-  if (existsSync(file)) {
+  // 一次系统调用判存在，而不是 existsSync + readFileSync 两步：两步之间文件可以被删掉
+  // （TOCTOU），那时抛的是 ENOENT 栈而不是「产物缺失」的占位。
+  try {
     return readFileSync(file, "utf8");
+  } catch {
+    return ABSENT;
   }
-  return ABSENT;
 }
 
 /**
@@ -132,9 +137,42 @@ export async function hostFreshnessEvidence(
       `[${pkgName}] build-host.mjs 没有可调用导出 ${builder}：门禁的 builder 选项必须指它真实导出的名字。`,
     );
   }
+  // 磁盘侧必须在 build() **之前**读：构建函数若有落盘副作用，「磁盘 = 刚写的那份」会让
+  // 这道门永远新鲜。单产物形态在这里先读（产物路径已知）；多产物形态的文件清单要等
+  // build() 返回，故改为构建后核「builder 没落盘」（见下）。
+  const diskArtifact = readText(path.resolve(pkgDir, artifact));
+  const startedAt = Date.now();
   const built = await build();
   if (typeof built === "string") {
-    return { pkgName, pkgDir, onDisk: readText(path.resolve(pkgDir, artifact)), built };
+    if (built === "") {
+      throw new TypeError(`[${pkgName}] ${builder}() 交回空正文：空产物两侧相等，门禁会静默通过。`);
+    }
+    return { pkgName, pkgDir, onDisk: diskArtifact, built };
+  }
+  if (!(built instanceof Map)) {
+    throw new TypeError(`[${pkgName}] ${builder}() 交回的形状不是 string 也不是 Map。`);
+  }
+  if (built.size === 0) {
+    throw new TypeError(
+      `[${pkgName}] ${builder}() 交回空产物清单：两侧清单都会等于一行空串，门禁静默通过。`,
+    );
+  }
+  if (options.artifact !== undefined) {
+    throw new TypeError(
+      `[${pkgName}] 多产物构建不接受 artifact 选项（它比对整份清单）：去掉 artifact 或改回单产物 builder。`,
+    );
+  }
+  // 多产物形态的「磁盘 vs 内存」靠一条不变量成立：builder 是纯内存构建。它若有落盘副作用，
+  // 门禁读到的就是刚写的那份，于是永远判新鲜。构建期间被写过的产物直接判夹具坏掉。
+  const written = [...built.keys()].filter((file) => {
+    const stat = statSync(file, { throwIfNoEntry: false });
+    return stat !== undefined && stat.mtimeMs >= startedAt;
+  });
+  if (written.length > 0) {
+    throw new TypeError(
+      `[${pkgName}] ${builder}() 在构建期间落盘写了 ${written.map((file) => path.basename(file)).join(", ")}：` +
+        "新鲜度门禁要求构建函数是纯内存的，否则磁盘侧读到的是「刚写的那份」，永远判新鲜。",
+    );
   }
   return {
     pkgName,

@@ -155,13 +155,16 @@ async function probeNoFollow(
 /** 缺席 → FS_NOT_FOUND（fsio.ts 的 stat）；其余错误原样上抛。 */
 async function statOrThrow(
   absolute: string,
+  displayPath: string,
   verb: "read",
 ): Promise<{ isFile: () => boolean; size: number }> {
   try {
     return await stat(absolute);
   } catch (error: unknown) {
     if (isMissing(error)) {
-      throw new FsError(`cannot ${verb} "${absolute}": not found`, "FS_NOT_FOUND");
+      // 报错里用 displayPath（请求拼写）而不是 absolute（realpath）：fsio.ts 的 readText
+      // 三个错误分支一律用请求拼写，只有 targetKey 走 realpath。
+      throw new FsError(`cannot ${verb} "${displayPath}": not found`, "FS_NOT_FOUND");
     }
     throw error;
   }
@@ -174,7 +177,7 @@ async function statRegularFile(
   displayPath: string,
   verb: "read",
 ): Promise<{ size: number }> {
-  const info = await statOrThrow(absolute, verb);
+  const info = await statOrThrow(absolute, displayPath, verb);
   if (!info.isFile()) {
     throw new FsError(`cannot ${verb} "${displayPath}": not a regular file`, "FS_NOT_REGULAR_FILE");
   }
@@ -320,13 +323,8 @@ export class DiskFileSystem extends FileSystem {
   public override async readText(target: FsTarget, signal?: AbortSignal): Promise<string> {
     checkAborted(signal, "read");
     const file = this.processPath(target);
-    const info = await statOrThrow(file, "read");
-    if (!info.isFile()) {
-      throw new FsError(
-        `cannot read "${target.displayPath}": not a regular file`,
-        "FS_NOT_REGULAR_FILE",
-      );
-    }
+    // 复用 statRegularFile（#188）：此前这里内联了同一段 stat + isFile 判据，两处漂移风险。
+    await statRegularFile(file, target.displayPath, "read");
     const raw = await readFileBounded(file, signal);
     checkAborted(signal, "read");
     if (raw.subarray(0, BINARY_SAMPLE_BYTES).includes(0)) {
@@ -385,8 +383,19 @@ export class DiskFileSystem extends FileSystem {
     const handle = await open(file, "r");
     try {
       const buffer = new Uint8Array(range.length);
-      const chunk = await handle.read(buffer, 0, range.length, range.offset);
-      return chunk.bytesRead === range.length ? buffer : buffer.subarray(0, chunk.bytesRead);
+      // 循环读满（#186）：handle.read 允许短读（尤其管道/网络盘），只读一次拿到
+      // bytesRead < length 时直接 subarray 返回等于静默少字节——宿主 readByteWindow
+      // 用的是 read 循环，镜像必须同式。
+      let read = 0;
+      while (read < range.length) {
+        checkAborted(signal, "read");
+        const chunk = await handle.read(buffer, read, range.length - read, range.offset + read);
+        if (chunk.bytesRead === 0) {
+          break;
+        }
+        read += chunk.bytesRead;
+      }
+      return read === range.length ? buffer : buffer.subarray(0, read);
     } finally {
       await handle.close();
     }

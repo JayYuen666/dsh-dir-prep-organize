@@ -32,6 +32,31 @@ interface Rig {
 
 const rigs: Rig[] = [];
 
+/** 把一条 request 消息里的文本块按顺序拼起来（content 既可能是字符串也可能是 block 数组）。 */
+/** `unknown` → 可索引记录（非对象一律 undefined，调用方据此判形状）。 */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function messageTextOf(frame: { readonly content: unknown }): string {
+  const { content } = frame;
+  if (typeof content === "string") {
+    return content;
+  }
+  assert.ok(Array.isArray(content), "消息 content 是字符串或 block 数组");
+  const blocks: readonly unknown[] = content;
+  const texts: string[] = [];
+  for (const block of blocks) {
+    const text = asRecord(block)?.["text"];
+    if (typeof text === "string") {
+      texts.push(text);
+    }
+  }
+  return texts.join("\n");
+}
+
 /** Remote 读面的本包投影：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
 interface DirPrepService {
   context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
@@ -44,7 +69,14 @@ interface DirPrepService {
 
 function serviceOf(host: HostStack): DirPrepService {
   const service: unknown = host.ctx.get("dirPrepOrganize");
-  assert.ok(service !== undefined, "Remote 服务没注册到上下文");
+  // 只判 undefined 不够：形状不对（同名服务被别的插件先注册、或导出面改了名）时，
+  // `service.context` 会是 undefined，失败点被推到下面某一行并报成 TypeError。
+  assert.equal(typeof service, "object", "Remote 服务没注册到上下文");
+  assert.ok(service !== null, "Remote 服务是 null");
+  const face = service as Record<string, unknown>;
+  for (const method of ["context", "organize"] as const) {
+    assert.equal(typeof face[method], "function", `Remote 服务缺方法 ${method}`);
+  }
   return service as DirPrepService;
 }
 
@@ -56,7 +88,14 @@ async function boot(replies: readonly string[], files: Record<string, string>): 
   await Promise.all(
     Object.entries(files).map(([name, body]) => writeFile(path.join(made, name), body, "utf8")),
   );
-  const host = await bootHostStack({ script: replies.map((reply) => textReply(reply)) });
+  let host: HostStack;
+  try {
+    host = await bootHostStack({ script: replies.map((reply) => textReply(reply)) });
+  } catch (error) {
+    // 装配失败时这个目录还没登记进 rigs，afterEach 不会扫到它 —— 就地回收再抛。
+    await rm(made, { recursive: true, force: true });
+    throw error;
+  }
   host.session("s1", made);
   const rig: Rig = { host, project: made };
   rigs.push(rig);
@@ -68,9 +107,22 @@ async function boot(replies: readonly string[], files: Record<string, string>): 
 /* oxlint-disable vitest/require-top-level-describe, no-await-in-loop */
 afterEach(async () => {
   const pending = rigs.splice(0);
+  // 一台拆台失败不能让后面的台子留在盘上/进程里：逐台收口，最后一次性抛出全部失败。
+  const failures: unknown[] = [];
   for (const { host, project } of pending) {
-    await host.dispose();
-    await rm(project, { recursive: true, force: true });
+    try {
+      await host.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await rm(project, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${failures.length} 次集成台回收失败`);
   }
 });
 /* oxlint-enable vitest/require-top-level-describe, no-await-in-loop */
@@ -112,11 +164,16 @@ describe("client↔host 点对点回合", () => {
     assert.equal(request.provider, PROVIDER);
     assert.ok((request.system ?? "").includes(project), "会话 cwd 进 system");
     assert.equal(request.messages.length, 1, "request-only 帧：一条 user 输入");
-    const userText = JSON.stringify(request.messages);
+    // 断言按结构读，而不是把整帧 stringify 之后做子串查找：后者连 role 字段、
+    // 相邻 block 的分隔符都算进搜索面，命中位置与「正文进了模型」不是同一件事。
+    const [frame] = request.messages;
+    assert.ok(frame !== undefined, "request 里至少有一条消息");
+    assert.equal(frame.role, "user", "request-only 帧的角色是 user");
+    const userText = messageTextOf(frame);
     assert.ok(userText.includes("notes.md"), "client 产的目录表进了模型");
     assert.ok(userText.includes(INDEX_SNIPPET), "关键文件正文经真 fs 读进模型");
     assert.ok(userText.includes("把上面那份笔记整理成评审要点"), "草稿原文进 user 帧");
-    assert.ok(!userText.includes('"id"'), "帧不带自造身份（RequestUserInput 的 never 位）");
+    assert.ok(!Object.hasOwn(frame, "id"), "帧不带自造身份（RequestUserInput 的 never 位）");
   });
 
   it("会话不存在 → 服务回 cwd 不可确定，client 解析器读得回那句错", async () => {
@@ -126,5 +183,7 @@ describe("client↔host 点对点回合", () => {
     assert.equal(view.ok, false);
     assert.equal(typeof view.error, "string");
     assert.ok((view.error ?? "").length > 0);
+    // 失败路径不能悄悄打到模型：这条负例此前只判回执形状，「服务照样发起 organize」也算绿。
+    assert.equal(host.adapter.requests.length, 0, "会话不存在时不该有模型调用");
   });
 });

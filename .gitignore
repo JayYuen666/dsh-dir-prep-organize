@@ -7,7 +7,9 @@ node_modules/
 /templates.data.mjs
 /types/
 /*.tmp
-coverage/
+# 生成器的临时文件写在产物旁边：target 是 src/*.generated.ts，崩溃残留落在 src/。
+/src/*.tmp
+/coverage/
 
 # 统一构建件的原子落盘草稿目录（shared/lib/build-artifacts 的 writeArtifact）。
 /.tmp/

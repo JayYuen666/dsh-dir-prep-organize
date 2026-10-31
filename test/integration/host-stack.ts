@@ -1,22 +1,20 @@
-// test/integration/host-stack.ts —— 真实宿主 HTTP 台的装配夹具（任务 #2/#6 共用）。
+// test/integration/host-stack.ts —— 真实宿主服务的装配夹具（任务 #2/#6 共用）。
 //
 // 装的全是真件（发布在 npm 上的同一份 0.2.1-alpha.2，版本与本包 peer 面逐条对齐）：
-//   WebServer        @deepseek-ai/dsh-host-webserver      真 node:http 监听
-//   SessionStore     @deepseek-ai/dsh-session             真会话仓库（cwd 校验、header 冻结）
-//   LlmRuntime       @deepseek-ai/dsh-llm                 真适配器注册表 + 真 stream 管线
+//   SessionStore      @deepseek-ai/dsh-session             真会话仓库（cwd 校验、header 冻结）
+//   LlmRuntime        @deepseek-ai/dsh-llm                 真适配器注册表 + 真 stream 管线
 //   AgentDefaultModel @deepseek-ai/dsh-agent-default-model 真默认模型读面（volatile 引用）
-//   DiskFileSystem   ./real-fs.ts                         真磁盘上的 FileSystem 子类
+//   DiskFileSystem    ./real-fs.ts                         真磁盘上的 FileSystem 子类
+// 宿主 HTTP 层不在这里装配：本仓数据面已交给 Typert Remote（服务名 dirPrepOrganize），
+// 没有任何 /_dsh/dir-prep/* 路由可挂；插件的路由装配面由 test/routes.test.ts 直接驱动 apply 覆盖。
+// 曾有一整套 node:http 探针（wireRequest / csrfToken / url），随路由面删除后已无消费方 —— 留着
+// 只会让读者以为 HTTP 层仍被这组用例覆盖，故一并删除。
+//
 // 只有 `settings` 是一枚**形状合规的桩**：真 `SettingsForms` 硬注入 `configEditor` +
 // `profileContext`（packages/settings/settings/src/index.ts），属于 Loader 启动层，
 // 由 test/integration/settings-boot.test.ts 用真 profile + 真 Loader 专管，不在这里重测。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · `WebServer` 服务名 'webServer'、`Context.webServer` 合并：packages/host/webserver/src/index.ts。
-//  · `register(route)` 只吃 `{kind:'exact'|'prefix', path, handler(req,res)}`，同 (kind,path)
-//    重复即抛，返回 disposer（`kind` / `WebRoute` / `register` 三处声明）；
-//    未命中路径 → 404 空体；handler 抛/reject → 400（头已发则 destroy）。
-//  · `port` 是**实际监听端口**（config.port=0 时由 OS 给），`host` 是配置字面量，
-//    `protocol` 带尾冒号（'http:'）—— URL 拼接因此不能再补冒号。
 //  · `SessionStore`：服务名 'sessions'（packages/core/session/src/index.ts）、
 //    `get(id)` 缺席回 undefined、`create(id,{meta:{cwd}})` 只收**绝对** cwd
 //    header 冻结后 `cwd` 是只读位（types.ts）。
@@ -28,9 +26,8 @@
 //  · `AgentDefaultModelConfig.currentSelection()` 现读 volatile 引用
 //    （packages/agent-default-model/src/index.ts，服务名 'agentDefaultModel'）。
 import { Context } from "@deepseek-ai/cordis";
-import { request as createHttpRequest } from "node:http";
 import type { Fiber } from "@deepseek-ai/cordis";
-import { bindUrlHost, isWildcardHost, WebServer } from "@deepseek-ai/dsh-host-webserver";
+import type Schema from "@deepseek-ai/schemastery";
 import { SessionStore } from "@deepseek-ai/dsh-session";
 import type { Session, SessionId } from "@deepseek-ai/dsh-session";
 import { LlmAdapter, LlmRuntime } from "@deepseek-ai/dsh-llm";
@@ -96,98 +93,20 @@ export interface SettingsStub {
   configure: (presentation: { auto?: boolean }, owner: unknown) => () => void;
   /** 用例侧读取：本包有没有登记「别自动生成设置页」的页面策略。 */
   readonly configured: { presentation: { auto?: boolean }; owner: unknown }[];
-  /** 用例侧读取：每次路由请求都调 describe()，故这条计数即「现读次数」。 */
+  /** 用例侧读取：每次请求都调 describe()，故这条计数即「现读次数」。 */
   described: number;
 }
 
-/** 一台装好真件的 HTTP 台。 */
+/** 一台装好真件的服务栈。 */
 export interface HostStack {
   readonly ctx: Context;
   readonly pluginFiber: Fiber;
   readonly fs: DiskFileSystem;
   readonly adapter: ScriptedAdapter;
   readonly settings: SettingsStub;
-  /** 实际监听端口（config.port=0 时由 OS 分配）。 */
-  readonly port: number;
-  /** 拼 URL 用（`protocol` getter 自带尾冒号，见文件头行号）。 */
-  url: (route: string, query?: Record<string, string>) => string;
-  /** 打一次请求并解 JSON（非 JSON 时回原文，便于断言 404 空体那类）。 */
-  request: (route: string, init?: RequestInit) => Promise<HttpResponse>;
   /** 建一枚真会话（cwd 必须是绝对路径，否则 SessionStore 当场抛）。 */
   session: (id: string, cwd: string) => Session;
-  /** 取回 per-apply 的 CSRF 令牌（从 GET model 的回执里读，而不是从内部变量猜）。 */
-  csrfToken: () => Promise<string>;
   dispose: () => Promise<void>;
-}
-
-/** 一次真请求的回执（status + 已解 JSON + 原文 + 小写化响应头）。 */
-export interface HttpResponse {
-  readonly status: number;
-  readonly body: Record<string, unknown>;
-  readonly text: string;
-  readonly headers: Record<string, string>;
-}
-
-/** 响应体只能按「是 JSON 对象」判：404 空体、纯文本错误都归一成空表，断言侧不必再 try。 */
-function safeJson(text: string): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
- * 走 node:http 原语打一发，好把任意头（Host / sec-fetch-* / CSRF）写成任何值。
- * 两半的点对点用例必须用真 socket：happy-dom 的 fetch 会按浏览器同源策略拒绝这台
- * 随机端口上的临时服务器，而浏览器里 client 打的是同源相对路径、本就没有这一层拦截。
- */
-export async function wireRequest(
-  port: number,
-  route: string,
-  init: { method?: string; headers?: Record<string, string>; body?: string } = {},
-): Promise<HttpResponse> {
-  const request = createHttpRequest({
-    hostname: "127.0.0.1",
-    port,
-    path: route,
-    method: init.method ?? "GET",
-    headers: init.headers,
-  });
-  // node:http 的请求是事件式的，官方没有 await 版：这一枚 Promise 包装是必须的（故就地豁免）
-  // oxlint-disable-next-line promise/avoid-new
-  const response = await new Promise<{
-    status: number;
-    text: string;
-    headers: Record<string, string>;
-  }>((resolve, reject) => {
-    request.on("response", (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => {
-        chunks.push(chunk);
-      });
-      res.on("end", () => {
-        const headers: Record<string, string> = {};
-        for (const [key, value] of Object.entries(res.headers)) {
-          headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
-        }
-        resolve({
-          status: res.statusCode ?? 0,
-          text: Buffer.concat(chunks).toString("utf8"),
-          headers,
-        });
-      });
-    });
-    request.on("error", reject);
-    request.end(init.body);
-  });
-  return {
-    status: response.status,
-    body: safeJson(response.text),
-    text: response.text,
-    headers: response.headers,
-  };
 }
 
 /** 一次装配的可选面。 */
@@ -198,11 +117,16 @@ export interface BootOptions {
   script?: readonly ScriptedReply[];
   /** 宿主 locale 偏好（真 describe() 里那一条的形状）；undefined 即不投影 locale 条目。 */
   localePreference?: string;
-  /** 绑定地址：默认回环；给非回环字面量即进入信任闸门的局域网档。 */
-  host?: string;
+  /** 插件模块（name/inject/Config/apply 四件）。缺省装本仓源码；产物态 e2e 传构建产物。
+   *  apply 的形状与 cordis Loader 插件同宽（ctx + 行 config），Config 交 Schemastery schema。 */
+  module?: {
+    name: string;
+    inject: readonly string[];
+    Config: Schema<any, any>;
+    apply: (ctx: Context, config: any) => any;
+  };
 }
 
-/** 装配一台真 HTTP 台（不 it()：共享夹具自带用例会让结构类 lint 规则落到夹具头上）。 */
 // 宿主 alpha.3 的 dsh-app-boot 在模块顶层静态 import 这枚 peer，而本仓的 pnpm 配置是
 // `autoInstallPeers: false`——没人装它时，失败会落在 boot 链深处一句 Cannot find package 上。
 // 夹具先在这里点名解析一次：缺件就在这里说清缺的是谁，而不是让十几层栈去猜。
@@ -222,95 +146,63 @@ function requireHostBootPeer(): void {
 export async function bootHostStack(options: BootOptions = {}): Promise<HostStack> {
   requireHostBootPeer();
   const ctx = new Context();
-  const configured: { presentation: { auto?: boolean }; owner: unknown }[] = [];
-  const stub: SettingsStub = {
-    describe: () => {
-      stub.described += 1;
-      return options.localePreference === undefined
-        ? []
-        : [
-            {
-              ns: LOCALE_SETTINGS_NAMESPACE,
-              value: { preference: options.localePreference },
-              revision: 0,
-            },
-          ];
-    },
-    configure: (presentation: { auto?: boolean }, owner: unknown) => {
-      configured.push({ presentation, owner });
-      return () => {
-        /* 桩：disposer 无副作用，页面策略的登记事实已经进了 configured */
-      };
-    },
-    configured,
-    described: 0,
-  };
-  ctx.provide("settings", stub);
+  // 装配链要原子：任何一枚 plugin 抛错时，已装的 service / 插件 fiber 不能留在 Context 上，
+  // 否则调用方拿到 rejection 却仍握着一个半装配的 ctx（进程不退出、重新装配还会撞重复服务）。
+  try {
+    const configured: { presentation: { auto?: boolean }; owner: unknown }[] = [];
+    const stub: SettingsStub = {
+      describe: () => {
+        stub.described += 1;
+        return options.localePreference === undefined
+          ? []
+          : [
+              {
+                ns: LOCALE_SETTINGS_NAMESPACE,
+                value: { preference: options.localePreference },
+                revision: 0,
+              },
+            ];
+      },
+      configure: (presentation: { auto?: boolean }, owner: unknown) => {
+        configured.push({ presentation, owner });
+        return () => {
+          /* 桩：disposer 无副作用，页面策略的登记事实已经进了 configured */
+        };
+      },
+      configured,
+      described: 0,
+    };
+    ctx.provide("settings", stub);
 
-  const fs = new DiskFileSystem(ctx);
-  await ctx.plugin(WebServer, { host: options.host ?? "127.0.0.1", port: 0 });
-  await ctx.plugin(SessionStore);
-  await ctx.plugin(LlmRuntime);
-  const adapter = new ScriptedAdapter(options.script ?? [textReply("整理后的正文")]);
-  ctx.llm.registerAdapter([PROVIDER], adapter);
-  await ctx.plugin(AgentDefaultModel, { provider: PROVIDER, model: "organize-model" });
+    const fs = new DiskFileSystem(ctx);
+    await ctx.plugin(SessionStore);
+    await ctx.plugin(LlmRuntime);
+    const adapter = new ScriptedAdapter(options.script ?? [textReply("整理后的正文")]);
+    ctx.llm.registerAdapter([PROVIDER], adapter);
+    await ctx.plugin(AgentDefaultModel, { provider: PROVIDER, model: "organize-model" });
 
-  const pluginFiber = await ctx.plugin(
-    { name: "dir-prep-organize", inject, Config, apply },
-    options.row ?? {},
-  );
+    const pluginFiber = await ctx.plugin(
+      options.module ?? { name: "dir-prep-organize", inject, Config, apply },
+      options.row ?? {},
+    );
 
-  const { port } = ctx.webServer;
-  if (port === undefined) {
-    throw new Error("宿主还没绑定端口就取到了 webServer.port——夹具无法继续，这里不用 ! 抹平");
+    return {
+      ctx,
+      pluginFiber,
+      fs,
+      adapter,
+      settings: stub,
+      session: (id: string, cwd: string) =>
+        ctx.sessions.create(brandString<SessionId>(id), { meta: { cwd } }),
+      dispose: async () => {
+        await ctx.fiber.dispose();
+      },
+    };
+  } catch (error) {
+    // 释放半装配的 Context：dispose 自己的失败不能盖住原始失败，故吞掉并保留原始 error。
+    await ctx.fiber.dispose().catch(() => {
+      /* 释放失败不能盖住原始装配错误：保留最初那条更有诊断价值 */
+    });
+    throw error;
   }
-  // origin 从宿主自己那两面读：`host` 是配置字面量（`BootOptions.host` 允许非回环），
-  // `protocol` 跟 TLS 配置走。硬编码 `http://127.0.0.1` 时，局域网档用例会拿到
-  // ECONNREFUSED——那是夹具打错了地址，失败原因却长得像被测行为有网络问题。
-  // 通配绑定（`0.0.0.0` / `::`）本身不是可拨的地址，落回回环（`getOrigin` 也这么取）。
-  const boundHost = isWildcardHost(ctx.webServer.host)
-    ? "127.0.0.1"
-    : (bindUrlHost(ctx.webServer.host) ?? "127.0.0.1");
-  const origin = `${ctx.webServer.protocol}//${boundHost}:${String(port)}`;
-
-  const urlOf = (route: string, query?: Record<string, string>): string => {
-    const url = new URL(route, origin);
-    for (const [key, value] of Object.entries(query ?? {})) {
-      url.searchParams.set(key, value);
-    }
-    return url.href;
-  };
-
-  /** 打一次请求：route 可以自带 query（`new URL` 原样保留），init 交给 fetch。 */
-  const request = async (route: string, init?: RequestInit): Promise<HttpResponse> => {
-    const response = await fetch(urlOf(route), init);
-    const text = await response.text();
-    const body = safeJson(text);
-    const headers: Record<string, string> = {};
-    for (const [key, value] of response.headers) {
-      headers[key] = value;
-    }
-    return { status: response.status, body, text, headers };
-  };
-
-  return {
-    ctx,
-    pluginFiber,
-    fs,
-    adapter,
-    settings: stub,
-    port,
-    url: urlOf,
-    request,
-    session: (id: string, cwd: string) =>
-      ctx.sessions.create(brandString<SessionId>(id), { meta: { cwd } }),
-    csrfToken: async () => {
-      const taken = await request("/_dsh/dir-prep/model");
-      const { csrf } = taken.body;
-      return typeof csrf === "string" ? csrf : "";
-    },
-    dispose: async () => {
-      await ctx.fiber.dispose();
-    },
-  };
 }

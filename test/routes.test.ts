@@ -18,7 +18,7 @@
 // 文案双语：回执文案来自注入的字典（纯函数不读设置）。本文件的 createRouteHandlers
 // 包装器统一喂 HOST_MESSAGES.zh（下方用例锁的都是迁移前的中文回执）；英文链路与
 // 「现读官方 locale 命名空间」的整条装配在 apply 装配一节里直接调原始实现。
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { strict as assert } from "node:assert";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -341,7 +341,9 @@ function fsReturning(children: FsDirEntry[]): FsService {
   };
 }
 
-const depsOf = (partial: Record<string, unknown>): RouteDeps => partial;
+/** 局部依赖表 → 完整 RouteDeps：键限定为 RouteDeps 的键，值面保持 unknown（夹具只实现被调用的成员）。 */
+const depsOf = (partial: Partial<Record<keyof RouteDeps, unknown>>): RouteDeps =>
+  ({ ...partial }) as RouteDeps;
 
 /** 一条正常完成的润色流（text-delta + finish(stop)）。
  *  `satisfies` 校验它确实是 host 的 LlmService，同时保留"stream 无参"的调用面。 */
@@ -499,23 +501,25 @@ function configOf(value: ConfigValue): Config {
   };
 }
 
-/** apply 后把注册到的 4 条路由各驱动一次（GET），返回各自回执。 */
-async function runRoutes(env: Harness): Promise<FakeResponse[]> {
-  const driven = await Promise.all(
-    env.routes.map(async (route): Promise<FakeResponse> => {
+/** 把适配器挂好的每条入口各驱动一次，连同它自己的 path 一起返回（失败时能点名是哪条）。 */
+async function runRoutes(env: Harness): Promise<{ route: string; response: FakeResponse }[]> {
+  return Promise.all(
+    env.routes.map(async (route) => {
       const { res, out } = makeRes();
       await route.handler(makeReq({ method: "GET", url: route.path }), res);
-      return out;
+      return { route: route.path, response: out };
     }),
   );
-  return driven;
 }
 
-/** 五条注册路由的 path 常量（与 host.ts 一致）。 */
+/** 测试适配器的 path 常量：**不是**生产路由。
+ *  host.ts 已无 HTTP 路由注册（数据面走 Typert Remote 服务，传输层由宿主 /api 网关接手），
+ *  下面这些串只用来把请求形状接到载荷入口；与旧版 host.ts 的同名路径不是同一个契约。 */
 const CONTEXT_PATH = "/_dsh/dir-prep/context";
 const ORGANIZE_PATH = "/_dsh/dir-prep/organize";
 const IMPORT_PATH = "/_dsh/dir-prep/import";
 const DEFAULTS_PATH = "/_dsh/dir-prep/default-templates";
+const MODEL_PATH = "/_dsh/dir-prep/model";
 
 /** 生产注册的 Remote 服务读面：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
 interface DirPrepServiceShape {
@@ -532,7 +536,7 @@ function sessionIdOf(req: IncomingMessage): string {
 
 /** 把生产注册的 Remote 服务接成请求形状：只解析 sessionId / JSON body，
  *  不复制任何守卫——那几面已随旧 HTTP 数据面删除。 */
-function attachRemoteRoutes(env: Harness): void {
+function attachRouteAdapters(env: Harness): void {
   const service = env.serviceRegistry["dirPrepOrganize"] as DirPrepServiceShape;
   env.routes = [
     {
@@ -548,7 +552,7 @@ function attachRemoteRoutes(env: Harness): void {
       },
     },
     {
-      path: "/_dsh/dir-prep/model",
+      path: MODEL_PATH,
       handler: (req, res) => {
         respondJson(res, 200, service.model({ sessionId: sessionIdOf(req) }));
       },
@@ -595,7 +599,14 @@ function captureWarnings(method: "warn" | "error", fn: () => void): string[] {
  *  第二参数是 cordis 交进来的 volatile 引用替身（0.1.7 起 apply 收两参）。 */
 function applyTo(env: Harness): void {
   apply(ctxOf(env) as unknown as Parameters<typeof apply>[0], configOf(env.configValue));
-  attachRemoteRoutes(env);
+  // 先钉住「生产侧不注册 HTTP 路由」再挂适配器：以前 apply 之后无条件挂 5 条假路由，
+  // 于是「路由已注册」是测试自己写进去的，host.ts 哪天不注册也照绿（见 #204）。
+  assert.deepEqual(
+    env.routes,
+    [],
+    "host.ts 的 apply 不该注册 HTTP 路由：数据面是 Typert Remote 服务；若重新注册路由，这条先红",
+  );
+  attachRouteAdapters(env);
 }
 
 // ── 请求夹具单源（重复 3 次以上的输入值集中在此）────────────────────────────
@@ -711,6 +722,25 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
       "导出值不是数组也抛",
     );
     assert.equal(defaultTemplatesFrom({ DEFAULT_TEMPLATES: [1] }).length, 1, "形状对就照取");
+  });
+
+  it("首读失败不留缓存 → 下一次调用真的重试（Retry 不能永远重放同一个 rejection）", async () => {
+    // 缓存里存的是 promise 本身：失败那一份若留在缓存里，读面的 Retry 拿到的永远是同一个
+    // rejection，一次瞬时失败（例如产物还在落盘）就把整次会话钉死成「永远失败」。
+    // 判据必须发生在真抛之后：第一次注入失败载入器，第二次换成成功载入器，第二次要能拿到表。
+    // 模块级缓存与本文件其它用例共享（有的用例让 defaults 端点走真实载入器），
+    // 所以这里取一份「缓存是空的」模块实例，判据才只反映本用例的两次调用。
+    vi.resetModules();
+    const fresh = await import("../host.ts");
+    await assert.rejects(
+      () => fresh.loadDefaultTemplates(() => Promise.reject(new Error("第一次读产物失败"))),
+      /第一次读产物失败/u,
+    );
+    const retried = await fresh.loadDefaultTemplates(() =>
+      Promise.resolve([{ id: "t-retry" } as never]),
+    );
+    assert.equal(retried.length, 1, "失败后缓存被清掉，第二次调用用的是新载入器");
+    assert.equal(retried[0]?.id, "t-retry");
   });
 });
 
@@ -1199,17 +1229,39 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     );
     assert.equal(env.routes.length, 5);
     assert.notEqual(env.serviceRegistry["dirPrepOrganize"], undefined, "读面服务已注册到根上下文");
+    assert.ok(disposers.length > 0, "apply 必须经 ctx.effect 登记可回收面");
     for (const dispose of disposers) {
       dispose();
     }
+    // 读面是「构造即注册、随插件生命周期存续」（installDirPrepRemote 无拆卸口），
+    // disposer 只回卷 settings 那几面，不该把服务从上下文里摘掉——这里钉住它，
+    // 免得以后有人以为 disposal 会一并注销读面（旧标题「注销全部」正是这个误解）。
+    assert.notEqual(
+      env.serviceRegistry["dirPrepOrganize"],
+      undefined,
+      "读面注册随插件生命周期存续：disposer 不注销 Remote 服务",
+    );
   });
 
-  it("注册的 handler 可直接驱动（四个惰性 getter 全部命中形状守卫）", async () => {
+  it("适配器可直接驱动五条载荷入口（状态码与回执形状都要对，不能只数条数）", async () => {
     const env = harness();
     applyTo(env);
-    const outs = await runRoutes(env);
     assert.equal(env.routes.length, 5);
-    assert.equal(outs.length, 5, "五条路由都拿到了回执");
+    const outs = await runRoutes(env);
+    assert.equal(outs.length, 5, "五条入口都拿到了回执");
+    for (const { route, response } of outs) {
+      // organize/import 对空 body 走业务 400，其余三条 200——判据是「回执是可解析的
+      // JSON 对象且带 ok/error 之一」，不是一刀切 200（后者会掩盖入口接错）。
+      const body = parsed(response);
+      assert.ok(
+        response.statusCode === 200 || response.statusCode === 400,
+        `${route} 的状态码应在 {200,400}：拿到 ${response.statusCode}`,
+      );
+      assert.ok(
+        "ok" in body || "error" in body,
+        `${route} 的回执缺 ok/error：${response.body.slice(0, 120)}`,
+      );
+    }
   });
 
   // 上面那条只覆盖到「装配期什么都不注册」。host.ts 的 `localeMessages` 里那枚三元

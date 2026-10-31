@@ -25,7 +25,9 @@ permissions:
   contents: read
 jobs:
   gate:
-    name: gate (node ${{ matrix.node }})
+    # job 名把 os 与 node 都带上：矩阵是 5 格，只写 node 会让 `gate (node 24)` 重复 3 次，
+    # 分支保护的必需检查按名字匹配，任意一格通过即满足，分不出是哪个平台红的。
+    name: gate (${{ matrix.os }} / node ${{ matrix.node }})
     strategy:
       # fail-fast: false —— 一格红不该藏起其余格的结论。矩阵的价值在于「哪一档坏了」，
       # 默认的快速失败会把它压成一个布尔值。
@@ -152,9 +154,10 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/pkg
           pnpm pack --pack-destination /tmp/pkg
-      # 交给 attest job。PR 的产物不签来源证明，传上去只是多一份没人认领的字节。
+      # 交给 attest job。只有 push 到 main 的产物需要来源证明：PR 的产物不签，
+      # schedule/workflow_dispatch 的产物也没有发布语义，传上去只是没人认领的字节。
       - name: 留存 tarball 供 attest 使用
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-tarball
@@ -199,15 +202,32 @@ jobs:
           // 条目天然包含完整包名会让后者过——两种情况下主入口都丢了，条目却照样注册不上。
           const patchLines = text.split(/\r?\n/u);
           const entries = [];
-          for (let i = 0; i < patchLines.length - 1; i += 1) {
-            const idHit = /^[ \t]*-[ \t]*id:[ \t]*(\S+)[ \t]*$/u.exec(patchLines[i]);
-            if (idHit === null) continue;
-            const nameHit = /^[ \t]*name:[ \t]*(?:"([^"]*)"|(\S+))[ \t]*$/u.exec(patchLines[i + 1]);
-            if (nameHit === null) continue;
-            entries.push([idHit[1], nameHit[1] ?? nameHit[2]]);
+          let section = null;
+          let current = null;
+          for (const line of patchLines) {
+            if (/^[ \t]*(?:#|$)/u.test(line)) continue;
+            const sectionHit = /^-([ \t]+)([A-Za-z]+):[ \t]*$/u.exec(line);
+            if (sectionHit !== null) {
+              section = sectionHit[2];
+              current = null;
+              continue;
+            }
+            if (/^\S/u.test(line)) {
+              section = null;
+              current = null;
+              continue;
+            }
+            if (section !== "insert") continue;
+            if (/^[ \t]*-[ \t]+/u.test(line)) {
+              current = {};
+              entries.push(current);
+            }
+            if (current === null) continue;
+            const fieldHit = /^[ \t]*(?:-[ \t]+)?(id|name):[ \t]*(?:"([^"]*)"|(\S+))[ \t]*$/u.exec(line);
+            if (fieldHit !== null) current[fieldHit[1]] = fieldHit[2] ?? fieldHit[3];
           }
-          if (entries.length === 0) throw new Error(`bundle patch 里没有 id/name 条目：${patchRel}`);
-          if (!entries.some(([, name]) => name === NAME)) throw new Error(`bundle patch 没有按裸包名引用 ${NAME} 的条目`);
+          if (entries.length === 0) throw new Error(`bundle patch 里没有 insert 条目：${patchRel}`);
+          if (!entries.some((entry) => entry.name === NAME)) throw new Error(`bundle patch 没有按裸包名引用 ${NAME} 的条目`);
           console.log("装载通过：apply / Config / bundle patch 均就位");
           '
 
@@ -217,7 +237,9 @@ jobs:
   # 挂上去就等于 PR 也拿到了写入能力，权限面不会因为某一步被跳过而收窄。所以拆成独立 job。
   attest:
     needs: install-probe
-    if: github.event_name != 'pull_request'
+    # 只在 push 到 main 时签：schedule 的周度漂移检测与 workflow_dispatch 都不产出
+    # 可发布凭据，给它们 id-token/attestations 写权限只是放大权限面。
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -288,8 +310,8 @@ jobs:
             "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
           printf '%s  %s\n' "$sha256" /tmp/actionlint.tar.gz | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
-          # -ignore SC2016：探针脚本刻意用单引号包住 JS（脚本体里有 JS 模板串，
-          # 交给 shell 展开就坏了）。这是 shellcheck 的误报，而 shellcheck 指令在
-          # 跨行单引号构造上不被采信（已实测），所以只忽略这一条规则。
+          # SC2016 的豁免由 -config-file 显式指定的 .github/actionlint.yaml 提供，
+          # 且落在 paths 段上、只覆盖 ci.yml 那一份；命令行上的 -ignore 是全局正则，
+          # 一并传给四份工作流，按文件收窄就失效了（见该文件的注释）。
           # shell 先把 glob 展开，再把文件清单交给它。
-          /tmp/actionlint -ignore 'SC2016' .github/workflows/*.yml
+          /tmp/actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml

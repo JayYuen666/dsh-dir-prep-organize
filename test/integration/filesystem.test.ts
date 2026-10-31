@@ -91,10 +91,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   const built = current;
+  current = undefined;
   if (built !== undefined) {
-    await built.ctx.fiber.dispose();
-    await rm(built.root, { recursive: true, force: true });
-    current = undefined;
+    try {
+      await built.ctx.fiber.dispose();
+    } finally {
+      // dispose 抛错也必须把临时树删掉：否则每次失败都会在 /tmp 留一棵目录（且下一次
+      // afterEach 看到的 current 已被清空，没人再管它）。
+      await rm(built.root, { recursive: true, force: true });
+    }
   }
 });
 /* oxlint-enable vitest/require-top-level-describe */
@@ -106,15 +111,6 @@ function tree(): Tree {
     throw new Error("用例没建起目录台");
   }
   return built;
-}
-
-/** 目录表 → 「名字|isDir|有无摘要」的紧凑视图（断言用，避免整份 entries 刷屏）。 */
-function shape(
-  entries: readonly { name: string; isDir: boolean; snippet: string | undefined }[],
-): string[] {
-  return entries.map(
-    (item) => `${item.name}${item.isDir ? "/" : ""}:${item.snippet === undefined ? "-" : "s"}`,
-  );
 }
 
 /** 模板条目 → 角色名列表（导入用例判的都是"收进来了哪几枚、按什么序"）。 */
@@ -251,17 +247,32 @@ describe("collectDirContext 在真实磁盘上", () => {
     ]);
     const result = await collectDirContext(fs, root, MESSAGES);
     assert.equal(result.error, undefined);
-    // listDir 的名序**直传**到回执（collectDirContext 不重排）。这里把宿主的排序口径钉住：
-    // fs-local 用 `localeCompare`（fsio.ts 的 listDir）而不是码位序，于是 en-US collation 下
-    // `package.json` 排在 `README.md` **之前**（p<r，大小写只作次级权重）。若哪天改成
-    // 码位序，README.md 会跳到前面来，这条断言当场红——而不是让界面顺序悄悄变样。
-    assert.deepEqual(shape(result.entries).slice(0, 4), [
-      ".env:-",
-      "notes.txt:-",
-      "package.json:s",
-      "README.md:s",
-    ]);
-    assert.deepEqual(result.entries.map((item) => item.name).slice(4), ["src"]);
+    // 名序是**直传**（collectDirContext 不重排）：这里拿真后端自己的 listDir 顺序做判据，
+    // 而不是把 en-US collation 的取值写死。写死 `package.json` 在 `README.md` 之前会让
+    // 断言依赖 runner 的 locale/ICU（同一份代码在小 ICU 环境下结论不同，见 #140）。
+    const listed = await fs.listDir(await fs.resolve(root));
+    const listedFiles = listed.filter((item) => item.type === "file").map((item) => item.name);
+    const resultFiles = result.entries.filter((item) => !item.isDir).map((item) => item.name);
+    assert.deepEqual(resultFiles, listedFiles, "文件项顺序必须是 listDir 的原序（直传、不重排）");
+    // 摘要取舍逐项判（比整串快照稳）：关键扩展名带摘要、非关键不带、.env 被 SECRET 规则压住。
+    const byName = new Map(result.entries.map((item) => [item.name, item]));
+    assert.deepEqual(
+      [...byName.keys()].toSorted(),
+      [".env", "README.md", PKG_JSON, "notes.txt", "src"].toSorted(),
+      "条目集合",
+    );
+    assert.equal(
+      byName.get(PKG_JSON)?.snippet?.includes('"name": "probe"'),
+      true,
+      "package.json 应带摘要",
+    );
+    assert.equal(byName.get(README_MD)?.snippet?.includes("# readme"), true, "README.md 应带摘要");
+    assert.equal(byName.get("notes.txt")?.snippet, undefined, "非关键扩展名不带摘要");
+    assert.deepEqual(
+      result.entries.filter((item) => item.isDir).map((item) => item.name),
+      ["src"],
+      "目录项只此一条（位置由后端顺序决定，不按 locale 猜）",
+    );
     const src = result.entries.find((item) => item.name === "src");
     assert.ok(src !== undefined, "src 目录必须列出");
     assert.equal(src.isDir, true);
@@ -271,7 +282,7 @@ describe("collectDirContext 在真实磁盘上", () => {
     assert.equal(result.truncated, false);
   });
 
-  it("rEADME.MD 这类大写扩展名不得静默丢数据（host.ts:530-533 的审计修复面）", async () => {
+  it("大写扩展名的 README.MD 不得静默丢数据（大小写不敏感的关键文件判据）", async () => {
     const { fs, root } = tree();
     await disk(path.join(root, "README.MD"), "大写扩展名也要有摘要\n");
     const result = await collectDirContext(fs, root, MESSAGES);
@@ -348,6 +359,9 @@ describe("collectDirContext 在真实磁盘上", () => {
     const empty = await collectDirContext(fs, "", MESSAGES);
     assert.equal(empty.error, MESSAGES.cwdEmpty);
     assert.deepEqual(empty.entries, []);
+    const missing = await collectDirContext(fs, undefined, MESSAGES);
+    assert.equal(missing.error, MESSAGES.cwdEmpty, "未定义与空串同档：回一句而不是炸");
+    assert.deepEqual(missing.entries, []);
     const bad = await collectDirContext(fs, path.join(tree().root, "不存在"), MESSAGES);
     assert.match(String(bad.error), /读取目录失败/u);
     assert.deepEqual(bad.entries, []);
@@ -493,6 +507,12 @@ describe("符号链接逃逸：允许根外的正文一律不得进模型", () =
     assert.deepEqual(leaked, [], "collectDirContext 跟随软链：根外文件全文进了 system prompt");
     assert.equal(result.skipped.escaped, 1, "被安全闸门拦下的项必须数得出来");
     assert.equal(result.truncated, true, "有排除项就要让 truncated 反映事实");
+    // 正例：同一层里合法的 plain.md 必须照常进摘要——只断言 escaped=1 会让「整层都被
+    // 拦掉」也绿，而那正是一次过度收紧会踩的形态（见 #142）。
+    assert.ok(
+      (result.entries.find((item) => item.name === "plain.md")?.snippet ?? "").includes("普通正文"),
+      "同层合法文件不能被逃逸闸门连带拦掉",
+    );
   });
 
   it("单文件导入：请求路径看着在 cwd 内、真身在根外时按越界拒绝", async () => {
@@ -652,7 +672,9 @@ async function unlockDir(dir: string): Promise<void> {
   await chmod(dir, 0o755);
 }
 
-// chmod 000 是 POSIX 语义：Windows 上 chmod 等价于只读，列不出来这件事根本造不出来。
+// chmod 000 是 POSIX 语义：Windows 上 chmod 等价于只读，列不出来这件事根本造不出来；
+// root（含容器里默认 uid 0 的 CI）也绕过 000，此时目录照样可读、断言会以「unreadable 应为 1」
+// 的形式假红——所以两者都按平台/身份显式跳过，而不是在用例体内猜。
 // 整族按平台跳过（而不是在用例体内分支），这样「这两条在 Windows 上没跑」在报告里
 // 是显式的，而不是两条用例悄悄变绿。
 // 用官方的 describe.skipIf 而不是 `const posixOnly = cond ? describe.skip : describe`：
@@ -660,7 +682,7 @@ async function unlockDir(dir: string): Promise<void> {
 // 于是 vitest/consistent-test-it 与 vitest/require-hook 两条都会误报（前者无从
 // 判定该用 it 还是 test，后者把它当成 describe 体里的 setup 调用）。skipIf 是
 // describe 上的具名成员，两条规则都认得，不需要任何豁免。
-describe.skipIf(process.platform === "win32")(
+describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "目录枚举逐个降级：一个坏子目录不牵连其余条目",
   () => {
     it("读不动的子目录 → 只自己计 unreadable，同层好文件照常导入", async () => {

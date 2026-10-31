@@ -27,6 +27,11 @@ const pkgDir = path.join(import.meta.dirname, "..");
  */
 const FORBIDDEN_IN_COMMENTS: readonly RegExp[] = [/\b(?:19|20)\d{2}-\d{2}-\d{2}\b/u];
 
+/** 「这一行是注释」的判据：行首（含缩进）是 //、/*、* 或 #。
+ *  注释门禁与 stripComments 共用同一枚正则——两处各写一份时，一处放宽另一处没放宽，
+ *  「哪些文本算注释」就出现第二种口径（曾经就是两份一模一样的字面量）。 */
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#)/u;
+
 /** `publishConfig` 里唯一允许出现的字段：可见性与源，都不是入口面。 */
 const ALLOWED_PUBLISH_CONFIG = new Set(["access", "registry"]);
 
@@ -60,9 +65,14 @@ interface Manifest {
 /** 一条 `files` 模式的两种形态。 */
 type PatternShape =
   /** 目录或后缀模式：列该目录（可递归）下以 `extension` 结尾的文件。 */
-  | { readonly kind: "glob"; readonly dir: string; readonly extension: string }
+  | {
+      readonly kind: "glob";
+      readonly raw: string;
+      readonly dir: string;
+      readonly extension: string;
+    }
   /** 精确文件名：带点号又无通配的条目是**文件名**（`host.js`），不是后缀过滤。 */
-  | { readonly kind: "exact"; readonly file: string };
+  | { readonly kind: "exact"; readonly raw: string; readonly file: string };
 
 /**
  * 把 `files` 的一条模式归类。本仓实际用到的只有三种写法：裸文件名、目录名、`dir/*.ext`。
@@ -74,20 +84,29 @@ type PatternShape =
  * @param entry - `files` 数组里的一项
  * @returns 该模式要列的目录与后缀过滤，或一个精确文件名
  */
-function shapeOf(entry: string): PatternShape {
-  const dot = entry.lastIndexOf(".");
+function shapeOf(rawEntry: string): PatternShape {
+  // 先归一前导 "./"：不归一的话 exact 档的 existsSync 能过，但 shipped 集合里存的是
+  // "./docs"，与入口清单里的 "docs" 永远对不上，门禁会报一条查不出原因的「不在 files 里」。
+  const entry = rawEntry.replace(/^\.\//u, "");
   const star = entry.indexOf("*");
   if (star !== -1) {
+    // 后缀取**最后一个 `*` 之后**的那一段，且必须是点号开头才算后缀过滤。
+    // 从整串 lastIndexOf(".") 取会把 "locale/*"（无后缀，列全目录）算出一个空串以外的
+    // 怪后缀，也会把 "n*/*.md" 这种写法算到 star 之前那个点上去——后者让 expand 展开
+    // 出空集，而空集在这道门禁里等于「files 覆盖了零个文件」，静默失效。
+    const tail = entry.slice(entry.lastIndexOf("*") + 1);
+    const dir = entry.slice(0, star).replace(/\/$/u, "");
     return {
       kind: "glob",
-      dir: entry.slice(0, star).replace(/\/$/u, ""),
-      extension: entry.slice(dot),
+      raw: rawEntry,
+      dir: dir.length === 0 ? "." : dir,
+      extension: tail.startsWith(".") ? tail : "",
     };
   }
   if (!entry.includes(".")) {
-    return { kind: "glob", dir: entry, extension: "" };
+    return { kind: "glob", raw: rawEntry, dir: entry, extension: "" };
   }
-  return { kind: "exact", file: entry };
+  return { kind: "exact", raw: rawEntry, file: entry };
 }
 
 /**
@@ -100,7 +119,14 @@ async function expand(shape: PatternShape): Promise<string[]> {
   if (shape.kind === "exact") {
     return existsSync(path.join(pkgDir, shape.file)) ? [shape.file] : [];
   }
-  const names = await readdir(path.join(pkgDir, shape.dir), { recursive: shape.dir !== "." });
+  const dir = path.join(pkgDir, shape.dir);
+  // 目录不存在时 readdir 抛的是裸 ENOENT：看不出是哪一条 files 写坏了，也分不清
+  // 「files 写错」与「产物没构建」。这里点名模式与解析后的目录，再去列。
+  assert.ok(
+    existsSync(dir),
+    `files 里的 "${shape.raw}" 指向不存在的路径 ${shape.dir}：先确认产物是否已构建`,
+  );
+  const names = await readdir(dir, { recursive: shape.dir !== "." });
   return names
     .map((name) => name.split(path.sep).join("/"))
     .filter((name) => shape.extension === "" || name.endsWith(shape.extension))
@@ -135,14 +161,47 @@ function asRelative(target: string): string {
  * @returns 目标清单，每项带来源标签以便失败时点名
  */
 function entryFiles(manifest: Manifest): readonly { label: string; file: string }[] {
-  const flat = Object.entries(manifest.exports ?? {}).flatMap(([specifier, value]) =>
-    filesOf(value).map((file) => ({ label: specifier, file })),
-  );
+  // exports 也可以是单个字符串/条件对象（这条路径合法且常见于只发一个入口的包）。
+  // 直接 Object.entries 一个字符串会把它拆成「逐字符」的键值对，于是 filesOf 收到单个
+  // 字符、断言拿字符当路径——比忽略更糟。这里按形态分档，非对象就走 filesOf 整份展开。
+  const flat =
+    typeof manifest.exports === "object"
+      ? Object.entries(manifest.exports).flatMap(([specifier, value]) =>
+          filesOf(value).map((file) => ({ label: specifier, file })),
+        )
+      : filesOf(manifest.exports).map((file) => ({ label: "exports", file }));
   const scalars = [
     ...(typeof manifest.main === "string" ? [{ label: "main", file: manifest.main }] : []),
     ...(typeof manifest.types === "string" ? [{ label: "types", file: manifest.types }] : []),
   ];
   return [...scalars, ...flat];
+}
+
+/** 正则元字符集合（含反斜杠本身）：逐字符判，比维护一条转义正则更直白。 */
+const BACKSLASH = String.fromCodePoint(92);
+const REGEX_SPECIAL_CHARS = new Set([
+  ".",
+  "*",
+  "+",
+  "?",
+  "^",
+  "$",
+  "{",
+  "}",
+  "(",
+  ")",
+  "|",
+  "[",
+  "]",
+  BACKSLASH,
+]);
+
+/** 正则转义：把一段字面量塞进 RegExp 之前先转义，导出名里的 `.`/`$` 才不会被当元字符。 */
+function escapeRegExp(value: string): string {
+  return value
+    .split("")
+    .map((char) => (REGEX_SPECIAL_CHARS.has(char) ? `\\${char}` : char))
+    .join("");
 }
 
 /** 发布器无条件附带的文件：不受 `files` 约束，但也不该由门禁去断言它在 `files` 里。 */
@@ -178,13 +237,27 @@ const RUNTIME_ARTIFACTS = ["host.js", "client.js", "templates.data.mjs"];
  *
  * @returns manifest 本体与 `files` 展开后的集合（含发布器无条件附带的件）
  */
-async function readSurface(): Promise<{ manifest: Manifest; shipped: Set<string> }> {
+async function readSurfaceOnce(): Promise<{ manifest: Manifest; shipped: Set<string> }> {
   const manifest = JSON.parse(
     await readFile(path.join(pkgDir, "package.json"), "utf8"),
   ) as unknown as Manifest;
   const groups = await Promise.all((manifest.files ?? []).map((entry) => expand(shapeOf(entry))));
   const attached = ALWAYS_SHIPPED.filter((name) => existsSync(path.join(pkgDir, name)));
   return { manifest, shipped: new Set([...groups.flat(), ...attached]) };
+}
+
+/** readSurface 的进程内缓存：同一个测试文件里有六处要这同一份磁盘面，读六遍既不快也没有新信息。
+ *  缓存的是 Promise 而不是结果，于是并发的两处调用也只真跑一遍。 */
+let surface: Promise<{ manifest: Manifest; shipped: Set<string> }> | undefined;
+
+/**
+ * 读 manifest 与它应当发出去的文件清单（本文件内只真读一次）。
+ *
+ * @returns manifest 本体与 `files` 展开后的集合（含发布器无条件附带的件）
+ */
+async function readSurface(): Promise<{ manifest: Manifest; shipped: Set<string> }> {
+  surface ??= readSurfaceOnce();
+  return surface;
 }
 
 /**
@@ -228,24 +301,7 @@ function commentLines(file: string, text: string): string[] {
   if (file.endsWith(".md")) {
     return text.split("\n");
   }
-  return text.split("\n").filter((line) => /^\s*(?:\/\/|\/\*|\*|#)/u.test(line));
-}
-
-/**
- * 取区间声明的下界版本：`>=X`、`^X`、裸 `X` 三种写法都落到 X。
- *
- * 只认这三种——本仓 peer 只用这三种。遇到没见过的写法返回空串，让下游断言**失败**
- * 而不是静默放过：一条看不懂的区间声明不该被判为合规。
- *
- * @param range - package.json 里的区间串
- * @returns 下界版本号；写法不认识时为空串
- */
-function lowerBoundOf(range: string): string {
-  return (
-    /^\s*(?:>=|\^)?\s*(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$/u.exec(range)?.groups?.[
-      "version"
-    ] ?? ""
-  );
+  return text.split("\n").filter((line) => COMMENT_LINE.test(line));
 }
 
 /** 版本 → 可逐位比较的整数键：`[major, minor, patch, 有无预发布]`。 */
@@ -279,6 +335,38 @@ function atLeast(version: string, bound: string): boolean {
     }
   }
   return true;
+}
+
+/**
+ * 取区间声明的下界版本：`>=X`、`^X`、裸 `X` 都落到 X；`A || B` 取各段下界里**最低**的
+ * 那个，它才代表「声称支持的最老宿主」。
+ *
+ * 遇到没见过的写法返回空串，让下游断言**失败**而不是静默放过：一条看不懂的区间声明
+ * 不该被判为合规。
+ *
+ * @param range - package.json 里的区间串
+ * @returns 下界版本号；写法不认识时为空串
+ */
+function lowerBoundOf(range: string): string {
+  const bounds = range
+    .split("||")
+    .map(
+      (part) =>
+        /^\s*(?:>=|\^)?\s*(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$/u.exec(part)?.groups?.[
+          "version"
+        ] ?? "",
+    );
+  if (bounds.some((bound) => bound === "")) {
+    return "";
+  }
+  return (
+    bounds.toSorted((left, right) => {
+      if (left === right) {
+        return 0;
+      }
+      return atLeast(left, right) ? 1 : -1;
+    })[0] ?? ""
+  );
 }
 
 /** 宿主包名前缀：`@deepseek-ai/` 整族，含 cordis / cosmokit / schemastery 这几枚不同版本的底座。 */
@@ -329,8 +417,11 @@ describe("发布形态", () => {
     expect(runtimeExports.length, "运行时导出不该是空的").toBeGreaterThan(0);
     const declaration = await readFile(path.join(pkgDir, DECLARATION_ENTRY), "utf8");
     for (const name of runtimeExports) {
+      // 不能写成 \b${name}\b：导出名本身要正则转义（名字里可能有 $），而 \b 对以 $
+      // 开头/结尾的名字不成立——那会让一条真缺失的导出现在「查得到」。改用「两侧都不是
+      // 标识符字符」的边界，标识符字符集按 JS 取 [\w$]。
       expect(
-        new RegExp(`\\b${name}\\b`, "u").test(declaration),
+        new RegExp(`(?<![\\w$])${escapeRegExp(name)}(?![\\w$])`, "u").test(declaration),
         `声明文件缺少运行时导出 ${name}：多半是 types/ 停在了旧源码上，请运行 npm run build:types`,
       ).toBe(true);
     }
@@ -445,9 +536,10 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // 空串必须在这里**直接**断言，不能指望下游 atLeast 顺带报警：versionKey("") 解析成
     // [0,0,0,1]，跟任何真实版本比都是「更大」，于是看不懂的区间会被静默判为通过——
     // 而这正是这条不变式最危险的失效方向：区间写错了，门禁却报绿。
-    expect(bound, `peer 区间「${peer}」的写法认不出来（本门禁只支持 >=X / ^X / 裸 X）`).not.toBe(
-      "",
-    );
+    expect(
+      bound,
+      `peer 区间「${peer}」的写法认不出来（本门禁只支持 >=X / ^X / 裸 X 及其 || 组合）`,
+    ).not.toBe("");
     for (const [name] of installed) {
       expect(
         atLeast(pinned, bound),
@@ -545,7 +637,7 @@ const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {
  * 抹掉——那道「必须有引用面」的门于是把 host.ts 真正 import 的包全判成孤儿。
  */
 function stripComments(text: string): string {
-  const lines = text.split("\n").filter((line) => !/^\s*(?:\/\/|\/\*|\*|#)/u.test(line));
+  const lines = text.split("\n").filter((line) => !COMMENT_LINE.test(line));
   return lines.join("\n").replaceAll(/\/\*[\s\S]*?\*\//gu, " ");
 }
 

@@ -13,31 +13,100 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { LOG_TEMPLATES } from "./log-templates.ts";
-import { logged, loggedText } from "./setup-logs.ts";
+// 标签单源：前缀与账本共用同一枚常量，包改名时不会两处各写一份（见 #203）。
+import { PKG_PREFIX, logged, loggedText } from "./setup-logs.ts";
 
 const pkgDir = path.join(import.meta.dirname, "..");
 
 /** 模板清单钉住的前缀：源码扫描面就是它。 */
-const PREFIX = "[dir-prep-organize]";
+const PREFIX = PKG_PREFIX;
 
-/** 扫描面：宿主半与 src 全部（机器生成的两份数据文件不产日志，不在面内）。 */
+/** 扫描面：宿主半与 src **整棵子树**（机器生成的 .generated.ts 不产日志，不在面内）。 */
 async function logSources(): Promise<{ rel: string; text: string }[]> {
   const srcDir = path.join(pkgDir, "src");
-  const entries = await readdir(srcDir);
-  const names = entries.filter((name) => name.endsWith(".ts") && !name.endsWith(".generated.ts"));
-  const rels = ["host.ts", ...names.map((name) => `src/${name}`)];
+  const entries = await readdir(srcDir, { recursive: true, withFileTypes: true });
+  const rels = ["host.ts"];
+  const included = entries.filter(
+    (entry) =>
+      entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".generated.ts"),
+  );
+  for (const entry of included) {
+    rels.push(path.relative(pkgDir, path.join(entry.parentPath, entry.name)));
+  }
   return Promise.all(
     rels.map(async (rel) => ({ rel, text: await readFile(path.join(pkgDir, rel), "utf8") })),
   );
 }
 
-/** 一行字面量里跟随前缀的片段：到引号、模板插值或行尾为止（跨行模板的后半由运行期
- *  的空白折叠兜住，见「空白不变」那条断言）。 */
-function fragmentAfterPrefix(line: string): string {
-  const at = line.indexOf(PREFIX);
-  const rest = line.slice(at + PREFIX.length);
-  const cut = rest.search(/["'`${]/u);
-  return `${PREFIX}${cut === -1 ? rest : rest.slice(0, cut)}`.trimEnd();
+/** 空白折叠：账本按 util.format 折叠后的文本匹配，静态片段也要同一口径。 */
+function fold(text: string): string {
+  return text.split(/\s+/u).join(" ").trim();
+}
+
+/** 源码里的一处 console.* 调用：级别 + 首个字面量实参的静态前缀（到插值/引号为止）。 */
+interface LogCallSite {
+  readonly rel: string;
+  readonly level: string;
+  readonly staticText: string;
+}
+
+const CONSOLE_CALL = /console\.(?<level>log|info|warn|error|debug|trace)\(\s*(?<quote>["'`])/gu;
+
+/**
+ * 首参字面量的结束下标：跳过 `\\x` 这类转义，反引号里遇 `${` 立即截止。
+ */
+function literalEnd(text: string, start: number, quote: string): number {
+  let end = start;
+  let escaped = false;
+  while (end < text.length) {
+    const char = text[end];
+    if (escaped) {
+      escaped = false;
+      end += 1;
+    } else if (char === "\\") {
+      escaped = true;
+      end += 1;
+    } else if (char === quote || (quote === "`" && char === "$" && text[end + 1] === "{")) {
+      break;
+    } else {
+      end += 1;
+    }
+  }
+  return end;
+}
+
+/**
+ * 扫「真调用点」而不是「任意含前缀的行」：注释、字符串里提到前缀都不算日志，
+ * 而漏掉调用点正是「无前缀的 console.* 两侧都看不见」的形态。
+ * 首参不是字面量的调用（`console.error(err)`）单独报出：它无从与模板比对。
+ */
+function logCallSites(rel: string, text: string): { sites: LogCallSite[]; nonLiteral: string[] } {
+  const sites: LogCallSite[] = [];
+  const nonLiteral: string[] = [];
+  for (const match of text.matchAll(CONSOLE_CALL)) {
+    const level = match.groups?.["level"] ?? "?";
+    const quote = match.groups?.["quote"] ?? '"';
+    const start = match.index + match[0].length;
+    const staticText = fold(text.slice(start, literalEnd(text, start, quote)));
+    if (staticText.startsWith(PREFIX)) {
+      sites.push({ rel, level, staticText });
+    } else {
+      nonLiteral.push(`${rel} console.${level}(${staticText.slice(0, 80) || "非字面量实参"})`);
+    }
+  }
+  return { sites, nonLiteral };
+}
+
+/** 全扫描面（host.ts + src 整棵子树）的调用点汇总。 */
+async function allCallSites(): Promise<{ sites: LogCallSite[]; nonLiteral: string[] }> {
+  const sites: LogCallSite[] = [];
+  const nonLiteral: string[] = [];
+  for (const source of await logSources()) {
+    const scan = logCallSites(source.rel, source.text);
+    sites.push(...scan.sites);
+    nonLiteral.push(...scan.nonLiteral);
+  }
+  return { sites, nonLiteral };
 }
 
 describe("模板清单与源码日志字面量互为镜像", () => {
@@ -59,30 +128,31 @@ describe("模板清单与源码日志字面量互为镜像", () => {
     }
   });
 
-  it("每条模板都能在源码里找到出处", async () => {
-    const sources = await logSources();
-    for (const fragment of LOG_TEMPLATES) {
-      const found = sources.some((source) => source.text.includes(fragment));
-      expect(found, `模板不在任何源码里（源码日志已改写或删除）：${fragment}`).toBe(true);
+  it("每条模板都能在源码的 console.* 调用点里找到出处（不再按含前缀的行粗筛）", async () => {
+    const { sites } = await allCallSites();
+    for (const template of LOG_TEMPLATES) {
+      const found = sites.some((site) => site.staticText === template);
+      expect(
+        found,
+        `模板在源码里没有逐字对应的调用点（日志被改写/删除/换行形态变了）：${template}`,
+      ).toBe(true);
     }
   });
 
-  it("源码里的每条日志字面量都被某条模板认领", async () => {
-    const sources = await logSources();
-    let literalCount = 0;
-    for (const source of sources) {
-      const lines = source.text.split("\n").filter((line) => line.includes(PREFIX));
-      for (const line of lines) {
-        literalCount += 1;
-        const fragment = fragmentAfterPrefix(line);
-        const claimed = LOG_TEMPLATES.some((template) => fragment.startsWith(template));
-        expect(
-          claimed,
-          `${source.rel} 里有日志没有对应模板片段：${fragment}（test/log-templates.ts 漏登记）`,
-        ).toBe(true);
-      }
+  it("源码里每个 console.* 调用点都被某条模板认领（首参必须是带前缀的字面量）", async () => {
+    const { sites, nonLiteral } = await allCallSites();
+    expect(
+      nonLiteral,
+      `这些调用点的首参不是带 ${PREFIX} 前缀的字面量：账本按首参静态文本比对，非字面量（或漏前缀）的日志两侧都看不见，等于不受账本约束：\n${nonLiteral.join("\n")}`,
+    ).toStrictEqual([]);
+    for (const site of sites) {
+      const claimed = LOG_TEMPLATES.some((template) => template === site.staticText);
+      expect(
+        claimed,
+        `${site.rel} 的 console.${site.level} 没有对应模板片段：${site.staticText}（test/log-templates.ts 漏登记）`,
+      ).toBe(true);
     }
-    expect(literalCount, "扫描面不该是空的：源码里一条日志都没有").toBeGreaterThan(0);
+    expect(sites.length, "扫描面不该是空的：源码里一条日志都没有").toBeGreaterThan(0);
   });
 });
 
@@ -99,6 +169,15 @@ describe("setup-logs 账本自身的归一化与查询面", () => {
     expect(records[0]?.level).toBe("error");
     expect(records[0]?.text).toBe("[dir-prep-organize] templates settings write failed: red→ tail");
     expect(loggedText()).toBe(records[0]?.text);
+  });
+
+  it("loggedText 把多条记录按换行连起来（单条时与 logged()[0].text 同形）", () => {
+    console.error(`${PREFIX} templates settings write failed: first`);
+    console.warn(`${PREFIX} templates settings write failed: second`);
+    const records = logged();
+    expect(records).toHaveLength(2);
+    expect(loggedText()).toBe(records.map((record) => record.text).join("\n"));
+    expect(loggedText().split("\n")).toHaveLength(2);
   });
 
   it("debug 与 trace 同样进账本（级别清单漏掉就漏账）", () => {

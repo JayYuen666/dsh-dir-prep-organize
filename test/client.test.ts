@@ -806,7 +806,19 @@ const writes: string[] = [];
 /** 插入记录（模板入口的 captureInsertion/insertText 落点；beforeEach 清空）。 */
 const inserts: { text: string; span: InsertSpan }[] = [];
 
+async function unmount(): Promise<void> {
+  await act(async () => {
+    root?.unmount();
+  });
+  root = null;
+}
+
 async function mount(ui: React.ReactElement): Promise<void> {
+  // 同一 container 二次 createRoot 会让旧树无法卸载、React 也会告警；
+  // 已有树时先卸载，再挂新树。
+  if (root !== null) {
+    await unmount();
+  }
   await act(async () => {
     root = createRoot(container);
     root.render(ui);
@@ -818,13 +830,6 @@ async function rerender(ui: React.ReactElement): Promise<void> {
   await act(async () => {
     root?.render(ui);
   });
-}
-
-async function unmount(): Promise<void> {
-  await act(async () => {
-    root?.unmount();
-  });
-  root = null;
 }
 
 function text(): string {
@@ -958,17 +963,21 @@ function domFixtureSetup(): void {
 }
 
 async function domFixtureTeardown(): Promise<void> {
-  await unmount();
-  container.remove();
-  const lingering = [...liveCtxs];
-  liveCtxs.length = 0;
-  for (const ctx of lingering) {
-    drainDisposers(ctx);
+  try {
+    await unmount();
+    container.remove();
+    const lingering = [...liveCtxs];
+    liveCtxs.length = 0;
+    for (const ctx of lingering) {
+      drainDisposers(ctx);
+    }
+  } finally {
+    // disposer 抛错时也要保证 fetch 桩、假时钟与内置表被复位，
+    // 否则失败会连累后续套件（跨用例污染比单条用例失败更难查）。
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    resetBuiltinTemplates();
   }
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-  // 内置表是模块级缓存（跨用例存活）：不复位会让上一个用例拉到的表串进下一个断言。
-  resetBuiltinTemplates();
 }
 
 // ── 纯函数 ──────────────────────────────────────────────────────────────────
@@ -2368,7 +2377,9 @@ describe("TemplatesCard 状态提示", () => {
 
   it("快照缺 templates 字段 → 回落内置精选集（fromSettings=false）", async () => {
     stubBuiltinTemplates();
-    const { organize } = mountAll(snap({ revision: 0 }));
+    // 显式构造「字段缺席」：snap() 的默认 value 是 { templates: [], importAllowRoots: [] }，
+    // 只覆盖 revision 测到的仍是空数组，与上一条「宿主回空表」重复。
+    const { organize } = mountAll(snap({ value: {}, revision: 0 }));
     await mount(React.createElement(organize, kitProps()));
     await press(buttonByField(FIELD_ORGANIZE_CARET));
     assert.equal(
@@ -2623,7 +2634,11 @@ describe("TemplatesCard 恢复默认", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4100);
     });
-    assert.equal(buttonContaining("恢复默认")?.disabled, false, "确认态已自动撤销");
+    assert.equal(
+      buttonContaining("确认恢复默认"),
+      null,
+      "确认态已自动撤销（按钮文案回到「恢复默认」）",
+    );
     vi.useRealTimers();
   });
 
@@ -3272,7 +3287,8 @@ describe("客户端 fetch 超时与卸载清理", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(126_000);
     });
-    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /润色失败：请求超时/u);
+    // 客户端超时走 LocalizedOrganizeError（organizeErrTimeout），界面按当前语言渲染。
+    assert.match(buttonByField(FIELD_ORGANIZE_BTN)?.title ?? "", /润色失败：润色请求超时/u);
     vi.useRealTimers();
   });
 
@@ -3378,8 +3394,8 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
   /** 调用侧参数与模板占位符的集合比对（见 tCalls 处的说明）。挂在本文件最后一个
    *  describe 的 afterAll 上：全部用例跑完时登记面才是完整的。 */
   afterAll(() => {
-    assert.ok(tCalls.length > 50, "登记面不该是空的：t 一次都没被调用说明桩接错了");
-    const table: Record<string, string> = UI_MESSAGES.zh;
+    assert.ok(tCalls.length > 0, "登记面不该是空的：t 一次都没被调用说明桩接错了");
+    const table: Record<string, string> = { ...UI_MESSAGES.zh };
     for (const { key, params } of tCalls) {
       const zh = table[key];
       assert.ok(zh !== undefined, `t 落到字典外的键 ${key}（回落渲染键名本身给用户）`);

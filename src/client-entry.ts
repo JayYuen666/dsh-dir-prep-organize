@@ -277,11 +277,28 @@ function requireReader(): DirPrepReader {
   return dirPrepReader;
 }
 
+/**
+ * 润色链路里由客户端自己产生的错误：messageKey 指向 ui-messages 的键，捕获侧用当前
+ * 语言的 t 渲染成 tooltip——把文案直接写进 Error.message 会让英文界面看到硬编码中文。
+ * 宿主回执携带的原文（ctxRes.error / modelRes.error）不翻译，作为 {message} 原样带出。
+ */
+class LocalizedOrganizeError extends Error {
+  public readonly messageKey: keyof UiMessages;
+  public readonly params: Record<string, unknown>;
+
+  public constructor(messageKey: keyof UiMessages, params: Record<string, unknown> = {}) {
+    super(messageKey);
+    this.name = "LocalizedOrganizeError";
+    this.messageKey = messageKey;
+    this.params = params;
+  }
+}
 /** 客户端超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收口。 */
 async function within<Value>(pending: Promise<Value>, timeoutMs: number): Promise<Value> {
   const gate = Promise.withResolvers<never>();
   const timer = setTimeout(() => {
-    gate.reject(new Error("请求超时"));
+    // 走 LocalizedOrganizeError：界面按当前语言渲染，不再把中文硬编码漏进英文界面。
+    gate.reject(new LocalizedOrganizeError("organizeErrTimeout"));
   }, timeoutMs);
   try {
     return await Promise.race([pending, gate.promise]);
@@ -375,23 +392,6 @@ function builtinStatusRow(snap: TemplatesSnapshot, t: Translate): ReactNode | un
         : createElement("div", attrs, t("builtinLoading"));
   }
   return row;
-}
-
-/**
- * 润色链路里由客户端自己产生的错误：messageKey 指向 ui-messages 的键，捕获侧用当前
- * 语言的 t 渲染成 tooltip——把文案直接写进 Error.message 会让英文界面看到硬编码中文。
- * 宿主回执携带的原文（ctxRes.error / modelRes.error）不翻译，作为 {message} 原样带出。
- */
-class LocalizedOrganizeError extends Error {
-  public readonly messageKey: keyof UiMessages;
-  public readonly params: Record<string, unknown>;
-
-  public constructor(messageKey: keyof UiMessages, params: Record<string, unknown> = {}) {
-    super(messageKey);
-    this.name = "LocalizedOrganizeError";
-    this.messageKey = messageKey;
-    this.params = params;
-  }
 }
 
 function assertOrganizeReady(
@@ -1048,6 +1048,8 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
     const replaceable = hasDraftFace(props.inputActions);
     // 提交期（adjudicating/claimed/submitting/sending）编辑面是只读的，此刻发起的润色即使
     // 返回也无处可写；把不可写推回发起之前，省下一次真实的 LLM 往返。
+    // sessionId 缺席不是禁用理由：宿主侧 context/model 的 sessionId 都是可空位
+    // （host.ts 的 cwdOf/liveModelOf 对 null 走缺省分支），无会话时照样能润色。
     const canWrite = replaceable && phase === "plain";
     let errTitle = props.t("organizeIdleTitle");
     if (failed !== undefined) {
@@ -1352,6 +1354,9 @@ function TemplateRow(props: {
     const nextName = name.trim();
     const nextText = text.trim();
     if (nextName === "" || nextText === "") {
+      // 名称/正文是模板的必填项：保存时 sanitizeTemplateList 会把它整条丢掉，所以这一档
+      // 不产生草稿变更（也不回滚本地输入——回滚会让该行重新变成「可保存」，把用户刚清空的
+      // 必填项又悄悄塞回草稿里；这条由 client.test.ts 的「清空名称/正文的失焦…」钉住）。
       return;
     }
     const nextEmoji = emoji.trim();
@@ -1423,14 +1428,18 @@ function ImportPanel(props: {
         throw new Error(resp.error ?? t("importFailedUnknown"));
       }
       const usable = resp.entries.length;
-      const count = Math.min(resp.count ?? usable, usable);
+      // 回执里的 count 只当上限参考：坏值（NaN/负数/0）一律回落到真实条目数，
+      // 否则界面会显示 "NaN 条" 或负条数，而条目其实已经导入了。
+      const declared = countField(resp.count);
+      const count = declared === 0 ? usable : Math.min(declared, usable);
       if (count === 0) {
         setImportError(t("importEmpty"));
         return;
       }
       props.onImported(resp.entries);
       setImportPath("");
-      const skipNote = formatImportSkips(t, resp.skipped);
+      const truncatedNote = resp.truncated === true ? t("importTruncated") : "";
+      const skipNote = `${formatImportSkips(t, resp.skipped)}${truncatedNote}`;
       setImportMsg(
         target.length === 0
           ? t("importAllDone", { count, skips: skipNote })
@@ -1812,8 +1821,10 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
         verifyRootsPersisted(t, readBack(), nextRoots);
       }
       setBusy(false);
-      setDraft(next);
-      setRootsDraft(nextRoots);
+      // 保存往返期间用户可能又导入/编辑了表单：只有草稿仍是发起保存时那一份才写回
+      // 清洗结果，否则保留用户这期间的新输入（服务端存的仍是刚写的那一份，下次保存再对齐）。
+      setDraft((prev) => (prev === draft ? next : prev));
+      setRootsDraft((prev) => (prev === rootsDraft ? nextRoots : prev));
     } catch (error) {
       setBusy(false);
       reportError(error);

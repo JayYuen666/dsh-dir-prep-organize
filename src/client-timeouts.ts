@@ -23,6 +23,11 @@ export const ORGANIZE_TIMEOUT_FALLBACK_MS = 120_000;
 /** 客户端比 host 多等的余量：host 先超时，客户端留一点时间把它的回执读回来。 */
 export const ORGANIZE_TIMEOUT_SLACK_MS = 5000;
 
+/** 配置投影值是否可当作毫秒数用（有限且 > 0；两处取表共用同一判据）。 */
+function isUsableTimeoutMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 /**
  * `organizeTimeoutMs` 的前端取表。
  *
@@ -35,7 +40,7 @@ export const ORGANIZE_TIMEOUT_SLACK_MS = 5000;
 export function rawOrganizeTimeoutMsOf(value: Record<string, unknown>): number | undefined {
   const key = "organizeTimeoutMs";
   const raw = value[key];
-  const usable = typeof raw === "number" && Number.isFinite(raw) && raw > 0;
+  const usable = isUsableTimeoutMs(raw);
   // 下界也要夹：Math.trunc 会把 (0,1) 的配置值取整成 0，而 0 不是「没超时」而是「立刻超时」，
   // setTimeout 拿到 0 就当场排队，润色请求一发出就判定超时。
   return usable ? Math.min(Math.max(Math.trunc(raw), 1), MAX_TIMER_MS) : undefined;
@@ -55,9 +60,12 @@ export function organizeFetchTimeoutMs(raw: number | undefined): number {
   // 与 `Math.min(NaN, MAX_TIMER_MS)` 都还返回 NaN，`setTimeout(NaN)` 等价 0ms——正是本文件
   // 要消灭的那种静默失败。0 与负数若只夹下界会得到 1ms + 余量，把「配错了」伪装成
   // 「配了一个很小的合法值」；这里与 `rawOrganizeTimeoutMsOf` 回落到同一条默认值。
-  const usable = typeof raw === "number" && Number.isFinite(raw) && raw > 0;
-  const base = usable ? raw : ORGANIZE_TIMEOUT_FALLBACK_MS;
-  // 两侧都要夹：上界防越界后被 V8 静默改成 1ms，下界防负数（或落进 (0,1) 的值）
-  // 让 base + 余量算成 0 或负数——那同样是「立刻超时」，而调用方看起来是配了一个合法数字。
-  return Math.trunc(Math.min(Math.max(base + ORGANIZE_TIMEOUT_SLACK_MS, 1), MAX_TIMER_MS));
+  const base = isUsableTimeoutMs(raw) ? raw : ORGANIZE_TIMEOUT_FALLBACK_MS;
+  // 先给余量留出空间再相加：`MAX_TIMER_MS + 余量` 自己就越界，旧写法靠最后那道 Math.min
+  // 把它夹回上界——结果客户端时限**等于** host 时限，余量被吃掉，回执还在路上就判超时。
+  // 把 base 先压到 `MAX_TIMER_MS - 余量`，相加后恒 ≤ MAX_TIMER_MS；只有 base 本身已经贴着
+  // 上界时才会与它相等（那种配置下没有多余空间可留，这是物理上限而不是取舍）。
+  const capped = Math.min(base, MAX_TIMER_MS - ORGANIZE_TIMEOUT_SLACK_MS);
+  // 下界防负数（base 由上方谓词保证 > 0，这里只是把不变量写全）
+  return Math.trunc(Math.min(Math.max(capped + ORGANIZE_TIMEOUT_SLACK_MS, 1), MAX_TIMER_MS));
 }

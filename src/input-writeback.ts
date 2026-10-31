@@ -71,6 +71,18 @@ export function useWriteBack(input: InputSnapshot, messages: WriteBackMessages):
       ticket.invalidated = true;
     }
   }, [input]);
+  // 卸载时也要把在途票据作废：组件消失后仍可能有读者拿着 ticket 调 commit，
+  // 而失效判定本来只活在 effect 里，卸载之后没有人再替它置 invalidated。
+  useEffect(
+    () => (): void => {
+      const ticket = active.current;
+      if (ticket !== undefined) {
+        ticket.invalidated = true;
+        active.current = undefined;
+      }
+    },
+    [],
+  );
   return {
     begin: (): WriteBackTicket => {
       const ticket: WriteBackTicket = {
@@ -79,6 +91,9 @@ export function useWriteBack(input: InputSnapshot, messages: WriteBackMessages):
         actions: latest.current.actions,
         invalidated: false,
       };
+      // 旧票据**不**在这里作废：两发同源请求可以同时在途（同步连点会绕过渲染态
+      // 门禁，见 client.test.ts 的重入用例），两份结果来自同一 draftRev，谁先到都
+      // 该照常写回。真正要作废的是「输入已经变了」那一档，由上面的 effect 负责。
       active.current = ticket;
       return ticket;
     },
@@ -88,11 +103,17 @@ export function useWriteBack(input: InputSnapshot, messages: WriteBackMessages):
       }
     },
     commit: (content: string, ticket: WriteBackTicket): void => {
-      const { actions } = latest.current;
+      const live = latest.current;
+      const { actions } = live;
       if (!hasDraftFace(actions)) {
         throw new Error(messages.unavailable);
       }
-      let liveRev = latest.current.draftRev;
+      // 会话/阶段这两条也在这里现判，不只依赖 effect 已经跑过：effect 是**上一次渲染后**
+      // 的异步时机，同一 tick 内「切会话 → 旧结果到达」时它还没执行，票据会看着仍然有效。
+      if (ticket.sessionId !== live.sessionId || live.phase !== "plain") {
+        throw new Error(messages.stale);
+      }
+      let liveRev = live.draftRev;
       if (hasInsertFace(actions)) {
         const span = actions.captureInsertion();
         liveRev = span.draftRev;

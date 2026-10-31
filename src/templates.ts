@@ -93,8 +93,9 @@ function stripPairQuotes(value: string): string {
 /** frontmatter 键名形状：字母开头，随后字母/数字/下划线/连字符。 */
 const FRONTMATTER_KEY = /^[A-Za-z][\w-]*$/u;
 
-/** 头部只解析前 20 行键值对（防御恶意超长头部拖慢）。 */
-const FRONTMATTER_MAX_LINES = 20;
+/** 头部只解析前 200 行键值对（防御恶意超长头部拖慢）。20 行会让带 tags/多行说明的
+ *  合法角色文件在后半段丢 name/description，整份被判成非角色文件。 */
+const FRONTMATTER_MAX_LINES = 200;
 
 /** 视觉标记进入下拉前缀的最大字符数。 */
 const EMOJI_MAX_LENGTH = 12;
@@ -123,18 +124,32 @@ function readFrontmatterPair(line: string): { key: string; value: string } | und
   return result;
 }
 
-/** 键 → 目标位：防重复（已有值不覆盖，取首个同名键）；emoji 截断至 EMOJI_MAX_LENGTH。 */
+/** 按 Unicode 码点截断：`String#slice` 数的是 UTF-16 码元，会把一个 emoji（代理对）或
+ *  组合字符劈成半个，落进模板后显示成空白方块。两个截断点（frontmatter 与设置卡草稿）
+ *  共用这一份实现，scripts/gen-defaults-lib.mjs 有同源镜像。 */
+function truncateCodePoints(value: string, max: number): string {
+  // 按码点切：展开运算符会触发 no-misused-spread（它建议 Intl.Segmenter），
+  // 而这里要的正是「按码点切分」这个语义本身。
+  // oxlint-disable-next-line unicorn/prefer-spread
+  const points = Array.from(value);
+  return points.length > max ? points.slice(0, max).join("") : value;
+}
+
+/** 键 → 目标位：防重复（已有值不覆盖，取首个同名键）；emoji 截断至 EMOJI_MAX_LENGTH（按码点）。 */
 function takeFrontmatterField(fields: FrontmatterFields, key: string, value: string): void {
   if (key === "name" && fields.name === "" && value.length > 0) {
     fields.name = value;
   } else if (key === "description" && fields.description === "" && value.length > 0) {
     fields.description = value;
   } else if (key === "emoji" && fields.emoji === "") {
-    fields.emoji = value.slice(0, EMOJI_MAX_LENGTH);
+    fields.emoji = truncateCodePoints(value, EMOJI_MAX_LENGTH);
   }
 }
 
-/** 从 frontmatter 头部解析 name/description/emoji（只解析前 20 行键值对，
+/** 缩进行：属于嵌套映射（`metadata:` 下的 `name:` 之类），不是 frontmatter 顶层键。 */
+const INDENTED_LINE = /^\s/u;
+
+/** 从 frontmatter 头部解析 name/description/emoji（只解析前 FRONTMATTER_MAX_LINES 行键值对，
  *  防御恶意超长头部拖慢；防重复，取首个同名键）。 */
 function parseFrontmatterFields(head: string): FrontmatterFields {
   const fields: FrontmatterFields = { name: "", description: "", emoji: "" };
@@ -142,9 +157,12 @@ function parseFrontmatterFields(head: string): FrontmatterFields {
     if (lineNum >= FRONTMATTER_MAX_LINES) {
       break;
     }
-    const pair = readFrontmatterPair(rawLine.trim());
-    if (pair !== undefined) {
-      takeFrontmatterField(fields, pair.key, stripPairQuotes(pair.value));
+    // 缩进行若也按顶层键收，会把子键的值当成角色名/说明；这里只处理无缩进的行。
+    if (!INDENTED_LINE.test(rawLine)) {
+      const pair = readFrontmatterPair(rawLine.trim());
+      if (pair !== undefined) {
+        takeFrontmatterField(fields, pair.key, stripPairQuotes(pair.value));
+      }
     }
   }
   return fields;
@@ -189,9 +207,18 @@ export function parseAgentFrontmatter(text: string): AgentFileInfo | undefined {
  * - 行内反引号一并剔除——沿用"正文不含反引号、插入不破坏 markdown 围栏"不变式；
  * - 不设字符上限（用户拍板）：全量保留叙述内容，避免截断影响
  *   「以角色风格润色」的上下文完整性；模型 context 超限由模型报错提示用户自行处理；
- * - 结果 trim；空正文（全围栏/全空白）→ 空串。
+ * - 结果 trim；空正文（全围栏/全空白）→ 空串；
+ * - 围栏未闭合时**不抛**：把行号作为结果交出，由调用方决定是拒绝整份文件还是跳过它。
+ *   异常只由 `condenseRoleBody` 这一层抛（生成器要据此拒绝产出），导入读面拿到的是结果。
  */
-export function condenseRoleBody(body: string): string {
+export interface CondenseResult {
+  /** 清洗后的正文（围栏未闭合时是围栏起始行之前的那些行）。 */
+  text: string;
+  /** 未闭合围栏在正文里的行号（1 起）；闭合完整时为 undefined。 */
+  unclosedFenceLine: number | undefined;
+}
+
+export function tryCondenseRoleBody(body: string): CondenseResult {
   const lines = body.split(LINE_BREAK);
   const out: string[] = [];
   let inFence = false;
@@ -208,16 +235,42 @@ export function condenseRoleBody(body: string): string {
       out.push(raw.replaceAll("`", ""));
     }
   }
-  if (inFence) {
-    throw new Error(`正文第 ${String(fenceStart)} 行的代码围栏没有结束标记（\`\`\`）`);
+  return {
+    text: out.join("\n").trim(),
+    unclosedFenceLine: inFence ? fenceStart : undefined,
+  };
+}
+
+/** `tryCondenseRoleBody` 的严格形态：围栏未闭合时抛错，供生成器拒收畸形角色文件。
+ *  导入读面不用这一支——一份漏写结束围栏的文件不该让同目录其余角色全部失败。 */
+export function condenseRoleBody(body: string): string {
+  const result = tryCondenseRoleBody(body);
+  if (result.unclosedFenceLine !== undefined) {
+    throw new Error(
+      `正文第 ${String(result.unclosedFenceLine)} 行的代码围栏没有结束标记（\`\`\`）`,
+    );
   }
-  return out.join("\n").trim();
+  return result.text;
+}
+
+/** id 缺失或与已收集 id 撞名 → 确定性补 `tpl-<index>`（仍撞则追加 `-<index>` 直到唯一）。
+ *  只负责取名，不登记 `seen`——登记由调用方在装配条目时按装配顺序做。 */
+function uniqueEntryId(candidate: string, index: number, seen: Set<string>): string {
+  if (candidate !== "" && !seen.has(candidate)) {
+    return candidate;
+  }
+  let id = `tpl-${index}`;
+  while (seen.has(id)) {
+    id = `${id}-${index}`;
+  }
+  return id;
 }
 
 /**
  * 导入条目并入现有草稿：与既有 id 碰撞时确定性改写（追加 `-i` 直到唯一）。
- * 返回新数组（不改输入），保证 pre-save 阶段 React key 唯一（保存前的 id 去重，
- * sanitizeTemplateList 的确定性补 id 只兜底缺失/空，不负责碰撞改写）。
+ * 返回新数组（不改输入），保证 pre-save 阶段 React key 唯一。sanitizeTemplateList 对**存量
+ * 快照**同样按序号补 id（缺失/空/撞名三档都管），这边要额外做的是避开草稿里已有的 id
+ * ——两个入口各管一段，不靠对方兜底。
  */
 export function mergeImportedTemplates(
   existing: readonly TemplateEntry[],
@@ -226,9 +279,14 @@ export function mergeImportedTemplates(
   const ids = new Set(existing.map(({ id }) => id));
   const out: TemplateEntry[] = [...existing];
   for (const { id: baseId, ...rest } of incoming) {
-    let id = baseId;
-    if (ids.has(id)) {
-      id = `${baseId}-i`;
+    // 空 id 不能原样进草稿：React key 会变成空串，保存前 sanitize 又改写成另一套
+    // `tpl-<index>`，同一条目在保存前后换了 id。这里直接按 sanitize 的同一套序号口径
+    // 取名，草稿与落盘结果保持一致。
+    let id = baseId.trim();
+    if (id === "") {
+      id = uniqueEntryId("", out.length, ids);
+    } else if (ids.has(id)) {
+      id = `${id}-i`;
       while (ids.has(id)) {
         id = `${id}i`;
       }
@@ -248,31 +306,9 @@ export function mergeImportedTemplates(
  * 受 host 的「cwd 内 + 内置角色目录 allowlist」策略约束）。 */
 export { DEFAULT_TEMPLATES } from "./default-templates.generated.ts";
 
-/** 任意来源（settings 快照 / 设置卡草稿）→ 合法模板列表（纯函数，测试锁死）。
- *
- *  - 非数组输入 → []（调用方自行决定是否回落 DEFAULT_TEMPLATES）；
- *  - 剔除非对象条目与 name/text trim 后为空的条目；
- *  - name/text/description/group 一律 trim；emoji trim 后截断至 12 字符；
- *  - id 缺失或与已收集 id 撞名 → 确定性补 `tpl-<index>`（仍撞则追加
- *    `-<index>` 直到唯一）——同输入同输出，可测试；
- *  - 绝不修改输入（深比较测试锁死）。 */
-
 /** 字段 → trim 后的 string；非字符串一律 ""。 */
 function trimField(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-/** id 缺失或与已收集 id 撞名 → 确定性补 `tpl-<index>`（仍撞则追加 `-<index>` 直到唯一）。
- *  只负责取名，不登记 `seen`——登记由调用方在装配条目时按装配顺序做。 */
-function uniqueEntryId(candidate: string, index: number, seen: Set<string>): string {
-  if (candidate !== "" && !seen.has(candidate)) {
-    return candidate;
-  }
-  let id = `tpl-${index}`;
-  while (seen.has(id)) {
-    id = `${id}-${index}`;
-  }
-  return id;
 }
 
 /** 单条归一化：剔除坏条目/空 name|text；id 缺失或撞名 → 确定性补 tpl-<index>，
@@ -297,13 +333,20 @@ function normalizeEntry(
         description: trimField(description),
         text: nextText,
         group: trimField(group),
-        emoji: trimField(emoji).slice(0, EMOJI_MAX_LENGTH),
+        emoji: truncateCodePoints(trimField(emoji), EMOJI_MAX_LENGTH),
       };
     }
   }
   return result;
 }
 
+/** 任意来源（settings 快照 / 设置卡草稿）→ 合法模板列表（纯函数，测试锁死）。
+ *
+ *  - 非数组输入 → []（调用方自行决定是否回落 DEFAULT_TEMPLATES）；
+ *  - 剔除非对象条目与 name/text trim 后为空的条目；
+ *  - name/text/description/group 一律 trim；emoji trim 后按码点截断至 12 个字符；
+ *  - id 缺失与已收集 id 撞名都由 uniqueEntryId 按序号补成唯一（同输入同输出，可测试）；
+ *  - 绝不修改输入（深比较测试锁死）。 */
 export function sanitizeTemplateList(raw: unknown): TemplateEntry[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -325,13 +368,26 @@ export function sanitizeTemplateList(raw: unknown): TemplateEntry[] {
  *  - 非数组 → []（未设置 = 一条都不登记，不是"全放行"）；
  *  - 非字符串 / trim 后为空 → 丢弃（空串在 host 侧 path.resolve 会落到进程 cwd，
  *    绝不能让它变成一个隐式允许根）；
+ *  - **非绝对路径 → 丢弃**：契约是「额外允许的绝对目录」，相对项会被 host 按它自己的
+ *    进程 cwd 解析，等于登记了一条用户没写过、界面上也看不出指向哪里的允许根；
  *  - 去重（同一目录登记两次没有额外语义，界面上也不该出现两行）。 */
+/** 绝对路径形状（与 host 侧 path.isAbsolute 同口径的宽松版：POSIX 根、win32 盘符、UNC）。
+ *  client 半跑在浏览器里，没有 node:path 可用，故按形状判。 */
+const BACKSLASH = String.fromCodePoint(92);
+const WIN_DRIVE_LETTER = /^[A-Za-z]:$/u;
+
+function isAbsolutePath(value: string): boolean {
+  const winDrive =
+    WIN_DRIVE_LETTER.test(value.slice(0, 2)) && (value[2] === "/" || value[2] === BACKSLASH);
+  return value.startsWith("/") || winDrive || value.startsWith(BACKSLASH + BACKSLASH);
+}
+
 export function sanitizeAllowRoots(raw: unknown): string[] {
   const out: string[] = [];
   if (Array.isArray(raw)) {
     for (const item of raw) {
       const root = typeof item === "string" ? item.trim() : "";
-      if (root !== "" && !out.includes(root)) {
+      if (root !== "" && isAbsolutePath(root) && !out.includes(root)) {
         out.push(root);
       }
     }

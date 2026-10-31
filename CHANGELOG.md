@@ -3,6 +3,25 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。
 
+## 0.1.8
+
+一轮跨面审查修复：模板导入判据与解析收口，客户端超时与写回时序修正，CI 与发布链同步加固。
+
+### Changed
+
+- **发布链加固**（`.github/workflows/publish.yml`）：拆 build/publish 两 job，`id-token: write` 只留 publish job；预检补本包版本占用检查与全部 `catalog:` 依赖可见性遍历；tarball 打包一次经 artifact 传递，发布前校验身份一致且无 `catalog:`/`workspace:` 残留，发布后轮询 registry 至可见（上限 5 分钟）。CI 侧 actionlint 改按文件豁免，codeql/scorecard/dependabot 同步收口。
+- **依赖与元数据**：author 改对象形（name+url）；`@deepseek-ai/schemastery` peer 放宽为 `^3.18.6-alpha.1`；devDependencies 删孤儿 `@deepseek-ai/dsh-host-webserver`、新增 fast-check 4.10.2；catalog 的 shared 抬到 0.2.2。
+
+### Fixed
+
+- **模板导入**（`host.ts`）：导入失败的 promise 先清出缓存再重抛，读面 Retry 不再永远重放同一 rejection；单文件正文围栏未闭合按 `truncated` 记账不再让整次导入失败；多根命中按绝对路径长度降序逐个复判，cwd 内合法登记不再被判隐藏段越权；子目录加 `fs.contains` 复判，链接进根外的目录按 escaped 记账；`.md` 后缀大小写不敏感；导入允许根拒收相对路径并按 resolve 去重。
+- **模板解析**（`src/templates.ts`）：emoji 按 Unicode 码点截断不再劈开代理对；frontmatter 上限 20→200 行、缩进子键不再当顶层键；空 id 合并处理；`sanitizeAllowRoots` 只收绝对路径（POSIX/盘符/UNC）。
+- **客户端超时与写回**（`src/client-timeouts.ts`、`src/input-writeback.ts`、`src/client-entry.ts`）：fetch 超时先压 base 再加余量，配置顶格时客户端时限不再等于宿主时限；导入回执 count 坏值回落真实条数并追加 truncated 提示；保存往返期间用户的新输入不再被清洗结果覆盖；写回 commit 现判 sessionId/phase，组件卸载作废在途票据；润色超时抛本地化错误，英文界面不再见硬编码中文。
+
+### Added
+
+- **测试三层**：`test/e2e/product-load.e2e.test.ts`（rolldown 产物原生 import 装载加真宿主服务链全链）、`test/platform/paths.platform.test.ts`（跨平台路径形状）、`test/property/import-policy.property.test.ts`（fast-check 属性面）。
+
 ## 0.1.7
 
 这一版让润色跟随会话当前的模型选择，把模板写入改成宿主校验的光标插入，并把插件页展示面收进包内。
@@ -19,8 +38,8 @@
   `CARD_UI_CSS` 与 `dsu-*` 控件类。
 - **Remote 参数校验改用 zod strict codec**：新增 `zod` 运行期依赖，client 产物按宿主 `PLATFORM_MODULES`
   外部化；`THIRD_PARTY_NOTICES` 同步补声明。
-- **宿主开发依赖抬到 `0.2.2-alpha.2`**：catalog、overrides 与 devDependencies 同值；`engines.dsh` 与
-  peer 的支持窗口保持 `^0.2.1-rc.3`。
+- **宿主开发依赖抬到 `0.2.2-alpha.2`**：overrides 与 devDependencies 同值（catalog 段不含宿主包）；`engines.dsh` 与
+  peer 的支持窗口为 `^0.2.1-rc.3`，宿主按 `includePrerelease` 判该窗口。
 - **插件页展示元数据进包**：新增 `locale/en.json`、`locale/zh.json` 与 `docs/DETAIL.md`、`docs/DETAIL.zh.md`；
   `exports` 增加 `./locale/*.json`，`files` 收进 locale 与 docs。
 

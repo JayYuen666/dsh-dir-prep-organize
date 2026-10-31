@@ -24,6 +24,7 @@
 // 假阳性靠「豁免表反向校验」与人工审查兜。
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,11 +33,82 @@ export interface AllowUnbound {
   reason: string;
 }
 
-/** 字符串或注释的跨度：`end` 是它之后的下标，`quote` 是跨过之后所处的引号状态。 */
+/** 字符串/注释/正则字面量的跨度：`end` 是它之后的下标，`quote` 是跨过之后所处的引号状态。 */
 interface LiteralSpan {
   readonly end: number;
   readonly quote: string;
-  readonly kind: "comment" | "string";
+  readonly kind: "comment" | "string" | "regex";
+}
+
+/** 这些字符之后的 `/` 只能是正则字面量的开头（除号前面必须是值：标识符、数字、`)`、`]`）。 */
+const REGEX_PRECEDING_CHARS = new Set([
+  "(",
+  ",",
+  "=",
+  ":",
+  "[",
+  "!",
+  "&",
+  "|",
+  "?",
+  "{",
+  "}",
+  ";",
+  "+",
+  "-",
+  "*",
+  "%",
+  "<",
+  ">",
+  "~",
+  "^",
+]);
+
+/** `index` 之前最后一个非空白字符（找不到时为空串）。 */
+function previousSignificantChar(text: string, index: number): string {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const char = text.charAt(cursor);
+    if (!/\s/u.test(char)) {
+      return char;
+    }
+  }
+  return "";
+}
+
+/**
+ * `index` 处的 `/` 若是正则字面量的开头，交回它之后的下标；否则 `null`（除号）。
+ *
+ * 不认正则的代价不对称：正则里的引号会被当成字符串开头，于是后面整段代码都"在字符串里"，
+ * 被注释掉的 `set('x')` / `field: 'x'` 于是算成已绑定——假绿；同一个误判还会让括号深度
+ * 错位、截错 host 字段。判据用「前一个有效字符」：正则只能出现在一个值的起始位置。
+ * 体内跳过 `\x` 转义与 `[...]` 字符类（字符类里的 `/` 不需要转义，直接收尾会截在半路），
+ * 换行即判不成（正则不能跨行，当除号处理，免得把该行后半段整段吞掉）。
+ */
+function regexEndAt(text: string, index: number): number | null {
+  const previous = previousSignificantChar(text, index);
+  if (previous !== "" && !REGEX_PRECEDING_CHARS.has(previous)) {
+    return null;
+  }
+  let inClass = false;
+  for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+    const char = text.charAt(cursor);
+    if (char === "\\") {
+      cursor += 1;
+    } else if (char === "\n") {
+      return null;
+    } else if (char === "[") {
+      inClass = true;
+    } else if (char === "]") {
+      inClass = false;
+    } else if (char === "/" && !inClass) {
+      let end = cursor + 1;
+      while (end < text.length && /[a-z]/iu.test(text.charAt(end))) {
+        end += 1;
+      }
+      return end;
+    }
+  }
+  return null;
 }
 
 /** 行注释/块注释的收尾下标（找不到收尾就吃到文末）。 */
@@ -68,7 +140,13 @@ function literalAt(text: string, index: number, quote: string): LiteralSpan | nu
     span = { end, quote: nextQuote, kind: "string" };
   } else if (char === "/" && (next === "/" || next === "*")) {
     span = { end: commentEndAfter(text, index), quote: "", kind: "comment" };
-  } else if (isQuoteChar(char)) {
+  } else if (char === "/") {
+    const end = regexEndAt(text, index);
+    if (end !== null) {
+      span = { end, quote: "", kind: "regex" };
+    }
+  }
+  if (span === null && quote === "" && isQuoteChar(char)) {
     span = { end: index + 1, quote: char, kind: "string" };
   }
   return span;
@@ -102,20 +180,34 @@ function literalTopLevelKeys(block: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let quote = "";
+  // 「此刻该出现键」：块首与深度 0 的逗号之后为 true，取到键、或吃掉任何别的记号之后为
+  // false。只看「标识符后跟冒号」会把三元表达式的冒号当成键——`Schema.object({ a: cond ? x : y })`
+  // 里 `x` 也在深度 0 且其后紧跟 `:`，于是收进一个根本不存在的字段，下游报一条虚构的
+  // 「卡片未暴露 x」。
+  let expectKey = true;
   for (let index = 0; index < block.length; index += 1) {
     const span = literalAt(block, index, quote);
     const char = block.charAt(index);
-    const key = span === null && quote === "" && depth === 0 ? keyAt(block, index) : null;
+    const key =
+      span === null && quote === "" && depth === 0 && expectKey ? keyAt(block, index) : null;
     if (span !== null) {
       ({ quote } = span);
+      expectKey = false;
       index = span.end - 1;
     } else if (key !== null) {
       out.push(key.name);
+      expectKey = false;
       index = key.end - 1;
     } else if (char === "{" || char === "(" || char === "[") {
       depth += 1;
+      expectKey = false;
     } else if (char === "}" || char === ")" || char === "]") {
       depth -= 1;
+      expectKey = false;
+    } else if (char === "," && depth === 0) {
+      expectKey = true;
+    } else if (!/\s/u.test(char)) {
+      expectKey = false;
     }
   }
   return out;
@@ -185,28 +277,64 @@ function sliceInside(text: string, open: number, openChar: string, closeChar: st
   return "";
 }
 
-/** 括号家族的两个便捷入口（花括号取对象字面量、圆括号取实参）。 */
-const bracesAt = (text: string, open: number): string => sliceInside(text, open, "{", "}");
+/** 圆括号便捷入口（取 Schema.object 的实参文本）。 */
 const parensAt = (text: string, open: number): string => sliceInside(text, open, "(", ")");
 
-/** `Schema.object(` 的实参 → 字段名；字面量直取顶层键，标识符回溯到同名 const 字面量。 */
-function fieldsOfSchemaArgument(hostTs: string, argument: string): string[] {
+/**
+ * `open` 处开括号的配平右括号下标；没配上时 `-1`。
+ *
+ * `sliceInside` 对「空对象」与「括号没配上」都交回空串，而这两种在调用方那里含义相反
+ * （前者是合法空 schema，后者是解析失败）——所以配平这一步单独问一次。
+ */
+function matchingBracketEnd(
+  text: string,
+  open: number,
+  openChar: string,
+  closeChar: string,
+): number {
+  const state: BracketWalk = { started: false, depth: 0, out: "" };
+  let quote = "";
+  for (let index = open; index < text.length; index += 1) {
+    const span = literalAt(text, index, quote);
+    if (span !== null) {
+      ({ quote } = span);
+      index = span.end - 1;
+    } else if (bracketStep(state, text.charAt(index), openChar, closeChar)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * `Schema.object(` 的实参 → 字段名；字面量直取顶层键，标识符回溯到同名 const 字面量。
+ *
+ * 交回 `null` 表示**解析不了**（与「解析出一个空 schema」区分开）：`Schema.object({})` 是合法
+ * 写法，字段数就是 0，此前被当成解析失败直接报红，提示语还让人去改解析器。
+ * 取块体按「首花括号 + 配平右花括号」切，而不是 `slice(1, -1)`——后者遇到
+ * `Schema.object({ … } as const)` / `satisfies X` 会从尾部多截一个字符，花括号失配。
+ */
+function fieldsOfSchemaArgument(hostTs: string, argument: string): string[] | null {
   const trimmed = argument.trim();
-  if (trimmed.startsWith("{")) {
-    return literalTopLevelKeys(trimmed.slice(1, -1));
+  const open = trimmed.indexOf("{");
+  if (open !== -1) {
+    const end = matchingBracketEnd(trimmed, open, "{", "}");
+    return end === -1 ? null : literalTopLevelKeys(trimmed.slice(open + 1, end));
   }
   const identifier = /^(?<name>[A-Za-z_$][\w$]*)$/u.exec(trimmed)?.groups?.["name"] ?? "";
   if (identifier === "") {
-    return [];
+    return null;
   }
   const declaration = new RegExp(
     `(?:const|let|var)\\s+${identifier}\\s*(?::[^=]+)?=\\s*\\{`,
     "u",
   ).exec(hostTs);
   if (declaration === null) {
-    return [];
+    return null;
   }
-  return literalTopLevelKeys(bracesAt(hostTs, declaration.index + declaration[0].length - 1));
+  const declOpen = declaration.index + declaration[0].length - 1;
+  const declEnd = matchingBracketEnd(hostTs, declOpen, "{", "}");
+  return declEnd === -1 ? null : literalTopLevelKeys(hostTs.slice(declOpen + 1, declEnd));
 }
 
 /**
@@ -245,7 +373,12 @@ function stripComments(src: string): string {
  * 两者并集。解析不了的块**不再静默跳过**，而是由调用方把块首原文报成问题项——否则
  * "解析器少认了一种写法"和"这个包没有设置 schema"在结果上无法区分，门禁会悄悄缩小范围。
  */
-function hostSchemaFields(source: string): { fields: string[]; unresolved: string[] } {
+function hostSchemaFields(source: string): {
+  fields: string[];
+  unresolved: string[];
+  /** 解析成功的 Schema.object 块数：`Schema.object({})` 是合法的空 schema，字段数为 0 不等于没解析到。 */
+  resolvedBlocks: number;
+} {
   // 先剥注释再找块：注释里写着的 `Schema.object({ legacy: 1 })` 也是一处字面匹配，
   // 拿它当块起点会把 `legacy` 收进字段全集，随后报成「卡片未暴露」——一条纯属虚构的
   // 漏项。字符串不剥（`"Schema.object("` 这种内容不影响块起点判定，且字段名本身在字符串里）。
@@ -253,6 +386,7 @@ function hostSchemaFields(source: string): { fields: string[]; unresolved: strin
   const marker = "Schema.object(";
   const fields = new Set<string>();
   const unresolved: string[] = [];
+  let resolvedBlocks = 0;
   let from = 0;
   for (;;) {
     const start = hostTs.indexOf(marker, from);
@@ -260,19 +394,24 @@ function hostSchemaFields(source: string): { fields: string[]; unresolved: strin
       break;
     }
     from = start + marker.length;
-    const open = hostTs.indexOf("(", start);
-    const argument = open === -1 ? "" : parensAt(hostTs, open);
-    const parsed = argument === "" ? [] : fieldsOfSchemaArgument(hostTs, argument);
-    if (parsed.length === 0) {
+    // marker 本身以 "(" 结尾，所以开括号就是 start + marker.length - 1（原来的
+    // indexOf("(", start) 恒命中同一处，紧随其后的 open === -1 分支是死代码）。
+    const open = start + marker.length - 1;
+    const argument = parensAt(hostTs, open);
+    const parsed = argument === "" ? null : fieldsOfSchemaArgument(hostTs, argument);
+    if (parsed === null) {
       unresolved.push(
         argument === "" ? `${marker}… 的括号没有配对` : `${marker}${argument.trim().slice(0, 40)})`,
       );
     }
-    for (const field of parsed) {
+    if (parsed !== null) {
+      resolvedBlocks += 1;
+    }
+    for (const field of parsed ?? []) {
       fields.add(field);
     }
   }
-  return { fields: [...fields], unresolved };
+  return { fields: [...fields], unresolved, resolvedBlocks };
 }
 
 /** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里收口为 string）。 */
@@ -284,8 +423,9 @@ function group(match: RegExpExecArray, index: number): string {
 function boundFieldsIn(source: string): Set<string> {
   const src = stripComments(source);
   const out = new Set<string>();
-  // 输入行组件的 field prop：field: 'x'
-  for (const match of src.matchAll(/\bfield\s*:\s*["'](?<name>[A-Za-z_$][\w$]*)["']/gu)) {
+  // 输入行组件的 field prop：对象写法 `field: 'x'`、JSX 写法 `field="x"` / `field={"x"}`。
+  // 只认冒号会漏掉全部 JSX 传参，那类卡片一旦只用 JSX，字段就会被报成「卡片未暴露」。
+  for (const match of src.matchAll(/\bfield\s*[=:]\s*\{?\s*["'](?<name>[A-Za-z_$][\w$]*)["']/gu)) {
     out.add(group(match, 1));
   }
   // 各种写入惯用法：props.set('x' / set('x' / unset('x' / fireAndForget('x' / writeSet('x'
@@ -302,48 +442,65 @@ function boundFieldsIn(source: string): Set<string> {
 /** 卡片源码的扩展名白名单：组件可能是 .tsx，别只看 .ts。 */
 const CLIENT_SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs"] as const;
 
-/** 递归收集目录下所有卡片源文件文本（跳过 node_modules，不跟随软链，IO 失败不抛）。 */
-function walk(dir: string): string[] {
+/** 读不动的成因（`unknown` 收口成一句人话）。 */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 依赖树与软链一律不跟：后者可能自指，跟随就会无限递归。 */
+function isSkippedEntry(entry: Dirent): boolean {
+  return entry.name === "node_modules" || entry.isSymbolicLink();
+}
+
+/** 一个文件项的收集：扩展名不在扫描面内就跳过，读不出来记一条带原因的点名项。 */
+function collectFileInto(filePath: string, name: string, out: string[], skipped: string[]): void {
+  if (!(CLIENT_SOURCE_EXTENSIONS as readonly string[]).some((ext) => name.endsWith(ext))) {
+    return;
+  }
+  try {
+    out.push(readFileSync(filePath, "utf8"));
+  } catch (error: unknown) {
+    skipped.push(`${filePath}：文件读不出来（${reasonOf(error)}）`);
+  }
+}
+
+function walk(dir: string, skipped: string[]): string[] {
   const out: string[] = [];
   if (!existsSync(dir)) {
     return out;
   }
-  let entries;
+  let entries: Dirent[];
   try {
-    // withFileTypes 一次拿到类型，省掉每条目一次 statSync；isSymbolicLink 不跟随，
-    // 否则目录自指的软链会让这里无限递归（或 ELOOP）。
+    // withFileTypes 一次拿到类型，省掉每条目一次 statSync。
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (error: unknown) {
     // 读不动就是读不动：调用方的契约是「交回问题清单」，不该在这里抛。
+    skipped.push(`${dir}：目录列不出来（${reasonOf(error)}）`);
     return out;
   }
-  for (const entry of entries) {
-    const usable = entry.name !== "node_modules" && !entry.isSymbolicLink();
+  for (const entry of entries.filter((item) => !isSkippedEntry(item))) {
     const filePath = path.join(dir, entry.name);
-    if (!usable) {
-      // 跳过依赖树与软链（后者可能自指，跟随就会无限递归）。
-    } else if (entry.isDirectory()) {
-      out.push(...walk(filePath));
-    } else if (CLIENT_SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
-      try {
-        out.push(readFileSync(filePath, "utf8"));
-      } catch {
-        // 同上：读不到就跳过，别让门禁自己炸。
-      }
+    if (entry.isDirectory()) {
+      out.push(...walk(filePath, skipped));
+    } else {
+      collectFileInto(filePath, entry.name, out, skipped);
     }
   }
   return out;
 }
-
-/** client 侧实际绑定的字段名集合（只扫 `src/` 与 `lib/` 两棵树，包根下的单文件不在其中）。 */
-function clientBoundFields(pkgDir: string): Set<string> {
-  const out = new Set<string>();
-  for (const src of [...walk(path.join(pkgDir, "src")), ...walk(path.join(pkgDir, "lib"))]) {
-    for (const field of boundFieldsIn(src)) {
-      out.add(field);
+function clientBoundFields(pkgDir: string): { fields: Set<string>; skipped: string[] } {
+  const skipped: string[] = [];
+  const fields = new Set<string>();
+  const sources = [
+    ...walk(path.join(pkgDir, "src"), skipped),
+    ...walk(path.join(pkgDir, "lib"), skipped),
+  ];
+  for (const source of sources) {
+    for (const field of boundFieldsIn(source)) {
+      fields.add(field);
     }
   }
-  return out;
+  return { fields, skipped };
 }
 
 /**
@@ -380,8 +537,8 @@ export function schemaCoverageProblems(
   if (hostTs === null) {
     return [`[${pkgName}] 读不到 ${pkgDir}/host.ts：卡片字段覆盖门禁要求 host 与测试同仓`];
   }
-  const { fields: hostFields, unresolved } = hostSchemaFields(hostTs);
-  const bound = clientBoundFields(pkgDir);
+  const { fields: hostFields, unresolved, resolvedBlocks } = hostSchemaFields(hostTs);
+  const { fields: bound, skipped } = clientBoundFields(pkgDir);
   const declared = opts.allowUnbound ?? [];
   const exemptions = new Map(declared.map((item) => [item.field, item.reason]));
   const problems: string[] = [];
@@ -410,7 +567,17 @@ export function schemaCoverageProblems(
       ].join("\n"),
     );
   }
-  if (hostFields.length === 0) {
+  // 扫描面不完整要先报：否则下面那串「卡片未暴露」的根因会被误读成没写控件。
+  if (skipped.length > 0) {
+    problems.push(
+      [
+        `[${pkgName}] 卡片源码扫描面不完整（这些路径没扫到，不能当成「没有绑定」）：`,
+        ...skipped.map((line) => `  ${line}`),
+      ].join("\n"),
+    );
+  }
+  // 一条 Schema.object 都没解析到才算「没设置」：`Schema.object({})` 解析成功但字段数为 0。
+  if (hostFields.length === 0 && resolvedBlocks === 0) {
     problems.push("host.ts 未找到 Schema.object 字段（解析失败或该包无设置）");
   }
   const missing = hostFields.filter((field) => !bound.has(field));

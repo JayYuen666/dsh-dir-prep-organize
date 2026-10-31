@@ -90,6 +90,8 @@ export interface UiMessages {
   readonly importAllDone: string;
   /** 导入成功（显式路径）。 */
   readonly importFromDone: string;
+  /** 回执带 truncated 标记时的追加说明（有内容因上限被跳过的总括）。 */
+  readonly importTruncated: string;
   /** 导入路径输入框的 placeholder。 */
   readonly importPlaceholder: string;
   /** 导入路径输入框的 aria-label。 */
@@ -158,6 +160,9 @@ export interface UiMessages {
   readonly organizeErrModelFailed: string;
   /** 润色前置检查失败：输入框为空。 */
   readonly organizeErrEmpty: string;
+  /** 润色请求超时（宿主端未在时限内回报）。 */
+  readonly organizeErrTimeout: string;
+  /** 没有会话 id 时「润色」不可用的 title 说明。 */
   /** 润色链路兜底：宿主回执没带 error 字段时给 {message} 的占位原因。 */
   readonly organizeErrUnknownReason: string;
   /** 润色回执整体不是对象时的兜底错误。 */
@@ -274,6 +279,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     importEmpty: "目录下没有符合条件的角色 .md（需含 name 的 frontmatter）",
     importAllDone: "已从内置角色库导入全部 {count} 条{skips}，编辑后点「保存」生效",
     importFromDone: "已从 {path} 导入 {count} 条{skips}，编辑后点「保存」生效",
+    importTruncated: "（回执标记本次导入有内容被上限截断）",
     importPlaceholder: "留空 = 导入内置全部角色；或填 .md / 目录路径（须在允许根内）",
     importAriaPath: "角色导入路径",
     importBtnTitle:
@@ -313,6 +319,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeErrContextFailed: "目录上下文读取失败：{message}",
     organizeErrModelFailed: "读取模型失败：{message}",
     organizeErrEmpty: "输入框为空，无内容可润色",
+    organizeErrTimeout: "润色请求超时：宿主没有在时限内回报结果",
     organizeErrUnknownReason: "未知错误",
     organizeErrUnknown: "润色失败（未知错误）",
     organizeCaretAria: "选择润色的角色风格",
@@ -382,6 +389,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     importAllDone:
       'Imported all {count} entries from the built-in role library{skips}; press "Save" after editing',
     importFromDone: 'Imported {count} entries from {path}{skips}; press "Save" after editing',
+    importTruncated: " (the reply flagged some content as truncated by a limit)",
     importPlaceholder:
       "Empty = import every built-in role; or a .md / directory path (must be inside an allowed root)",
     importAriaPath: "Role import path",
@@ -423,6 +431,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeErrContextFailed: "Failed to read the directory context: {message}",
     organizeErrModelFailed: "Failed to read the model: {message}",
     organizeErrEmpty: "The input box is empty; nothing to polish",
+    organizeErrTimeout: "Polish request timed out: the host did not reply in time",
     organizeErrUnknownReason: "unknown error",
     organizeErrUnknown: "Polish failed (unknown error)",
     organizeCaretAria: "Choose a role style to polish with",

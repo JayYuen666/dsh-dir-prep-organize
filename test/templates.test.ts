@@ -177,8 +177,8 @@ describe("sanitizeTemplateList", () => {
         description: " 说明一 ",
         text: " 正文 \n",
         group: " 工程 ",
-        // 14 个码点 → trim 后截断为 12
-        emoji: "😀😀😀😀😀😀😀",
+        // 20 个码点（40 个 UTF-16 码元）→ trim 后按码点截断为 12
+        emoji: "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
       },
       { id: "b", name: "   ", text: "正文" },
       { id: "c", name: "名称", text: "   " },
@@ -198,7 +198,7 @@ describe("sanitizeTemplateList", () => {
       description: "说明一",
       text: "正文",
       group: "工程",
-      emoji: "😀😀😀😀😀😀",
+      emoji: "😀😀😀😀😀😀😀😀😀😀😀😀",
     });
     assert.deepEqual(out[1], {
       id: "d",
@@ -208,6 +208,17 @@ describe("sanitizeTemplateList", () => {
       group: "",
       emoji: "",
     });
+  });
+
+  it("emoji 按**码点**截断：不把代理对劈成半个（UTF-16 码元数 ≠ 字符数）", () => {
+    // 旧实现用 String#slice(0, 12) 数 UTF-16 码元：12 个 emoji 只有 24 个码元，
+    // 于是 20 个 emoji 会被截成 6 个字符；再切在代理对中间时还会留下半个字符。
+    const twelve = "😀".repeat(12);
+    const out = sanitizeTemplateList([{ id: "x", name: "甲", text: "正文", emoji: `${twelve}😀` }]);
+    assert.equal(out[0]?.emoji, twelve, "13 个码点截到 12 个码点");
+    assert.equal(twelve.length, 24, "这一档用码元截断只会留下 6 个字符");
+    // oxlint-disable-next-line unicorn/prefer-spread -- 断言的就是「码点个数」，不是字符数组
+    assert.equal(Array.from(twelve).length, 12);
   });
 
   it("缺失 id → 确定性补 tpl-<index>", () => {
@@ -305,6 +316,16 @@ describe("parseAgentFrontmatter", () => {
     assert.equal(info!.name, "前端开发者");
     assert.equal(info!.description, "现代 Web 专家");
     assert.ok(info!.body.includes("正文行"));
+    // 同名键重复时取首个：上游有时把长说明拆成两行同键，后一行不该覆盖前一行。
+    const duplicated = [
+      "---",
+      "name: 甲",
+      "description: 第一行",
+      "description: 第二行",
+      "---",
+      "正文",
+    ].join("\n");
+    assert.equal(parseAgentFrontmatter(duplicated)?.description, "第一行");
   });
 });
 
@@ -320,15 +341,38 @@ describe("parseAgentFrontmatter 边角", () => {
     assert.equal(parseAgentFrontmatter("---\nname: 没有闭合围栏\n正文"), undefined);
   });
 
-  it("只解析前 20 行：第 21 行的 name 不生效", () => {
-    const head = [
+  it("只解析前 200 行：上限内的迟到 name 生效，超过上限才忽略", () => {
+    const within = [
       "---",
-      ...Array.from({ length: 25 }, (_idx, idx) => `k${String(idx)}: v`),
+      ...Array.from({ length: 150 }, (_idx, idx) => `k${String(idx)}: v`),
       "name: 迟到者",
       "---",
       "正文",
     ];
-    assert.equal(parseAgentFrontmatter(head.join("\n")), undefined);
+    assert.equal(parseAgentFrontmatter(within.join("\n"))!.name, "迟到者");
+    const beyond = [
+      "---",
+      ...Array.from({ length: 205 }, (_idx, idx) => `k${String(idx)}: v`),
+      "name: 超限者",
+      "---",
+      "正文",
+    ];
+    assert.equal(parseAgentFrontmatter(beyond.join("\n")), undefined);
+  });
+
+  it("缩进的嵌套键不算 frontmatter 顶层键", () => {
+    const text = [
+      "---",
+      "metadata:",
+      "  name: 子键名",
+      "  description: 子键说明",
+      "name: 顶层角色",
+      "---",
+      "正文",
+    ].join("\n");
+    const info = parseAgentFrontmatter(text);
+    assert.equal(info!.name, "顶层角色");
+    assert.equal(info!.description, "");
   });
 
   it("非法键名 / 无冒号 / 冒号在行首 的行都忽略，合法键照常取", () => {
@@ -466,6 +510,20 @@ describe("mergeImportedTemplates", () => {
     );
   });
 
+  it("空 id 按 sanitize 的同一套序号补齐，草稿里不出现空 key", () => {
+    const existing = [fullEntry({ id: "a", name: "甲", text: "一" })];
+    const incoming = [
+      fullEntry({ id: "", name: "乙", text: "二" }),
+      fullEntry({ id: "   ", name: "丙", text: "三" }),
+    ];
+    const out = mergeImportedTemplates(existing, incoming);
+    assert.deepEqual(
+      out.map((entry) => entry.id),
+      ["a", "tpl-1", "tpl-2"],
+    );
+    assert.equal(new Set(out.map((entry) => entry.id)).size, out.length);
+  });
+
   it("id 碰撞 → 追加 -i 直到唯一；不改输入", () => {
     const existing = [fullEntry({ id: "x", name: "甲", text: "一" })];
     const incoming = [
@@ -474,6 +532,7 @@ describe("mergeImportedTemplates", () => {
       fullEntry({ id: "x-i", name: "丁", text: "四" }),
     ];
     const existingSnapshot = structuredClone(existing);
+    const incomingSnapshot = structuredClone(incoming);
     const out = mergeImportedTemplates(existing, incoming);
     assert.equal(out.length, 4);
     assert.equal(new Set(out.map((entry) => entry.id)).size, 4, "输出 id 唯一");
@@ -485,6 +544,7 @@ describe("mergeImportedTemplates", () => {
     assert.equal(out[3]!.name, "丁");
     assert.equal(out[3]!.id, "x-i-i", "原 id 为 x-i 的条目碰撞后按 baseId 重建为 x-i-i");
     assert.deepEqual(existing, existingSnapshot, "不改输入");
+    assert.deepEqual(incoming, incomingSnapshot, "不改 incoming");
   });
 });
 
@@ -520,5 +580,17 @@ describe("sanitizeAllowRoots", () => {
 
   it("保持登记顺序（用户看到的顺序 = 落盘的顺序）", () => {
     assert.deepEqual(sanitizeAllowRoots(["/b", "/a"]), ["/b", "/a"]);
+  });
+
+  it("相对路径一律剔除；win32 盘符与 UNC 形状按绝对路径收下", () => {
+    // client 半跑在浏览器里，没有 node:path 可用，只能按形状判绝对路径。判据两侧都要有：
+    // 相对项（含 Windows 风格相对项）必须剔掉——它会按宿主进程 cwd 解析成一条用户没写过、
+    // 界面上也看不出指向哪里的允许根；绝对形状（POSIX / 盘符 / UNC）必须保住，否则
+    // Windows 用户登记的目录会被静默清空。
+    assert.deepEqual(sanitizeAllowRoots(["roles", "./roles", String.raw`..\roles`]), []);
+    assert.deepEqual(
+      sanitizeAllowRoots([String.raw`C:\roles`, "C:/roles", String.raw`\\server\share`]),
+      [String.raw`C:\roles`, "C:/roles", String.raw`\\server\share`],
+    );
   });
 });

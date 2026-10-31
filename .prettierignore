@@ -1,6 +1,5 @@
-# oxfmt 未显式传 --ignore-path 时默认同时读 .gitignore 与本文件（--help 原文）；包内
-# fmt:check 显式传两份（见 package.json），不依赖该默认值。构建产物由 .gitignore 排除，
-# 这里只补 git 不忽略的生成物：两份 *.generated.ts 由 scripts/gen-defaults.mjs 产出，
-# 磁盘形态由生成器内的 checkFormatted 与 test/gen-defaults.test.ts 的字节锁实证，不进
-# 格式门——门若改写它们，字节锁当场红。
-src/*.generated.ts
+# 生成物不参与格式门：磁盘形态由生成器内的 checkFormatted 与 test/gen-defaults.test.ts
+# 的字节锁实证，门若改写它们，字节锁当场红。逐条列出已知产物，新增产物一旦落进格式门
+# 就会立刻显形，不会被一条宽泛通配静默挡掉。
+src/default-templates.generated.ts
+src/group-labels.generated.ts

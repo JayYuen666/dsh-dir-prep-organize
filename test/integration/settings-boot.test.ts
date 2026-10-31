@@ -28,6 +28,7 @@ import { afterEach, describe, it } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -42,10 +43,19 @@ import { LOCALE_SETTINGS_NAMESPACE } from "@jayyuen66/dsh-plugin-shared/lib/loca
 import { apply, Config, inject } from "../../host.ts";
 import type { Config as HostConfig } from "../../host.ts";
 import { HOST_MESSAGES } from "../../src/host-messages.ts";
+import { DIR_PREP_NAMESPACE } from "../../src/remote.ts";
 import { DiskFileSystem } from "./real-fs.ts";
 
-/** 本包 cordis.patch.yml 里那枚条目 id：设置页与 describe() 都以此寻址，绝不另起名字。 */
-const ENTRY_ID = "dir-prep-organize";
+/** 本包 cordis.patch.yml 里那枚条目 id：设置页与 describe() 都以此寻址。
+ *
+ *  这里**读**包内那份 patch 而不是抄一份字面量：抄一份时 patch 改了 id 而测试照样绿，
+ *  而真实安装面（宿主按 patch 里的 id 装载条目）已经换名——设置卡与 describe() 的寻址
+ *  是同一个 id，两份必须同源。patch 是 YAML，这里只取第一条 `id:` 行（本文件就一条 insert）。 */
+const patchYml = readFileSync(new URL("../../cordis.patch.yml", import.meta.url), "utf8");
+const ENTRY_ID = /^\s*-?\s*id:\s*(?<id>\S+)\s*$/mu.exec(patchYml)?.groups?.["id"];
+if (ENTRY_ID === undefined) {
+  throw new Error("cordis.patch.yml 里找不到条目 id");
+}
 
 /** profile 台上反复出现的文件名（铺一次与读一次都指向同一枚名字，不留字面量副本）。 */
 const PKG_JSON = "package.json";
@@ -59,7 +69,7 @@ interface DirPrepRemoteShape {
 }
 
 function remoteOf(ctx: { get: (name: string) => unknown }): DirPrepRemoteShape {
-  const service = ctx.get("dirPrepOrganize") as DirPrepRemoteShape | undefined;
+  const service = ctx.get(DIR_PREP_NAMESPACE) as DirPrepRemoteShape | undefined;
   assert.ok(service !== undefined, "Remote 服务没注册到上下文");
   return service;
 }
@@ -97,12 +107,8 @@ const LocaleEntry = {
   },
 };
 
-/** 装一台真 profile + 真 Loader + 真 SettingsForms + 本包条目。
- * @param options.localePreference locale 行 config（决定宿主文案语言那一条真读数）
- * @param options.row 本包行 config（走 patch 的 config 位，与真实安装同形）
- */
-async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
-  const made = await mkdtemp(path.join(os.tmpdir(), "organize-settings-"));
+/** bootRealSettings 的装配段：拿已建好的临时根铺 profile 并装载。 */
+async function assembleProfile(made: string, options: BootOptions): Promise<Booted> {
   // macOS 的 /var → /private/var 是软链：profile 的落点一律用 realpath 后的拼写，
   // 否则 cleanup 与断言会拿两种拼比互相比较。
   const home = await realpath(made);
@@ -204,13 +210,35 @@ async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
       if (cleaned) {
         return;
       }
-      cleaned = true;
-      await ctx.fiber.dispose();
-      await rm(home, { recursive: true, force: true });
+      try {
+        await ctx.fiber.dispose();
+      } finally {
+        // dispose 抛错时目录也必须清：先清再抛（finally 里的 rm 失败会覆盖原错误，
+        // 故 rm 失败不吞掉——它意味着临时 profile 真留在盘上了，值得暴露）。
+        await rm(home, { recursive: true, force: true });
+        cleaned = true;
+      }
     },
   };
 }
 
+/** 装一台真 profile + 真 Loader + 真 SettingsForms + 本包条目。
+ * @param options.localePreference locale 行 config（决定宿主文案语言那一条真读数）
+ * @param options.row 本包行 config（走 patch 的 config 位，与真实安装同形）
+ */
+async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
+  const made = await mkdtemp(path.join(os.tmpdir(), "organize-settings-"));
+  try {
+    return await assembleProfile(made, options);
+  } catch (error) {
+    // 装配中途抛错时 profile 目录已经落盘，而失败的那台不会进 booted（登记发生在 start
+    // 成功返回之后）；不在这里清掉，就是每失败一次攒一个临时 profile。
+    await rm(made, { recursive: true, force: true }).catch(() => {
+      /* 清理失败不该掩盖装配错误：原错误更有诊断价值 */
+    });
+    throw error;
+  }
+}
 const booted: Booted[] = [];
 
 /** 起一台并登记回收（用例失败也要收，否则临时 profile 留在盘上）。 */
@@ -225,8 +253,18 @@ async function start(options: Parameters<typeof bootRealSettings>[0] = {}): Prom
 /* oxlint-disable vitest/require-top-level-describe, no-await-in-loop */
 afterEach(async () => {
   const pending = booted.splice(0);
+  // 逐台收：一台 dispose 抛错不该让后面那几台连试都不试（它们随后就再也找不到引用了，
+  // 临时 profile 会永久留在盘上）。全部试完后把错误汇总抛出，失败归因仍是逐台的。
+  const failures: unknown[] = [];
   for (const instance of pending) {
-    await instance.cleanup();
+    try {
+      await instance.cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${failures.length} 台 profile 回收失败`);
   }
 });
 /* oxlint-enable vitest/require-top-level-describe, no-await-in-loop */
@@ -268,9 +306,13 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     assert.equal(namespaces.includes("config-editor"), false);
     const row = requireRow(ctx, ENTRY_ID);
     assert.equal(row.applies, "live");
-    assert.equal(row.revision, 0, "首次读为 0（:313-315）");
+    assert.equal(row.revision, 0, "首次读为 0（settings 的 describe()：未写过时 revision 取初值）");
     // 页面策略：本包 apply 里 configure({auto:false}) 真进了 descriptor，宿主不再生成自动页
-    assert.equal(row.autoGenerate, false, "configure({auto:false}) 的效果位（:312）");
+    assert.equal(
+      row.autoGenerate,
+      false,
+      "configure({auto:false}) 的效果位（settings 的 describe()：autoGenerate）",
+    );
   });
 
   it("volatile 投影只交可热更的那三位，其余部署值不出面", async () => {
@@ -306,7 +348,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     assert.deepEqual(
       events.filter((event) => String(event.ns) === ENTRY_ID).map((event) => event.revision),
       [1],
-      "revision 变化必发 document-updated（:316-318）",
+      "revision 变化必发 document-updated（settings 的 describe()：document-updated 事件）",
     );
     // base/user/value 三位各按其义，且**形状彼此不同**（这条只在真件上看得出）：
     // `user` 是补丁里的原文（projectForm 只按 schema 声明丢字段，不填默认，见 index.ts 与
@@ -329,7 +371,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     await assert.rejects(
       () => ctx.settings.update(ENTRY_ID, { maxSnippetBytes: 1 }),
       /is not volatile/u,
-      "index.ts:388/:406 的 volatile 校验",
+      "settings 的 update：非 volatile 路径一律拒",
     );
     // ⚠ 真件给的事实（本层跑出来的，不是推断）：**写入路径不跑 schema 校验**。
     // `update` 只做 cloneJsonShaped + volatile 路径校验（index.ts），

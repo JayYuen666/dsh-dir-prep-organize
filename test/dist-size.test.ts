@@ -11,15 +11,16 @@
 // 数据量走；把它纳入同一道门是因为它与 host.js 一样随包发布、在第一次请求时被载入。
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 const pkgDir = path.resolve(import.meta.dirname, "..");
 
 /** 拦截半产物体积预算（实测 75,557 B）。 */
 const HOST_BUDGET_BYTES = 87_000;
-/** 客户端半产物体积预算（实测 78,388 B）。 */
-const CLIENT_BUDGET_BYTES = 90_500;
+/** 客户端半产物体积预算（实测 91,439 B / 0.1.8 轮：写回票据的会话/阶段现判 + 超时取表
+ *  共用谓词，都是实打实的代码而不是字面量）。 */
+const CLIENT_BUDGET_BYTES = 93_000;
 /** 精选模板数据产物体积预算（实测 640,020 B）。 */
 const TEMPLATES_BUDGET_BYTES = 736_500;
 /** types/ 入口声明体积预算。
@@ -47,15 +48,32 @@ const BUDGETS: readonly (readonly [string, number])[] = [
  * @param dir - 目录绝对路径
  * @returns 字节合计
  */
-function entryDeclarationBytes(dir: string): number {
-  return readdirSync(dir)
-    .filter((name) => name.endsWith(".d.ts"))
-    .reduce((sum, name) => sum + readFileSync(path.join(dir, name)).byteLength, 0);
+function entryDeclarationFiles(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.endsWith(".d.ts"));
+}
+
+/**
+ * @param dir - 目录绝对路径
+ * @param files - 一层 `.d.ts` 文件名清单（调用方先取，可同时核非空）
+ * @returns 字节合计
+ *
+ * 先取文件清单再求和：目录存在但一份 `.d.ts` 都没有时，旧写法返回 0，`0 <= 预算` 恒真
+ * ——正是上面注释里说的「永远绿的闸门」。所以非空判据必须与求和分开写在调用方。
+ */
+function entryDeclarationBytes(dir: string, files: readonly string[]): number {
+  return files.reduce((sum, name) => sum + readFileSync(path.join(dir, name)).byteLength, 0);
 }
 
 describe("产物体积", () => {
   it.each(BUDGETS)("%s 不超过 %s 字节预算", (file, budget) => {
-    const bytes = readFileSync(path.join(pkgDir, file)).byteLength;
+    // 产物缺失时先点名「没构建」：直接 readFileSync 抛的是裸 ENOENT 栈，与「超预算」
+    // 混在同一条失败里，读者第一眼分不清是「太大」还是「没跑 build」。
+    const artifact = path.join(pkgDir, file);
+    assert.ok(
+      existsSync(artifact),
+      `${file} 不存在：先跑 node build-host.mjs / node build-client.mjs（check 里 build 在 test 之前）`,
+    );
+    const bytes = readFileSync(artifact).byteLength;
     assert.ok(
       bytes <= budget,
       `${file} 实测 ${bytes.toLocaleString("en-US")} B，超出预算 ` +
@@ -65,7 +83,13 @@ describe("产物体积", () => {
   });
 
   it("types/ 入口声明不超出预算", () => {
-    const bytes = entryDeclarationBytes(path.join(pkgDir, "types"));
+    const dir = path.join(pkgDir, "types");
+    const files = entryDeclarationFiles(dir);
+    assert.ok(
+      files.length > 0,
+      "types/ 下没有 .d.ts：先跑 node build-types.mjs（空目录时 0 字节恒过闸）",
+    );
+    const bytes = entryDeclarationBytes(dir, files);
     assert.ok(
       bytes <= DECLARATION_ENTRY_BUDGET_BYTES,
       `types/ 入口声明实测 ${bytes.toLocaleString("en-US")} B，超出预算 ` +

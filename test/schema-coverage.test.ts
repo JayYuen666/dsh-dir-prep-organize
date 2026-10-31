@@ -21,12 +21,23 @@ interface Fixture {
   readonly cleanup: () => Promise<void>;
 }
 
+/** 两字段 host schema：重复出现在多条豁免表用例里，单点定义避免字面量漂移。 */
+const TWO_FIELD_SCHEMA = "const configSchema = Schema.object({ alpha: 1, beta: 2 });\n";
+
 const made: Fixture[] = [];
 
 /** 造一个替身包：`files` 的键是相对包根的路径，值是要写进去的文本。 */
 async function fixtureOf(files: Record<string, string>): Promise<Fixture> {
   const root = await mkdtemp(path.join(tmpdir(), "sc-"));
   const pkgDir = path.join(root, "pkg");
+  // 先登记再落盘：下面的 writeFile / mkdir 抛错时 afterEach 仍能删掉这个 root。
+  const fixture: Fixture = {
+    pkgDir,
+    cleanup: async () => {
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+  made.push(fixture);
   await Promise.all(
     Object.entries(files).map(async ([relative, text]) => {
       const target = path.join(pkgDir, relative);
@@ -35,13 +46,6 @@ async function fixtureOf(files: Record<string, string>): Promise<Fixture> {
     }),
   );
   await mkdir(path.join(pkgDir, "test"), { recursive: true });
-  const fixture: Fixture = {
-    pkgDir,
-    cleanup: async () => {
-      await rm(root, { recursive: true, force: true });
-    },
-  };
-  made.push(fixture);
   return fixture;
 }
 
@@ -82,7 +86,7 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
     it("单行字面量写法也要取到全部字段（旧实现按行首两空格缩进取，一个都取不到）", async () => {
       const fixture = await fixtureOf({
         "package.json": JSON.stringify({ name: PKG_NAME }),
-        "host.ts": "const configSchema = Schema.object({ alpha: 1, beta: 2 });\n",
+        "host.ts": TWO_FIELD_SCHEMA,
         "src/x.ts": clientSourceOf(["alpha", "beta"]),
       });
       assert.deepEqual(problemsOf(fixture), []);
@@ -206,7 +210,7 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
     it("重复条目要点名（Map 会让后一条静默覆盖前一条的理由）", async () => {
       const fixture = await fixtureOf({
         "package.json": JSON.stringify({ name: PKG_NAME }),
-        "host.ts": "const configSchema = Schema.object({ alpha: 1, beta: 2 });\n",
+        "host.ts": TWO_FIELD_SCHEMA,
         "src/x.ts": clientSourceOf(["alpha"]),
       });
       const problems = problemsOf(fixture, {
@@ -215,7 +219,109 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
           { field: "beta", reason: "第二份理由" },
         ],
       });
-      assert.ok(problems.some((problem) => problem.includes("重复")));
+      assert.ok(
+        problems.some((problem) => problem.includes("重复") && problem.includes("beta")),
+        "重复条目要同时点名具体字段，否则 Map 覆盖回归仍会漏判",
+      );
+    });
+
+    it("已绑定的字段还挂在豁免表上 → 点名「已过时」（挂名豁免不能绕过门禁）", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": "const configSchema = Schema.object({ alpha: 1 });\n",
+        "src/x.ts": clientSourceOf(["alpha"]),
+      });
+      const problems = problemsOf(fixture, {
+        allowUnbound: [{ field: "alpha", reason: "以为是漏项" }],
+      });
+      assert.ok(
+        problems.some((problem) => problem.includes("已过时") && problem.includes("alpha")),
+        `已绑定字段的豁免应被点名：${problems.join(" / ")}`,
+      );
+    });
+
+    it("豁免项缺 reason → 点名该字段（空理由不构成豁免）", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": TWO_FIELD_SCHEMA,
+        "src/x.ts": clientSourceOf(["alpha"]),
+      });
+      const problems = problemsOf(fixture, {
+        allowUnbound: [{ field: "beta", reason: "" }],
+      });
+      assert.ok(
+        problems.some((problem) => problem.includes("缺少 reason") && problem.includes("beta")),
+        `空 reason 的豁免应被点名：${problems.join(" / ")}`,
+      );
+    });
+  });
+
+  describe("schemaCoverageProblems：解析器的边界（正则、三元、空 schema、JSX prop）", () => {
+    it("正则字面量里的引号不把后续代码带进字符串（注释掉的写入仍然不算绑定）", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": SINGLE_LINE_SCHEMA,
+        "src/x.ts":
+          'const re = /["\u0027]/u;\nexport const write = (): void => {\n  // set("alpha", 1);\n};\n',
+      });
+      const problems = problemsOf(fixture);
+      assert.ok(
+        problems.some((problem) => problem.includes("alpha")),
+        `正则里的引号让注释段被当成代码，门禁假绿：${problems.join(" / ")}`,
+      );
+    });
+
+    it("三元表达式的冒号不被当成顶层键（否则报一条虚构的「未暴露」）", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": "const configSchema = Schema.object({ alpha: cond ? beta : gamma });\n",
+        "src/x.ts": clientSourceOf(["alpha"]),
+      });
+      const problems = problemsOf(fixture, { allowUnbound: [{ field: "beta", reason: "探针" }] });
+      assert.ok(
+        problems.some((problem) => problem.includes("不存在") && problem.includes("beta")),
+        `三元分支被收成了 host 字段：${problems.join(" / ")}`,
+      );
+    });
+
+    it("合法的空 schema 不报「解析不出来」", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": "const configSchema = Schema.object({});\n",
+        "src/x.ts": "",
+      });
+      assert.deepEqual(problemsOf(fixture), []);
+    });
+
+    it("字面量带 as const 尾巴时仍取得到字段", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": "const configSchema = Schema.object({ alpha: 1 } as const);\n",
+        "src/x.ts": clientSourceOf(["alpha"]),
+      });
+      assert.deepEqual(problemsOf(fixture), []);
+    });
+
+    it("jsx 传参也算已绑定（只认冒号会漏掉全部 JSX 写法）", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": SINGLE_LINE_SCHEMA,
+        "src/card.tsx": 'export const Card = (): unknown => <Input field="alpha" />;\n',
+      });
+      assert.deepEqual(problemsOf(fixture), []);
+    });
+
+    it("扫描面读不动时点名路径，而不是静默缩小范围", async () => {
+      const fixture = await fixtureOf({
+        "package.json": JSON.stringify({ name: PKG_NAME }),
+        "host.ts": SINGLE_LINE_SCHEMA,
+        src: "这不是目录，是文件：readdirSync 会 ENOTDIR\n",
+      });
+      const problems = problemsOf(fixture);
+      assert.ok(
+        problems.some((problem) => problem.includes("扫描面不完整")),
+        `扫描面缩小没有被点名：${problems.join(" / ")}`,
+      );
     });
   });
 });

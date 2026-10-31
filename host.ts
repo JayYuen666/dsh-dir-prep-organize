@@ -90,7 +90,7 @@ import {
 } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 import { HOST_MESSAGES } from "./src/host-messages.ts";
 import type { HostMessages } from "./src/host-messages.ts";
-import { condenseRoleBody, groupLabelOf, parseAgentFrontmatter } from "./src/templates.ts";
+import { groupLabelOf, parseAgentFrontmatter, tryCondenseRoleBody } from "./src/templates.ts";
 import type { AgentFileInfo, TemplateEntry } from "./src/templates.ts";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
@@ -178,11 +178,23 @@ async function importDefaultTemplates(): Promise<readonly TemplateEntry[]> {
  * 静态导入会让整张精选表随宿主载入插件一起进内存，而它们只有一个消费者——default-templates
  * 读面，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一口径。
  *
+ * @param load - 载入器，缺省即真实 import 产物；单测靠它把「首读失败」那一档做成可复跑
+ *   的判据（产物 URL 一旦被成功加载就进 ESM 缓存，改磁盘内容对后续 import 无效，所以失败路径
+ *   只能从这一个缝注入）。
  * @returns 内置精选模板表
  */
-export async function loadDefaultTemplates(): Promise<readonly TemplateEntry[]> {
-  defaultTemplatesPromise ??= importDefaultTemplates();
-  return defaultTemplatesPromise;
+export async function loadDefaultTemplates(
+  load: () => Promise<readonly TemplateEntry[]> = importDefaultTemplates,
+): Promise<readonly TemplateEntry[]> {
+  defaultTemplatesPromise ??= load();
+  try {
+    return await defaultTemplatesPromise;
+  } catch (error) {
+    // 失败的 promise 不能留在缓存里：读面的 Retry 会拿同一个 rejection 重放，一次瞬时失败
+    // （例如产物还在落盘）就把整次会话钉死成「永远失败」。清掉缓存，下一次调用重新尝试。
+    defaultTemplatesPromise = undefined;
+    throw error;
+  }
 }
 
 /** 关键文本扩展名（这些文件取首段摘要）。仅代码/文档/结构配置面；
@@ -462,7 +474,13 @@ function isAgentsService(value: unknown): value is AgentsService {
 // 守卫漏掉它，缺 stat 的服务会以 "resolve is not a function" 的形态炸在请求中途，
 // 而不是读面回一句「fs 服务不可用」。
 function isFsService(value: unknown): value is FsService {
-  return hasFnMember(value, "resolve") && hasFnMember(value, "stat");
+  return (
+    hasFnMember(value, "resolve") &&
+    hasFnMember(value, "stat") &&
+    hasFnMember(value, "listDir") &&
+    hasFnMember(value, "readText") &&
+    hasFnMember(value, "contains")
+  );
 }
 function isLlmService(value: unknown): value is LlmService {
   return hasFnMember(value, "stream");
@@ -988,13 +1006,23 @@ export function importPathError(
   }
   const absolute = path.resolve(cwd ?? "", trimmed);
   const roots = importRootsOf(cwd, allowRoots, messages);
-  const matched = roots.find((root) => isWithinRoot(root.absolute, absolute));
-  if (matched === undefined) {
+  const matched = roots.filter((root) => isWithinRoot(root.absolute, absolute));
+  if (matched.length === 0) {
     return outsideRootsError(absolute, roots, messages);
   }
   // ④ 归一后再判一次（命中根以内的剩余段，含隐藏段）：`..` 与 `.ssh` 这类段
   //    两侧都拦得住，win32 跨盘符/反斜杠形状同样落在这里而不是靠系统兜底。
-  return pathTokensError(path.relative(matched.absolute, absolute), true, messages);
+  //
+  //    命中的根可能不止一个：会话 cwd 与 cwd 内登记的允许根会同时命中。只拿**第一个**
+  //    （cwd 列表头部）算剩余段，会把「cwd/roles/.hidden/x.md」在 cwd 内合法登记时判成
+  //    隐藏段越权——这是过度限制，不是绕过。按根路径长度**降序**（最深优先）逐个复判，
+  //    任一通过即放行；全部不过时回最深根给出的那条错误（它最贴近实际落点）。
+  const ordered = matched.toSorted((left, right) => right.absolute.length - left.absolute.length);
+  const errors = ordered.map((root) =>
+    pathTokensError(path.relative(root.absolute, absolute), true, messages),
+  );
+  const passed = errors.some((error) => error === undefined);
+  return passed ? undefined : errors[0];
 }
 
 /** 角色文件 → 模板条目（正文提炼 + 目录分组标签 + 确定性 id 去重）。
@@ -1005,8 +1033,10 @@ function agentEntryFromFile(
   info: AgentFileInfo,
   collided: Set<string>,
 ): TemplateEntry | undefined {
-  // 单 return 满足 consistent-return；正文为空则 result 保持 undefined。
-  const text = condenseRoleBody(info.body);
+  // 单 return 满足 consistent-return；正文为空或围栏未闭合则 result 保持 undefined，
+  // 由调用方按 unnamed 计数——一份漏写结束围栏的文件不该让同目录其余角色全部失败。
+  const { text: condensedText, unclosedFenceLine } = tryCondenseRoleBody(info.body);
+  const text = unclosedFenceLine === undefined ? condensedText : "";
   let result: TemplateEntry | undefined;
   if (text.length > 0) {
     // 后缀必须在本循环里自增：拿 collided.size 当唯一输入时，候选一旦恰好已被占用
@@ -1050,9 +1080,22 @@ function isVisibleDirectory(child: FsDirEntry): boolean {
   return child.type === "directory" && !child.name.startsWith(".");
 }
 
+/** 扩展名是否 .md：不区分大小写。macOS 默认文件系统不区分大小写，`Agent.MD` 在用户看来
+ *  就是一份角色文件；按字节判后缀会把它静默丢在扫描面之外（且不计任何 skipped）。 */
+function isMdName(name: string): boolean {
+  return name.toLowerCase().endsWith(".md");
+}
+
+const MD_SUFFIX = /\.md$/iu;
+
+/** 去掉 .md 后缀（大小写不敏感）；没有该后缀时原样返回（replace 不命中即原样，无需分支）。 */
+function stripMdSuffix(name: string): string {
+  return name.replace(MD_SUFFIX, "");
+}
+
 /** 目录项是「可见 .md 文件」？（候选收集与第三层清点同一判据，两处必须数到同一批）。 */
 function isVisibleMdFile(child: FsDirEntry): boolean {
-  return child.type === "file" && child.name.endsWith(".md") && !child.name.startsWith(".");
+  return child.type === "file" && isMdName(child.name) && !child.name.startsWith(".");
 }
 
 /** 一层目录内容 → 顶层 .md 候选（跳过隐藏项，按名排序保确定性）。
@@ -1181,13 +1224,19 @@ async function importFromFile(
     skipped.unnamed += 1;
     return { entries: [], truncated: false, skipped, error: messages.missingRoleName };
   }
+  // 正文为空或围栏未闭合时 agentEntryFromFile 交回 undefined：按 unnamed 计数，并把
+  // truncated 置真，让读面知道「有一份没进来」而不是看着 0 条以为库里是空的。
   const entry = agentEntryFromFile(
-    path.basename(absolute, ".md"),
+    stripMdSuffix(path.basename(absolute)),
     path.basename(path.dirname(absolute)),
     info,
     new Set(),
   );
-  return { entries: entry === undefined ? [] : [entry], truncated: false, skipped };
+  if (entry === undefined) {
+    skipped.unnamed += 1;
+    return { entries: [], truncated: true, skipped };
+  }
+  return { entries: [entry], truncated: false, skipped };
 }
 
 /**
@@ -1253,7 +1302,7 @@ function pushReadResult(
     return;
   }
   const entry = agentEntryFromFile(
-    path.basename(read.file.name, ".md"),
+    stripMdSuffix(read.file.name),
     read.file.dirName,
     read.info,
     collided,
@@ -1281,7 +1330,20 @@ async function importFromDirectory(
   // 自己的 target 已经在根外，拿它当父判据会把根外的角色文件整批放进来。
   const rootFiles = mdCandidates(fs, target, rootChildren, path.basename(absolute), skipped);
   const subDirs = rootChildren
-    .filter((child) => isVisibleDirectory(child))
+    .filter((child) => {
+      // 链接进来的子目录，其 target 可能已经在根外：枚举它会带出根外的名字与结构
+      // （文件正文另有 mdCandidates 的 contains 复判）。不 contained 的按 escaped 记账，
+      // 与同层的链接文件同一口径。
+      const visible = isVisibleDirectory(child);
+      if (!visible) {
+        return false;
+      }
+      const inside = fs.contains(target, child.target);
+      if (!inside) {
+        skipped.escaped += 1;
+      }
+      return inside;
+    })
     .map((child) => child.target)
     .toSorted((left, right) => left.displayPath.localeCompare(right.displayPath));
   // 子目录 listDir 有界并发（避免 await-in-loop，也避免整库一次性打开打满 fd）：
@@ -1291,7 +1353,9 @@ async function importFromDirectory(
     const children = await listDirOrUnreadable(fs, sub, skipped);
     return {
       files: mdCandidates(fs, target, children, path.basename(sub.displayPath), skipped),
-      deeper: children.filter((child) => isVisibleDirectory(child)).map((child) => child.target),
+      deeper: children
+        .filter((child) => isVisibleDirectory(child) && fs.contains(target, child.target))
+        .map((child) => child.target),
     };
   });
   const subFiles: ImportCandidate[] = [];
@@ -1367,7 +1431,7 @@ export async function collectAgentTemplates(
         error: outsideRootsError(target.displayPath, roots, messages),
       };
     }
-    if (absolute.endsWith(".md")) {
+    if (isMdName(absolute)) {
       return await importFromFile({ fs, target, limits, skipped, messages }, absolute);
     }
     const entries = await importFromDirectory(fs, absolute, target, limits, skipped);
@@ -1746,13 +1810,24 @@ export { configSchema as Config };
 
 /** volatile 引用读出的值 → importAllowRoots 字符串列表（纯函数，测试锁死）。
  *  引用背后可能是存量脏配置：非数组一律空表（fail-closed），非字符串/纯空白项逐个
- *  丢弃——绝不能把非字符串塞进路径校验，也不能让空串变成"允许 process.cwd()"。 */
+ *  丢弃——绝不能把非字符串塞进路径校验，也不能让空串变成"允许 process.cwd()"。
+ *  相对路径同样丢弃：契约写的是「额外允许的**绝对**目录」（见 schema describe 与 DETAIL
+ *  文档），放进来会被 toImportRoot 的 path.resolve 按**宿主进程 cwd** 解析，变成一条用户
+ *  没写过、也不知道存在着的允许根。 */
 export function importAllowRootsOf(raw: unknown): string[] {
   const roots: string[] = [];
+  // 同一目录的等价写法（末尾分隔符、`.`/`..` 段）在设置卡里是多行，但运行期只该算
+  // 一枚根：否则每次导入都会重复 resolve 同一棵树，越界回执也会把同义项各列一遍。
+  const seen = new Set<string>();
   if (Array.isArray(raw)) {
     for (const item of raw) {
-      if (typeof item === "string" && item.trim().length > 0) {
-        roots.push(item.trim());
+      if (typeof item === "string" && item.trim().length > 0 && path.isAbsolute(item.trim())) {
+        // resolve 同时去掉末尾分隔符（normalize 在 POSIX 上会保留 `/a/b/`）。
+        const normalized = path.resolve(item.trim());
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          roots.push(normalized);
+        }
       }
     }
   }

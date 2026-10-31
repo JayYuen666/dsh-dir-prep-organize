@@ -16,10 +16,10 @@ on:
   schedule:
     - cron: "23 4 * * 1"
 # 组键带事件名：周度扫描与 main 上的 push 落在不同组，前者不会因为一次 push 被取消。
-# 取消只留给同分支的 push。
+# 取消只留给同分支的 push；PR 运行不取消——它承载的是这次 PR 的结论，不该被后续事件顶掉。
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 # 工作流级只给读；写入权限挂在 job 上，因为只有上传 SARIF 那一步需要它。
 permissions:
   contents: read
@@ -31,8 +31,9 @@ jobs:
     permissions:
       # 上传 SARIF 到 code scanning 面板所必需。
       security-events: write
-      # CodeQL 查询包要读 registry 上的 pack。
-      packages: read
+      # 读取 workflow run 元数据（官方高级配置模板的组成位；私有仓上缺它时
+      # analyze 阶段取不到运行信息）。
+      actions: read
       contents: read
     strategy:
       fail-fast: false
@@ -53,6 +54,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
       - name: Perform CodeQL Analysis
+        # fork PR 的 token 只读，上传 SARIF 必然失败；只对这一种运行容错，同仓 PR / push /
+        # schedule 的分析失败仍要判红。整条 job 跳过在分支保护里算通过，会变成「未扫描即绿」。
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}

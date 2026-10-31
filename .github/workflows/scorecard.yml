@@ -30,7 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # publish_results: true 只在默认分支生效，所以在非默认分支上不跑这条。
-    if: github.event.repository.default_branch == github.ref_name
+    # 比较完整 ref：tag 的 ref_name 也可能恰与默认分支同名，按名字比较会把 tag 的树
+    # 当成默认分支发布出去。
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       security-events: write
       id-token: write
@@ -55,7 +57,10 @@ jobs:
       # artifact 上传额外 continue-on-error 且排在 SARIF 上传之后：面板更新优先于留档，
       # artifact 服务抖动不得反过来挡面板。
       - name: Upload to code-scanning
-        if: always()
+        # 只有 Run analysis 真的写出了 SARIF 才上传：它若在写文件前失败（拉取超时、
+        # scorecard 自身报错），always() 会让这一步以「文件不存在」再红一次，
+        # 盖住真正的根因。
+        if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif

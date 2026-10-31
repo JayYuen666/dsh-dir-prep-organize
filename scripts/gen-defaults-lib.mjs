@@ -214,7 +214,19 @@ function readFrontmatterPair(line) {
   return result;
 }
 
-/** 键 → 目标位：防重复（已有值不覆盖，取首个同名键）；emoji 截断（镜像 templates.ts）。
+/** 按 Unicode 码点截断（镜像 templates.ts 的 truncateCodePoints）。
+ * @param {string} value
+ * @param {number} max
+ * @returns {string}
+ */
+function truncateCodePoints(value, max) {
+  // 按码点切：展开运算符会触发 no-misused-spread，而这里要的正是码点切分。
+  // oxlint-disable-next-line unicorn/prefer-spread
+  const points = Array.from(value);
+  return points.length > max ? points.slice(0, max).join("") : value;
+}
+
+/** 键 → 目标位：防重复（已有值不覆盖，取首个同名键）；emoji 截断（按码点，镜像 templates.ts）。
  * @param {{ name: string; description: string; emoji: string }} fields
  * @param {string} key
  * @param {string} value
@@ -226,7 +238,7 @@ function takeFrontmatterField(fields, key, value) {
   } else if (key === "description" && fields.description === "" && value.length > 0) {
     fields.description = value;
   } else if (key === "emoji" && fields.emoji === "") {
-    fields.emoji = value.slice(0, EMOJI_MAX_LENGTH);
+    fields.emoji = truncateCodePoints(value, EMOJI_MAX_LENGTH);
   }
 }
 
