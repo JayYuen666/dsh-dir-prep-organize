@@ -266,7 +266,7 @@ async function identityOf(absolute: string): Promise<string> {
 
 /**
  * 真实磁盘上的 `FileSystem`：读面 + 有界字节读。本包从不写盘（host.ts 文件头的「只读」承诺），
- * 故 `writeText` / `editText` 交回 FS_IO_ERROR——哪天生产面真动手写，这里当场炸，而不是悄悄通过。
+ * 故所有写面成员一律交回 FS_IO_ERROR——哪天生产面真动手写，这里当场炸，而不是悄悄通过。
  */
 export class DiskFileSystem extends FileSystem {
   public override async resolve(
@@ -454,6 +454,30 @@ export class DiskFileSystem extends FileSystem {
   ): Promise<FsEditOutcome> {
     throw new FsError(
       `refused edit of "${target.displayPath}": test backend is read-only`,
+      "FS_IO_ERROR",
+    );
+  }
+
+  // 官方在 FileSystem 上补齐的写面三支（补丁式改写、删除、移动/带补丁移动）。本包只读，
+  // 拒法与 writeText / editText 同一条：形状按抽象成员签名收窄到实际用到的位数，
+  // 返回 `Promise<never>`——永远抛错，所以不需要引入那三个 outcome 类型。
+  public override async patchText(target: FsTarget): Promise<never> {
+    throw new FsError(
+      `refused patch of "${target.displayPath}": test backend is read-only`,
+      "FS_IO_ERROR",
+    );
+  }
+
+  public override async deleteFile(target: FsTarget): Promise<never> {
+    throw new FsError(
+      `refused delete of "${target.displayPath}": test backend is read-only`,
+      "FS_IO_ERROR",
+    );
+  }
+
+  public override async moveFile(source: FsTarget, destination: FsTarget): Promise<never> {
+    throw new FsError(
+      `refused move of "${source.displayPath}" -> "${destination.displayPath}": test backend is read-only`,
       "FS_IO_ERROR",
     );
   }

@@ -15,9 +15,14 @@ import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/c
 import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
-import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
-import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { CARD_UI_CSS, CardForm, SaveBar, Section } from "@jayyuen66/dsh-plugin-shared/lib/card-ui";
+import {
+  CARD_UI_CSS,
+  CardForm,
+  SaveBar,
+  Section,
+  errorText,
+  isRecord,
+} from "@jayyuen66/dsh-plugin-shared/client";
 import { hasDraftFace, hasInsertFace, useWriteBack } from "./input-writeback.ts";
 import { DIR_PREP_NAMESPACE, createDirPrepReader } from "./remote.ts";
 import type { DirPrepReader } from "./remote.ts";

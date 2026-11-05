@@ -362,6 +362,28 @@ export function sanitizeTemplateList(raw: unknown): TemplateEntry[] {
   return out;
 }
 
+const BACKSLASH = String.fromCodePoint(92);
+const WIN_DRIVE_LETTER = /^[A-Za-z]:$/u;
+const TRAILING_SEPARATORS = /[/\\]+$/u;
+
+/** 绝对路径形状（与 host 侧 path.isAbsolute 同口径的宽松版：POSIX 根、win32 盘符、UNC）。
+ *  client 半跑在浏览器里，没有 node:path 可用，故按形状判。 */
+function isAbsolutePath(value: string): boolean {
+  const winDrive =
+    WIN_DRIVE_LETTER.test(value.slice(0, 2)) && (value[2] === "/" || value[2] === BACKSLASH);
+  return value.startsWith("/") || winDrive || value.startsWith(BACKSLASH + BACKSLASH);
+}
+
+/** 剥末尾分隔符；剥完为空（POSIX 根 `/`）或只剩盘符（`C:`）时留原值——后者在 win32
+ *  是「该盘当前目录」的相对形式，不是根。 */
+function normalizeRootShape(value: string): string {
+  const stripped = value.replace(TRAILING_SEPARATORS, "");
+  if (stripped.length === 0 || WIN_DRIVE_LETTER.test(stripped)) {
+    return value;
+  }
+  return stripped;
+}
+
 /** 任意来源（settings 快照 / 设置卡草稿）→ 合法的「导入允许目录」列表（纯函数）。
  *  host 的导入策略是「会话 cwd + 内置角色库 + importAllowRoots」，绝对路径默认拒绝，
  *  这里登记的每一项都是**放一个读盘口子**，故：
@@ -369,26 +391,19 @@ export function sanitizeTemplateList(raw: unknown): TemplateEntry[] {
  *  - 非字符串 / trim 后为空 → 丢弃（空串在 host 侧 path.resolve 会落到进程 cwd，
  *    绝不能让它变成一个隐式允许根）；
  *  - **非绝对路径 → 丢弃**：契约是「额外允许的绝对目录」，相对项会被 host 按它自己的
- *    进程 cwd 解析，等于登记了一条用户没写过、界面上也看不出指向哪里的允许根；
- *  - 去重（同一目录登记两次没有额外语义，界面上也不该出现两行）。 */
-/** 绝对路径形状（与 host 侧 path.isAbsolute 同口径的宽松版：POSIX 根、win32 盘符、UNC）。
- *  client 半跑在浏览器里，没有 node:path 可用，故按形状判。 */
-const BACKSLASH = String.fromCodePoint(92);
-const WIN_DRIVE_LETTER = /^[A-Za-z]:$/u;
-
-function isAbsolutePath(value: string): boolean {
-  const winDrive =
-    WIN_DRIVE_LETTER.test(value.slice(0, 2)) && (value[2] === "/" || value[2] === BACKSLASH);
-  return value.startsWith("/") || winDrive || value.startsWith(BACKSLASH + BACKSLASH);
-}
-
+ *    进程 cwd 解析，等于登记了一条用户没写过、界面上也看不出指向哪里的允许根；`~`
+ *    靠 shell 展开，host 的 path.resolve 不展开它，同归这一档；
+ *  - 末尾分隔符归一后去重（`/a` 与 `/a/` 是同一棵树，不该在界面上摆两行）；
+ *  - 条数与单条长度都不设上限：静默丢一条就是「看着成功、内容没进去」；条目多撑长的
+ *    越界回执由 host 侧的列举上限收口。 */
 export function sanitizeAllowRoots(raw: unknown): string[] {
   const out: string[] = [];
   if (Array.isArray(raw)) {
     for (const item of raw) {
       const root = typeof item === "string" ? item.trim() : "";
-      if (root !== "" && isAbsolutePath(root) && !out.includes(root)) {
-        out.push(root);
+      const shaped = normalizeRootShape(root);
+      if (root.length > 0 && isAbsolutePath(shaped) && !out.includes(shaped)) {
+        out.push(shaped);
       }
     }
   }

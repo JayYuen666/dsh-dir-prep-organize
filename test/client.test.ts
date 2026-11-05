@@ -136,10 +136,11 @@ async function profileBundleName(): Promise<string> {
 /** 本包 cordis.patch.yml 声明的裸条目 id（0.1.7 的 settings 命名空间）。 */
 async function patchEntryIds(): Promise<string[]> {
   const patch = await readFile(path.join(PKG_DIR, "cordis.patch.yml"), "utf8");
+  // shared 是卡片组件行，不是本包的 settings 命名空间；这里只收本包自己的裸条目。
   return Array.from(
     patch.matchAll(/^\s*(?:-\s+)?id:\s*(?<id>\S+)\s*$/gmu),
     (row) => row.groups?.["id"] ?? "",
-  );
+  ).filter((id) => id !== "shared");
 }
 
 // ── 卡片双语测试助手（样板包 ctx-observe/test/client-card.test.ts 同款）──────
@@ -1208,7 +1209,10 @@ describe("inject 声明", () => {
     // `new URL(…, import.meta.url)` 会回 http://localhost:3000/… → readFile 报
     // "The URL must be of scheme file"（实测）。
     const patch = await readFile(path.join(import.meta.dirname, "..", "cordis.patch.yml"), "utf8");
-    const entryId = /^\s*-\s+id:\s*(?<id>\S+)\s*$/mu.exec(patch)?.groups?.["id"];
+    const entryId = Array.from(
+      patch.matchAll(/^\s*-\s+id:\s*(?<id>\S+)\s*$/gmu),
+      (row) => row.groups?.["id"] ?? "",
+    ).find((id) => id !== "" && id !== "shared");
     assert.ok(
       typeof entryId === "string" && entryId.length > 0,
       "cordis.patch.yml 声明了裸条目 id",

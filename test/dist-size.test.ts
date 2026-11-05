@@ -18,9 +18,9 @@ const pkgDir = path.resolve(import.meta.dirname, "..");
 
 /** 拦截半产物体积预算（实测 75,557 B）。 */
 const HOST_BUDGET_BYTES = 87_000;
-/** 客户端半产物体积预算（实测 91,439 B / 0.1.8 轮：写回票据的会话/阶段现判 + 超时取表
- *  共用谓词，都是实打实的代码而不是字面量）。 */
-const CLIENT_BUDGET_BYTES = 93_000;
+/** 客户端半产物体积预算（实测 92,969 B：`build-client` 不脱注释，导出项上的文档注释按字节
+ *  计进产物，所以「加一条判据 + 写清它为什么」这一档改动就会走掉几百字节）。 */
+const CLIENT_BUDGET_BYTES = 94_500;
 /** 精选模板数据产物体积预算（实测 640,020 B）。 */
 const TEMPLATES_BUDGET_BYTES = 736_500;
 /** types/ 入口声明体积预算。

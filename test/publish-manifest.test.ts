@@ -508,7 +508,9 @@ describe("宿主依赖的版本形状（升级防线）", () => {
       name.startsWith(DSH_PREFIX),
     );
     expect(dshDeps.length, "至少要钉住一枚 dsh-* 开发依赖，否则这道门是空转").toBeGreaterThan(0);
-    const ranged = dshDeps.filter(([, range]) => !/^\d+\.\d+\.\d+-/u.test(range));
+    const ranged = dshDeps.filter(
+      ([, range]) => !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/u.test(range),
+    );
     expect(ranged, "这些 dsh-* 开发依赖没有精确钉住版本").toStrictEqual([]);
   });
 

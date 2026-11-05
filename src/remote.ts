@@ -7,7 +7,7 @@ import type {
   RemoteResult,
   TypertCodec,
 } from "@deepseek-ai/dsh-typert-protocol";
-import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/client";
 import { z } from "zod";
 
 /** Typert Remote 命名空间（client 半这一侧的唯一一枚）。

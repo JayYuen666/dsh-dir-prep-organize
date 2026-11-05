@@ -588,9 +588,29 @@ describe("sanitizeAllowRoots", () => {
     // 界面上也看不出指向哪里的允许根；绝对形状（POSIX / 盘符 / UNC）必须保住，否则
     // Windows 用户登记的目录会被静默清空。
     assert.deepEqual(sanitizeAllowRoots(["roles", "./roles", String.raw`..\roles`]), []);
+    // `~` 由 shell 展开，host 的 path.resolve 不展开它：留进清单就等于登记一条指向不明的根。
+    assert.deepEqual(sanitizeAllowRoots(["~/roles", "/roles"]), ["/roles"]);
     assert.deepEqual(
       sanitizeAllowRoots([String.raw`C:\roles`, "C:/roles", String.raw`\\server\share`]),
       [String.raw`C:\roles`, "C:/roles", String.raw`\\server\share`],
     );
+  });
+
+  it("末尾分隔符归一后去重（/a 与 /a/ 是同一棵树），但根与盘符不被剥空", () => {
+    assert.deepEqual(sanitizeAllowRoots(["/roles/", "/roles", "/roles//"]), ["/roles"]);
+    // POSIX 根剥成空串、`C:\` 剥成 `C:`（win32 的盘相对形式，不是根）都不算归一，保留原值。
+    assert.deepEqual(sanitizeAllowRoots(["/", "/x"]), ["/", "/x"]);
+    assert.deepEqual(sanitizeAllowRoots(["C:\\", String.raw`C:\roles`]), [
+      "C:\\",
+      String.raw`C:\roles`,
+    ]);
+  });
+
+  it("登记多少条就收多少条（静默丢一条 = 用户看到保存成功却少授权一个目录）", () => {
+    const many = Array.from({ length: 22 }, (_unused, i): string => `/roles/${String(i)}`);
+    assert.deepEqual(sanitizeAllowRoots(many), many);
+    // 单条长度同样不设上限：长路径只是让 host 侧的回执变长，列举上限在那一侧收口。
+    const long = `/${"x".repeat(600)}`;
+    assert.deepEqual(sanitizeAllowRoots([long, "/ok"]), [long, "/ok"]);
   });
 });

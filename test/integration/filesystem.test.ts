@@ -471,6 +471,24 @@ describe("collectAgentTemplates 在真实磁盘上", () => {
     assert.notEqual(outsideRoot.error, undefined, "允许根之外一律拒（host.ts:792-809）");
     assert.deepEqual(outsideRoot.entries, []);
   });
+
+  it("登记了很多允许根时，越界回执只列前几项并给出省略条数", async () => {
+    const { fs, root } = tree();
+    // 这条判的是回执的**体积**：文本会进会话日志与模型上下文，而允许根来自设置存储，
+    // 脏数据或手改的 settings 能把几百项拼进一条 403。
+    const many = Array.from({ length: 9 }, (_unused, index): string =>
+      path.join(os.tmpdir(), `organize-many-roots-${String(index)}`),
+    );
+    const result = await collectAgentTemplates(fs, path.join(os.tmpdir(), "x.md"), root, MESSAGES, {
+      allowRoots: many,
+    });
+    const error = result.error ?? "";
+    assert.notEqual(result.error, undefined, "目标仍在所有允许根之外");
+    assert.ok(error.includes(many[0] ?? ""), "列举上限之内的根照旧点名");
+    assert.ok(!error.includes(many[8] ?? ""), "超出列举上限的根不再拼进文本");
+    // 会话 cwd + 内置角色库 + 9 条登记 = 11 个根，列出 5 个、省略 6 个。
+    assert.ok(error.includes("…6"), `省略条数要写出来：${error.slice(0, 240)}`);
+  });
 });
 
 // ── 符号链接逃逸的四条钉（写在本包修复之前，全部实测为红）──────────────────────

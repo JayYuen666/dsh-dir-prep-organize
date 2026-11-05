@@ -20,8 +20,18 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import React from "react";
 import { z } from "zod";
+import {
+  CARD_UI_CSS,
+  CardForm,
+  SaveBar,
+  Section,
+  errorText,
+  isRecord,
+} from "@jayyuen66/dsh-plugin-shared/client";
 import { describe, it } from "vitest";
 
+const SHARED_SPECIFIER = "@jayyuen66/dsh-plugin-shared/client";
+const sharedClient = { CARD_UI_CSS, CardForm, SaveBar, Section, errorText, isRecord };
 const pkgDir = path.join(import.meta.dirname, "..", "..");
 const PKG_NAME = (
   JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8")) as unknown as {
@@ -79,6 +89,9 @@ async function materialize(): Promise<Record<string, unknown>> {
     if (specifier === "zod") {
       return { z };
     }
+    if (specifier === SHARED_SPECIFIER) {
+      return sharedClient;
+    }
     throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
   });
 }
@@ -105,7 +118,7 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 
-  it("索取面恰好只有 react / zod：多一枚外部依赖就是宿主装载不到的一块砖", async () => {
+  it("索取面恰好是平台模块与共享客户端行：其余依赖一律内联", async () => {
     const taken = await loadRegistration();
     const asked: string[] = [];
     taken.factory((specifier: string): unknown => {
@@ -116,14 +129,17 @@ describe("发布产物 client.js 的装载", () => {
       if (specifier === "zod") {
         return { z };
       }
+      if (specifier === SHARED_SPECIFIER) {
+        return sharedClient;
+      }
       throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
     });
-    // 判「问过了什么」而不是「有没有抛」：产物本来只该问平台表里的那两枚，问了别的才会抛。
-    // 这条同时是 build-client.mjs 外部化名单的下游锁——名单里多写一枚宿主包，这里就会红。
+    // 平台模块由宿主 shell 提供；shared/client 由本包 cordis.patch.yml 启用的共享行提供。
+    // 再出现别的裸说明符才是「宿主装载不到的一块砖」。
     assert.deepEqual(
       asked.toSorted(),
-      ["react", "zod"],
-      "产物的外部依赖面应当恰好只有 react / zod",
+      [SHARED_SPECIFIER, "react", "zod"].toSorted(),
+      "产物的外部依赖面应当只有平台模块与共享客户端行",
     );
   });
 });

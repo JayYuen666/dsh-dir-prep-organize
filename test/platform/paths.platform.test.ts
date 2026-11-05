@@ -16,10 +16,15 @@ import { HOST_MESSAGES } from "../../src/host-messages.ts";
 const { zh } = HOST_MESSAGES;
 
 describe("win32 字形在 POSIX 判据下的落点", () => {
-  it("盘符绝对形被当成 cwd 内的字面文件名放行（POSIX 上反斜杠是文件名字符）", () => {
-    // /tmp/proj/C:\repo\x.md —— 一个名字很怪的文件，读不出 cwd，fail-safe。
-    assert.equal(importPathError(String.raw`C:\repo\x.md`, "/tmp/proj", [], zh), undefined);
-  });
+  // 这条断言的前提是「反斜杠在 POSIX 上只是文件名字符」——Windows 上 `\` 就是分隔符，
+  // 同一串会被判成盘符绝对形而落在 cwd 之外。跳过的是平台前提，不是用例意图。
+  it.skipIf(process.platform === "win32")(
+    "盘符绝对形被当成 cwd 内的字面文件名放行（POSIX 上反斜杠是文件名字符）",
+    () => {
+      // /tmp/proj/C:\repo\x.md —— 一个名字很怪的文件，读不出 cwd，fail-safe。
+      assert.equal(importPathError(String.raw`C:\repo\x.md`, "/tmp/proj", [], zh), undefined);
+    },
+  );
 
   it("反斜杠的 .. 逃逸在原始段检查就被拒（反斜杠同样是段分隔符，探针实测）", () => {
     assert.equal(

@@ -934,6 +934,11 @@ function importRootsOf(
   return roots;
 }
 
+/** 越界回执里最多列出几个允许根。这条文本会进会话日志与模型上下文，而允许根的清单
+ *  来自设置存储——手改过的 settings 或脏数据能把几百项拼进一条 403，所以列举面要有界。
+ *  被省略的数量以 `…<条数>` 收尾：只用标点与数字，不引入未经 locale 的新词。 */
+const OUTSIDE_ROOTS_LISTED = 5;
+
 /** 越界回执文本：点名每一类允许区并回显解析后的绝对路径——越界不做静默降级，
  *  必须让模型/人一眼看清"规则是什么、这次解析到了哪里"。 */
 function outsideRootsError(
@@ -941,9 +946,11 @@ function outsideRootsError(
   roots: readonly ImportRoot[],
   messages: HostMessages,
 ): string {
-  const zones = roots.map((root) => `${root.label} ${root.absolute}`);
+  const listed = roots.slice(0, OUTSIDE_ROOTS_LISTED);
+  const omitted = roots.length - listed.length;
+  const zones = listed.map((root) => `${root.label} ${root.absolute}`).join(messages.zoneSeparator);
   return fillTemplate(messages.outsideRoots, [
-    ["{zones}", zones.join(messages.zoneSeparator)],
+    ["{zones}", omitted > 0 ? `${zones}${messages.zoneSeparator}…${String(omitted)}` : zones],
     ["{absolute}", absolute],
   ]);
 }

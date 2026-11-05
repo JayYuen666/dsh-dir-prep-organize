@@ -1,7 +1,32 @@
 # Changelog
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
-[语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。
+[语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
+不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
+
+## 0.1.9
+
+宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 地板抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。导入面补上两条收口：越界回执的列举有界、允许根的形状归一。默认配置不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包，以及 cordis / cosmokit 的 peer 由确切版本改成范围后宿主装载门的差别。
+
+### Changed
+
+- **shared 抬到 0.2.4**：catalog、生成物与 lockfile 随之同步；shared 新增的普通依赖 `@deepseek-ai/dsh-fs-patch` 由 shared 自己安装，本包不重复声明。
+- **宿主开发基线**：`devDependencies` 的 `@deepseek-ai/dsh-*` 全族抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`，`@deepseek-ai/cosmokit` 抬到 `1.9.0`，`@deepseek-ai/schemastery` 抬到 `3.19.0`，cordis 插件组两枚抬到 `1.1.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
+- **支持窗口写成并集**：`engines.dsh` 与 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`（`0.2.2` 线宿主自己的地板，写低了等于承诺一个宿主不会启动的运行环境）。
+- **cordis 与 cosmokit 的 peer 由确切版本改成范围**：`@deepseek-ai/cordis` 原为 `~4.0.5 || 4.0.6-alpha.1`、`@deepseek-ai/cosmokit` 原为裸 `1.8.7-alpha.1`，现分别写成 `^4.0.5 || ^4.0.6-alpha.2` 与 `^1.8.6 || ^1.8.7-alpha.2`。宿主对写成字面版本的 peer 做**确切版本**强校验并在不匹配时 `skipping profile bundle`——装得上、永远不生效，而 `--dump-config` 仍退 0，是这类失败最难查的形态；`@deepseek-ai/schemastery` 的 peer 同步放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本对齐。
+- **卡片组件改由 shared 的 `./client` 供**：`src/client-entry.ts` 与 `src/remote.ts` 的运行期值导入迁到 `./client`，`package.json` 新增 `dsh.bundle.client.external`，`build-client.mjs` 的外置清单同步；`cordis.patch.yml` 因此插入一条**不写 id** 的 `@jayyuen66/dsh-plugin-shared` 组件行（写 id 会在插件页多出一个可关闭的组件，关掉后设置卡失去组件供应）。
+- **CI 的 node 矩阵收敛**：`ci.yml` 的 `node: [22, 24]` 加 macOS 排除改为单格 `node: [24.9]`，`ci.yml` 与 `publish.yml` 的 `node-version` 由 `24` 改为 `24.9`，与 `engines.node` 同值。
+- **发布预检按 catalog 的范围口径改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根真源按设计写的是范围（`^0.2.4`）——不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出面是同一口径。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝。
+
+### Fixed
+
+- **越界回执有界**（`host.ts`）：403 文本里的允许根最多列五处，其余折成 `…<条数>`。这条文本进会话日志与模型上下文，而允许根清单来自设置存储——手改过的 settings 或脏数据能把几百项拼进一条拒绝。省略数只用标点与数字表达，不引入未经 locale 的新词；`test/integration/filesystem.test.ts` 钉住截断形状。
+- **允许根的形状归一**（`src/templates.ts`）：登记项先剥末尾分隔符再去重，`/a` 与 `/a/` 认作同一棵树、不再在卡上摆两行；剥完为空（POSIX 根 `/`）或只剩盘符（`C:`）时保留原值，因为后者在 win32 是「该盘当前目录」的相对形式而不是根。`~` 归入「非绝对路径」一档被丢弃——它靠 shell 展开，而 host 的 `path.resolve` 不展开它，留着等于登记一条指向不明的允许根。
+
+### Docs
+
+- **补齐 0.1.8 落下的一处文档**：frontmatter 行数上限当时已从 20 抬到 200（`src/templates.ts` 的 `FRONTMATTER_MAX_LINES`），两份 README 的 `unnamed` 计数说明仍写「前 20 行」，四处一并改到 200。
+- **`importAllowRoots` 一行的语义**：补上「相对路径与 `~` 丢弃」与「末尾分隔符归一后去重」，与上面 Fixed 第二条的实现同值；dsh 徽章由 `^0.2.1-rc.3` 抬到 `^0.2.1-rc.5`，与 `engines.dsh` 首条同值。
 
 ## 0.1.8
 

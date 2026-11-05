@@ -809,8 +809,14 @@ describe("importPathError", () => {
 // ── importAllowRootsOf（volatile 引用读出的值 → 允许根列表）──────────────────
 
 describe("importAllowRootsOf", () => {
+  // 期望值按当前平台的 path.resolve 写：Windows 上 `/a/b` 归一到进程 cwd 所在盘，得到
+  // `D:\a\b`。把 POSIX 字形写死进期望值，这三条就只在半边平台成立（windows 格的红正是
+  // 这么来的）。这里判的是 trim / 丢弃 / 去重这三件事，不是路径字面量本身。
   it("合法数组 → trim 后保留字符串项", () => {
-    assert.deepEqual(importAllowRootsOf(["/a/b", " /c/d "]), ["/a/b", "/c/d"]);
+    assert.deepEqual(importAllowRootsOf(["/a/b", " /c/d "]), [
+      path.resolve("/a/b"),
+      path.resolve("/c/d"),
+    ]);
   });
 
   it("引用里不是数组（未解析/存量脏值）→ 空表（fail-closed）", () => {
@@ -821,11 +827,13 @@ describe("importAllowRootsOf", () => {
   });
 
   it("数组里的非字符串与空白项一律丢弃（空串不得变成 process.cwd()）", () => {
-    assert.deepEqual(importAllowRootsOf([42, "", "  ", "/ok"]), ["/ok"]);
+    assert.deepEqual(importAllowRootsOf([42, "", "  ", "/ok"]), [path.resolve("/ok")]);
   });
 
   it("同一目录的等价写法按规范化路径去重，运行期只有一枚根", () => {
-    assert.deepEqual(importAllowRootsOf(["/a/b", "/a/b/", "/a/./b", "/a/c/../b"]), ["/a/b"]);
+    assert.deepEqual(importAllowRootsOf(["/a/b", "/a/b/", "/a/./b", "/a/c/../b"]), [
+      path.resolve("/a/b"),
+    ]);
   });
 });
 

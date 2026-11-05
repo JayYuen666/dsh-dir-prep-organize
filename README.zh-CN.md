@@ -11,8 +11,8 @@
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-dir-prep-organize"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-dir-prep-organize?style=flat-square" alt="npm downloads (18 months)" /></a>
   <a href="https://github.com/JayYuen666/dsh-dir-prep-organize/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-dir-prep-organize/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.3-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -69,9 +69,9 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 
 卸载：`dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`。包在公共 npm 上，安装不需要凭据，也不需要配作用域源。
 
-- **要求 Node.js `>= 22.12`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
-- **要求宿主 `dsh` 在 `0.2.1-rc.3` → `0.2.2-alpha.2` 窗口内。** 宿主真正读的是 `engines.dsh`（`^0.2.1-rc.3`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2` **被拒**，`0.2.1-rc.3` 与 `0.2.2` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时最近的三个已发布宿主版本上逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
-- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-alpha.2`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.1-rc.3`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
+- **要求 Node.js `>= 24.9`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
+- **要求宿主 `dsh` 在 `0.2.1-rc.5` 或 `0.2.2-alpha.3` 这条宿主线上。** 宿主真正读的是 `engines.dsh`（`^0.2.1-rc.5 || ^0.2.2-alpha.3`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2` 与 `0.2.1-rc.3` **被拒**，`0.2.1-rc.5` 与 `0.2.2` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-rc.1`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.1-rc.5 || ^0.2.2-alpha.3`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
 - **`dependencies` 里不放任何 `@deepseek-ai/*`，这是契约**（`test/publish-manifest.test.ts` 钉着）。消费方 profile 用 `nodeLinker: hoisted` 且 `autoInstallPeers: false` 安装，于是写在 `dependencies` 里的宿主包会被落成**真实目录**，与运行中的宿主已加载的那份并存。`@deepseek-ai/dsh-tools` 的工具运行期调度键是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例算：宿主从 profile 副本上读那个键拿到 `undefined`，于是**每一次原生工具调用都抛**——而本包的构建、类型检查、覆盖率门禁在此之前全部照绿。
 - **`host.js` 按值导入的那两枚宿主包是必需 peer**：`@deepseek-ai/schemastery`（宿主 fork——只有它能把 `.volatile()` 字段解析成活引用）与 `@deepseek-ai/dsh-brand`。`build-host.mjs` 外部化 `dependencies` **与** `peerDependencies`，所以裸说明符留在产物里；只写 `devDependencies` 会让打包器把官方函数体内联进去。`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」。
 - **声明里点到的每一枚宿主包都落在 `peerDependencies`**，凡是只能从那里到达的都是 *optional*（`@deepseek-ai/cordis`、`cosmokit`，以及 `dsh-agent-default-model` / client-ui / `fs` / `llm` / `session` 那一族）。声明它们不是仪式：pnpm 严格布局下，`types/host.d.ts` 里一枚没有被任何 manifest 表点名的裸说明符在消费方侧解析不到，而本仓自己的类型检查照样绿。那条清单由测试从 `types/**/*.d.ts` 现量读，不从这段文字读，所以两边不会漂移。
@@ -145,7 +145,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 | 字段 | 类型 | 默认值 | 卡上有控件 | 说明 |
 |---|---|---|---|---|
 | `templates` | `{id,name,description,text,group,emoji}[]` | 未设置 | **有** | 用户自己的模板。未设置时回落到 85 条内置 |
-| `importAllowRoots` | `string[]` | `[]` | **有** | 导入端点的额外允许根，逐个目录登记；非字符串与纯空白项丢弃，重复项去重。一个都没登记时只允许会话 cwd 与内置角色库 |
+| `importAllowRoots` | `string[]` | `[]` | **有** | 导入端点的额外允许根，逐个目录登记；非字符串与纯空白项丢弃，**相对路径与 `~` 同样丢弃**（host 按它自己的进程 cwd 解析它们，等于登记一条界面上看不出指向哪里的根），末尾分隔符归一后再去重——`/a` 与 `/a/` 是同一棵树，不该在卡上摆两行。一个都没登记时只允许会话 cwd 与内置角色库 |
 | `organizeTimeoutMs` | natural，volatile | `120000` | **无** | LLM 中止时限（毫秒）。取值先取整再夹到 `[1, 2147483647]`；非有限数回落到 `120000`。`0` 能过 schema，夹完是 1 ms，所以它确实表示"立刻超时"。超过 2^31-1 时 Node 的 `setTimeout` 会打 `TimeoutOverflowWarning` 并静默用 **1 ms**，于是"调大超时"变成"立刻失败"。卡上没有控件，改它只能经 `settings.yaml` 或该行的 `config:` |
 | `maxSnippetBytes` | natural，非 volatile | `262144` | **无** | 关键文件摘要的单文件上限；超过、或大小未知的文件整份跳过并计入 `skipped.tooLarge`。导入候选用同一个上限。非 volatile 意味着不进表单快照，所以也没有卡上的行——纯部署值 |
 | `readConcurrency` | natural，非 volatile | `8` | **无** | 摘要与目录导入的有界读并发。夹在 `[1, 64]`：`0` 或负数会让那套有界 map 自我递归直到宿主被 OOM killer 杀掉，而过大的值直接废掉这个字段存在的意义（fd 上限） |
@@ -186,9 +186,9 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 按类登记，每类一条。
 
 - **没有任何东西替你截断。** 目录列表、对话文本与角色正文都是整份进去的。摘要则是整份略去而不是缩短：超过单文件上限、或超出 2 MiB 总量预算的，会记进计数并整条不放。上下文溢出是模型的报错，也是你收窄输入的依据——本插件不会静默丢掉你半份草稿。
-- **导入卡没有会话上下文。** 它的 POST 把 `sessionId` 发成空串，所以导入目标必须在内置 `agents/` 或某个已登记的根之内，且不含 `.` / `..` / 隐藏段。拒绝时会点名允许区并回显解析后的路径。
+- **导入卡没有会话上下文。** 它的 POST 把 `sessionId` 发成空串，所以导入目标必须在内置 `agents/` 或某个已登记的根之内，且不含 `.` / `..` / 隐藏段。拒绝时会点名允许区——最多列五处，其余折成 `…<条数>`，以免登记项一多就把一次拒绝写成满屏路径——并回显解析后的路径。
 - **目录导入只到两层。** 顶层加一层子目录；第三层只被**计数**为 `deeper`，永不导入。
-- **前 20 行 frontmatter 里解析不出名字的文件计为 `unnamed`**，跳过而不是猜。
+- **前 200 行 frontmatter 里解析不出名字的文件计为 `unnamed`**，跳过而不是猜。
 - **这里没有机器翻译。** `agents/` 角色库与模板正文是用户数据，无论界面语言如何，永不被翻译。
 - **润色对模型回答只能尽力而为。** finish reason 不是 `stop` 就整趟失败；而模型若返回散文而不是重写结果，草稿就被那段散文替换掉——除非草稿或输入阶段在途中变了，这次写回会被拒绝。
 
@@ -199,7 +199,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 | 按了「润色」什么都没变 | 失败从不碰草稿；按钮进入错误态若干秒，原因在 tooltip 里。常见成因：没有会话 cwd（`sessionId` 缺失或会话未知）、没有模型选择、finish reason 不是 `stop`、撞上 `organizeTimeoutMs` 时限，或请求途中草稿/模型选择变了（结果被丢弃） |
 | 模型报上下文溢出 | 这是设计如此：输入刻意不截断，模型报错就是反馈。载荷超过端点 body 上限则得到 413 |
 | 导入本地角色被拒 | 绝对路径默认拒绝，而卡片没有会话上下文。路径必须在内置 `agents/` 或某个已登记目录之内，且不含 `.` / `..` / 隐藏段 |
-| 导入的条目比预期少 | 看四个 `skipped` 计数器：`deeper`（第三层，只计数）、`tooLarge`（超过 `maxSnippetBytes`）、`unnamed`（前 20 行 frontmatter 里没有名字）、`unreadable`（读失败） |
+| 导入的条目比预期少 | 看四个 `skipped` 计数器：`deeper`（第三层，只计数）、`tooLarge`（超过 `maxSnippetBytes`）、`unnamed`（前 200 行 frontmatter 里没有名字）、`unreadable`（读失败） |
 | 模板改动没生效 / 语言不对 | 改动先在本地暂存，点**保存**后对新生效的下拉可见。标签与文案遵循官方 locale 偏好；而角色与模板**正文**是用户数据，永不做机器翻译 |
 
 ## <img src="https://api.iconify.design/lucide/wrench.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 开发
