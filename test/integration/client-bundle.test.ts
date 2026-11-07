@@ -20,18 +20,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import React from "react";
 import { z } from "zod";
-import {
-  CARD_UI_CSS,
-  CardForm,
-  SaveBar,
-  Section,
-  errorText,
-  isRecord,
-} from "@jayyuen66/dsh-plugin-shared/client";
 import { describe, it } from "vitest";
 
-const SHARED_SPECIFIER = "@jayyuen66/dsh-plugin-shared/client";
-const sharedClient = { CARD_UI_CSS, CardForm, SaveBar, Section, errorText, isRecord };
 const pkgDir = path.join(import.meta.dirname, "..", "..");
 const PKG_NAME = (
   JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8")) as unknown as {
@@ -89,9 +79,10 @@ async function materialize(): Promise<Record<string, unknown>> {
     if (specifier === "zod") {
       return { z };
     }
-    if (specifier === SHARED_SPECIFIER) {
-      return sharedClient;
-    }
+    // shared 的 `./client` 不再是可满足的请求：卡片组件已内联进产物（build-client.mjs 的
+    // 外置清单只留 react / zod）。工厂真发起这个 require 时按「未知说明符」抛出，把
+    // 外置回流挡在这里——宿主页面上的同款失败是启动期的 "missed the module table"
+    // （dsh-ocr-review 仓 issue #2）。
     throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
   });
 }
@@ -126,7 +117,7 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 
-  it("索取面恰好是平台模块与共享客户端行：其余依赖一律内联", async () => {
+  it("索取面恰好是平台模块两枚，其余依赖一律内联", async () => {
     const taken = await loadRegistration();
     const asked: string[] = [];
     taken.factory((specifier: string): unknown => {
@@ -137,17 +128,15 @@ describe("发布产物 client.js 的装载", () => {
       if (specifier === "zod") {
         return { z };
       }
-      if (specifier === SHARED_SPECIFIER) {
-        return sharedClient;
-      }
       throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
     });
-    // 平台模块由宿主 shell 提供；shared/client 由本包 cordis.patch.yml 启用的共享行提供。
+    // 平台模块由宿主 shell 提供；shared 的 `./client` 已内联（外置的供应方是另一份包的
+    // client 产物，传递依赖安装形状下宿主可能不排进启动图，见 dsh-ocr-review 仓 issue #2）。
     // 再出现别的裸说明符才是「宿主装载不到的一块砖」。
     assert.deepEqual(
       asked.toSorted(),
-      [SHARED_SPECIFIER, "react", "zod"].toSorted(),
-      "产物的外部依赖面应当只有平台模块与共享客户端行",
+      ["react", "zod"].toSorted(),
+      "产物的外部依赖面应当只有平台模块",
     );
   });
 });
