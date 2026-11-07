@@ -3,7 +3,7 @@
 //
 // 到这里为止，两半各自都有厚测试：host 侧在 test/routes.test.ts，client 侧在
 // test/client.test.ts。但它们共用一套**线协议**（方法名、字段名、回执形状），而这套
-// 协议此前只被两侧各自的手搓 body 喂过——host 改了字段名，client 的解析器只要兜底
+// 协议此前只被两侧各自手写的 body 喂过——host 改了字段名，client 的解析器只要兜底
 // 得当就仍然全绿，症状却是界面上「目录读不到」。这里把两半接到同一根真线上：
 //   真 SessionStore + 真磁盘 FileSystem + 真 LlmRuntime（脚本适配器）
 //   → 官方 Remote 服务方法的真回执 → client 半的导出解析器 → 摘要函数产真 prompt
@@ -57,7 +57,7 @@ function messageTextOf(frame: { readonly content: unknown }): string {
   return texts.join("\n");
 }
 
-/** Remote 读面的本包投影：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
+/** Remote 读取方法的本包投影：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
 interface DirPrepService {
   context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
   organize: (request: {
@@ -69,7 +69,7 @@ interface DirPrepService {
 
 function serviceOf(host: HostStack): DirPrepService {
   const service: unknown = host.ctx.get("dirPrepOrganize");
-  // 只判 undefined 不够：形状不对（同名服务被别的插件先注册、或导出面改了名）时，
+  // 只判 undefined 不够：形状不对（同名服务被别的插件先注册、或导出名改了）时，
   // `service.context` 会是 undefined，失败点被推到下面某一行并报成 TypeError。
   assert.equal(typeof service, "object", "Remote 服务没注册到上下文");
   assert.ok(service !== null, "Remote 服务是 null");
@@ -107,7 +107,7 @@ async function boot(replies: readonly string[], files: Record<string, string>): 
 /* oxlint-disable vitest/require-top-level-describe, no-await-in-loop */
 afterEach(async () => {
   const pending = rigs.splice(0);
-  // 一台拆台失败不能让后面的台子留在盘上/进程里：逐台收口，最后一次性抛出全部失败。
+  // 一台拆台失败不能让后面的台子留在盘上/进程里：逐台统一处理，最后一次性抛出全部失败。
   const failures: unknown[] = [];
   for (const { host, project } of pending) {
     try {
@@ -165,14 +165,14 @@ describe("client↔host 点对点回合", () => {
     assert.ok((request.system ?? "").includes(project), "会话 cwd 进 system");
     assert.equal(request.messages.length, 1, "request-only 帧：一条 user 输入");
     // 断言按结构读，而不是把整帧 stringify 之后做子串查找：后者连 role 字段、
-    // 相邻 block 的分隔符都算进搜索面，命中位置与「正文进了模型」不是同一件事。
+    // 相邻 block 的分隔符都算进被搜索的文本，命中位置与「正文进了模型」不是同一件事。
     const [frame] = request.messages;
     assert.ok(frame !== undefined, "request 里至少有一条消息");
     assert.equal(frame.role, "user", "request-only 帧的角色是 user");
     const userText = messageTextOf(frame);
     assert.ok(userText.includes("notes.md"), "client 产的目录表进了模型");
     assert.ok(userText.includes(INDEX_SNIPPET), "关键文件正文经真 fs 读进模型");
-    assert.ok(userText.includes("把上面那份笔记整理成评审要点"), "草稿原文进 user 帧");
+    assert.ok(userText.includes("把上面那份笔记整理成评审要点"), "`prompt` 原文进 user 帧");
     assert.ok(!Object.hasOwn(frame, "id"), "帧不带自造身份（RequestUserInput 的 never 位）");
   });
 

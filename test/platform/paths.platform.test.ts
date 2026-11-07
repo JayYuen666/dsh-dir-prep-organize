@@ -1,6 +1,6 @@
 // 跨平台语义钉：导入策略的原始段检查把 `\` 也当分隔符（探针实测 `..\..\escape.md` 在
 // POSIX 上被拒），client 半的绝对形状判据与 host 的 path.isAbsolute 在 win32 盘符相对
-// 形上刻意不同口径，frontmatter 解析吃 CRLF。这一层把三种「平台相关形状」钉在
+// 形上刻意不同做法，frontmatter 解析吃 CRLF。这一层把三种「平台相关形状」钉在
 // 平台无关的判据上——全部纯函数，三平台 CI 都真跑。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import { HOST_MESSAGES } from "../../src/host-messages.ts";
 
 const { zh } = HOST_MESSAGES;
 
-describe("win32 字形在 POSIX 判据下的落点", () => {
+describe("win32 字形在 POSIX判据下的结果", () => {
   // 这条断言的前提是「反斜杠在 POSIX 上只是文件名字符」——Windows 上 `\` 就是分隔符，
   // 同一串会被判成盘符绝对形而落在 cwd 之外。跳过的是平台前提，不是用例意图。
   it.skipIf(process.platform === "win32")(
@@ -33,7 +33,7 @@ describe("win32 字形在 POSIX 判据下的落点", () => {
     );
   });
 
-  it("client 半的绝对形状判据：盘符相对（C:rel）不算绝对——与 host 的 win32 口径刻意不同宽", () => {
+  it("client 半的绝对形状判据：盘符相对（C:rel）不算绝对——与 host 的 win32 做法刻意不同宽", () => {
     // client 无 node:path，按形状判：盘符后必须跟分隔符。C:rel 在 host 的 win32 读法里
     // 是盘符相对（path.win32.isAbsolute === false，但 resolve 会盘内相对化）——client
     // 宁可丢弃也不登记一个指向不明的允许根。

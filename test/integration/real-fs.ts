@@ -25,9 +25,9 @@
 //  · 错误码词汇表：packages/fs/fs/src/types.ts；FsError 继承 HarnessError 带 code。
 //
 // 本文件是宿主实现的**语义镜像**，三处规则按整文件豁免，理由各一条：
-//  · eslint(new-cap)：`FsTargetKey()` / `FsVersion()` 是官方导出的品牌函数（不是构造器），
+//  · eslint(new-cap)：`FsTargetKey()` / `FsVersion()` 是官方导出的 `brand` 施加函数（不是构造器），
 //    types.ts 就这么写的，换名字等于自造 API。
-//  · eslint(class-methods-use-this)：`FileSystem` 抽象成员的签名归官方，读面实现
+//  · eslint(class-methods-use-this)：`FileSystem` 抽象成员的签名归官方，读取方法实现
 //    （processPath / lstat / writeText…）天然不引用 this，硬塞 this 只为过 lint 是假动作。
 //  · eslint(no-await-in-loop)：listDir 逐子项串行 await，与 fsio.ts 的 listDir 同式——宿主
 //    就是靠串行来天然限流（不开并发），并发化等于偏离被测语义。
@@ -56,7 +56,7 @@ const BINARY_SAMPLE_BYTES = 8192;
 /** 跟随末段软链后可能出现的类型（fs-local 的 `stat` 永不报 symlink，fsio.ts 的 stat）。 */
 type FollowedType = "file" | "directory" | "other";
 
-/** 探针返回值（fs-local 的 PathInfo / PathLinkInfo 投影，types.ts）。 */
+/** 探测返回值（fs-local 的 PathInfo / PathLinkInfo 投影，types.ts）。 */
 interface ProbeResult<TType extends FsInfo["type"] | "symlink"> {
   readonly version: FsVersionType;
   readonly type: TType;
@@ -75,7 +75,7 @@ function isEnotdir(error: unknown): boolean {
   return code === "ENOTDIR";
 }
 
-/** ENOENT / ENOTDIR 在宿主口径里同义为「缺席」（fsio.ts）。 */
+/** ENOENT / ENOTDIR 在宿主做法里同义为「缺席」（fsio.ts）。 */
 function isMissing(error: unknown): boolean {
   return isEnoent(error) || isEnotdir(error);
 }
@@ -109,7 +109,7 @@ function versionOf(info: Stats): FsVersionType {
   );
 }
 
-/** 探针共用体：缺席回 undefined，其余按是否跟随末段取元数据（fsio.ts 的探针）。 */
+/** 探测共用体：缺席回 undefined，其余按是否跟随末段取元数据（fsio.ts 的那份探测）。 */
 async function probeWith(
   absolute: string,
   noFollow: boolean,
@@ -265,8 +265,8 @@ async function identityOf(absolute: string): Promise<string> {
 }
 
 /**
- * 真实磁盘上的 `FileSystem`：读面 + 有界字节读。本包从不写盘（host.ts 文件头的「只读」承诺），
- * 故所有写面成员一律交回 FS_IO_ERROR——哪天生产面真动手写，这里当场炸，而不是悄悄通过。
+ * 真实磁盘上的 `FileSystem`：读取方法 + 有界字节读。本包从不写盘（host.ts 文件头的「只读」承诺），
+ * 故所有写入成员一律交回 FS_IO_ERROR——哪天生产代码真动手写，这里当场炸，而不是悄悄通过。
  */
 export class DiskFileSystem extends FileSystem {
   public override async resolve(
@@ -458,7 +458,7 @@ export class DiskFileSystem extends FileSystem {
     );
   }
 
-  // 官方在 FileSystem 上补齐的写面三支（补丁式改写、删除、移动/带补丁移动）。本包只读，
+  // 官方在 FileSystem 上补齐的写入方法三支（补丁式改写、删除、移动/带补丁移动）。本包只读，
   // 拒法与 writeText / editText 同一条：形状按抽象成员签名收窄到实际用到的位数，
   // 返回 `Promise<never>`——永远抛错，所以不需要引入那三个 outcome 类型。
   public override async patchText(target: FsTarget): Promise<never> {

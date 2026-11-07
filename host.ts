@@ -8,11 +8,11 @@
 //   defaults()                                  内置精选模板表（按需载入）
 //   context({ sessionId })                      目录上下文（文件名+大小+关键文件摘要）
 //   model({ sessionId })                        当前默认模型（provider/model/effort）
-//   organize({ sessionId, prompt, … })          用该模型润色草稿（LLM 流式聚合）
+//   organize({ sessionId, prompt, … })          用该模型润色草稿（入参 `prompt`，LLM 流式聚合）
 //   importTemplates({ path, sessionId })        角色 .md 导入 → 模板条目（只读，见导入节）
 //
 // 文案双语：本文件产出的固定文案（①「润色」的 system prompt，面向模型；②会回显到设置卡
-// 与润色按钮的导入/读面回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
+// 与润色按钮的导入/读取方法回执，面向用户）集中在 src/host-messages.ts，按官方 locale 插件
 // 的偏好现读取表（见 apply 的 localeMessages）；纯函数一律以字典为**入参**、不读设置。
 // console.* 日志与注释不随界面语言切换，故留中文；agents/ 角色库与
 // src/default-templates.generated.ts 是用户可编辑的数据，不做机翻。
@@ -22,8 +22,8 @@
 // 目录；越界回 403 + {ok:false,error}（错误文本点名允许区并回显解析后的路径），
 // path 字段非字符串/纯空白回 400，不再静默降级成"导入内置全部"。
 //
-// 数据源（全部 ctx.get 可选读取，缺服务时读面报 error 而非炸插件）：
-//   sessions.get(sessionId).header.cwd   会话 cwd（目录源，用户拍板）
+// 数据源（全部 ctx.get 可选读取，缺服务时读取方法报 error 而非炸插件）：
+//   sessions.get(sessionId).header.cwd   会话 cwd（目录源，用户定下）
 //   fs.resolve/listDir/readText          目录枚举与关键文件首段
 //   agentDefaultModel.currentSelection   当前默认模型（composer 选择落此处）
 //   llm.stream                           模型调用（GenerateOptions 契约）
@@ -31,11 +31,11 @@
 // 目录粒度：文件名+大小+关键文本文件全文。条目数不设上限（上下文完整性优先），
 // 但**单个文件按字节上限整份跳过**：readWholeText 在 harness 侧无上限，一个顶层
 // 巨型 .md/.json 就能撑爆响应并把半份内容当"全量摘要"回投，宁可少喂一条并如实
-// 计数，也不静默拖垮读面。摘要/导入读取一律走有界并发（fd 打满时 EMFILE 会让
+// 计数，也不会静默拖垮整个读取过程。摘要/导入读取一律走有界并发（fd 打满时 EMFILE 会让
 // 片段被静默丢掉而仍报 ok:true）。
-// 失败语义（用户拍板）：读面返回 {ok:false,error}，Client 隐藏面板并显示错误。
+// 失败语义（用户定下）：读取方法返回 {ok:false,error}，Client 隐藏面板并显示错误。
 // 传输层已交给官方 Typert Remote：认证、body 上限与方法分派由宿主 /api 网关负责，
-// 本文件不再解析请求体，也没有自建的信任闸门或 CSRF 令牌。
+// 本文件不再解析请求体，也没有自建的信任检查或 CSRF 令牌。
 //
 // 模板设置（**隐式注册**）
 // 宿主移除了 settings.register/get/installSection：命名空间 = 本包 cordis.patch.yml 里的
@@ -50,8 +50,8 @@
 // client（设置卡/下拉）直读本条目的配置表单 `ctx.configForms.get(entryId)`（宿主已移除
 // settingsScope 这一层），不经 HTTP、零 LLM。数组 set 语义
 // 已按 dsh-settings 源码取证：applyPathOp 字段级整体替换 + cloneJsonShaped
-// JSON 白名单允许普通对象数组（session-rescue providerExcludes:string[] 先例）。
-// host 侧只剩两面用 settings：configure（声明本包自带卡片、别让宿主再生成自动页）
+// JSON 白名单收普通对象数组（session-rescue providerExcludes:string[] 先例）。
+// host 侧只有两处用 settings：configure（声明本包自带卡片、别让宿主再生成自动页）
 // 与 describe（跨命名空间现读官方 locale 插件的语言偏好）。配置值本身由 cordis 在校验
 // 过 Config schema 之后按 volatile 引用交进 apply，取当前值一律 config.<field>.get()——
 // 「存量配置坏一段」在装载期就抛、由宿主报装配失败，插件侧不再有可兜的那条 try/catch。
@@ -59,12 +59,12 @@
 import path from "node:path";
 import Schema from "@deepseek-ai/schemastery";
 import type { Context, Volatile } from "@deepseek-ai/cordis";
-// 值导入：`brandString` 是官方幻影品牌唯一的合法构造口（用在哪两位上见下面 SessionsService 的
+// 值导入：`brandString` 是官方类型品牌（`Branded<B>`）唯一的合法构造口（用在哪两位上见下面 SessionsService 的
 // 注释）。它是恒等函数，且 dsh-brand 自述「不拥有任何具体域值，也不保留任何运行时身份或可变
 // 状态，独立安装的副本产出可互换的值」——据此把它落 peerDependencies（并在 devDependencies
-// 里同版再写一份供本仓编译与测试）、产物留裸说明符。只放 devDependencies 会让 rolldown 把函数体
+// 里同版再写一份供本仓编译与测试）、产物里留着裸说明符。只放 devDependencies 会让 rolldown 把函数体
 // 内联进 host.js，等于每包各持一份官方实现；写进 dependencies 更糟——消费方的 profile 是 hoisted
-// 安装且 autoInstallPeers: false，它会在那棵树里物化成**第二份真实目录**，与宿主进程已加载的那份
+// 安装且 autoInstallPeers: false，它会在 profile 的 node_modules 依赖树里物化成**第二份真实目录**，与宿主进程已加载的那份
 // 并存，见 test/publish-manifest.test.ts 的那条门禁。与 danger-guard 的 `brandNumber`、
 // session-rescue 的 `brandString` 同一处、同一理由。
 import { brandString } from "@deepseek-ai/dsh-brand";
@@ -96,10 +96,10 @@ import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
 /** 本包送进 `llm.stream({ messages })` 的润色请求帧是 **request-only 输入**：它从不落
- *  任何持久消息位（`runOrganize` 只回 `{ content }`，读面也不把帧身份回投给卡片），所以
+ *  任何持久消息位（`runOrganize` 只回 `{ content }`，读取方法也不把帧身份回传给卡片），所以
  *  它既不需要 `id` 也不带 `source`——证据三条：
  *  1. installed `@deepseek-ai/dsh-llm/lib/types/types.d.ts` 的 `RequestUserInput`
- *     把两面都标成 `?: never`（`readonly id?: never` / `readonly source?: never`），
+ *     把两处都标成 `?: never`（`readonly id?: never` / `readonly source?: never`），
  *     `GenerateOptions.messages` 收的是 `RequestMessage[] = Message | RequestUserInput`
  *     （`GenerateOptions` 的字段注记 "a hand-built one-shot may include identity-free user
  *     inputs"）；
@@ -122,7 +122,7 @@ const AGENTS_DIR = path.join(import.meta.dirname, "agents");
  * 内置精选模板表的数据产物入口（templates.data.mjs，由 build-host.mjs 单独产出）。
  *
  * 用 `import.meta.url` 相对定位，与上面 AGENTS_DIR 同一套理由：产物落**包根**，所以运行时
- * 落点必须跟着产物走，而不是跟着构建时的 cwd 或源码目录走。
+ * 写入位置必须跟着产物走，而不是跟着构建时的 cwd 或源码目录走。
  *
  * 说明符走变量而不是字符串字面量，是刻意的：rolldown 见到字面量会去解析它，而这个名字在
  * 源码树里并不存在（它是上一次构建的产物）。变量形态让打包器原样留下，由 Node 在运行期解析。
@@ -138,7 +138,7 @@ let defaultTemplatesPromise: Promise<readonly TemplateEntry[]> | undefined;
 /**
  * 产物导出值的守卫：只认「是数组」这一条。
  *
- * 元素级校验刻意不在这一层做——读面把这张表原样 JSON 序列化下发，渲染侧的兜底在 client
+ * 元素级校验刻意不在这一层做——这个方法把这张表原样 JSON 序列化下发，渲染侧的兜底在 client
  * 半；在这里逐条断言字段只会让守卫和生成脚本的字段集耦在一起，改一个字段要动两处。
  * `Array.isArray` 本身会把 unknown 收窄成 `any[]`，经类型谓词再收一次，返回值才不是
  * 不安全返回（no-unsafe-return）。
@@ -176,7 +176,7 @@ async function importDefaultTemplates(): Promise<readonly TemplateEntry[]> {
  * 内置精选模板表：按需载入，永不静态导入。
  *
  * 静态导入会让整张精选表随宿主载入插件一起进内存，而它们只有一个消费者——default-templates
- * 读面，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一口径。
+ * 读取方法，而客户端本来就是首次打开下拉时才拉这一发。两边都按需，才是同一件事的同一种做法。
  *
  * @param load - 载入器，缺省即真实 import 产物；单测靠它把「首读失败」那一档做成可复跑
  *   的判据（产物 URL 一旦被成功加载就进 ESM 缓存，改磁盘内容对后续 import 无效，所以失败路径
@@ -190,14 +190,14 @@ export async function loadDefaultTemplates(
   try {
     return await defaultTemplatesPromise;
   } catch (error) {
-    // 失败的 promise 不能留在缓存里：读面的 Retry 会拿同一个 rejection 重放，一次瞬时失败
-    // （例如产物还在落盘）就把整次会话钉死成「永远失败」。清掉缓存，下一次调用重新尝试。
+    // 失败的 promise 不能留在缓存里：读取方法的 Retry 会拿同一个 rejection 重放，一次瞬时失败
+    // （例如产物还在写文件）就把整次会话钉死成「永远失败」。清掉缓存，下一次调用重新尝试。
     defaultTemplatesPromise = undefined;
     throw error;
   }
 }
 
-/** 关键文本扩展名（这些文件取首段摘要）。仅代码/文档/结构配置面；
+/** 关键文本扩展名（这些文件取首段摘要）。仅代码/文档/结构配置文件；
  *  yaml/env 等敏感配置不取摘要（凭据泄露风险，实测 .credentials.yaml 被带出）。 */
 const KEY_EXT = new Set([
   ".ts",
@@ -233,7 +233,7 @@ const KEY_EXT = new Set([
 const SECRET_PATTERN =
   /(?:^|[^a-z0-9])(?:credentials?|secrets?|id_rsa|pem|p12|pfx|keystore|env|keys?|tokens?|auth|passwd|password|accounts?)(?:[^a-z0-9]|$)/u;
 /** LLM 润色超时。 */
-/** schema .default() 的单源（host 消费走 config 字段，不再直读常量）。 */
+/** schema .default() 的唯一来源（host 消费走 config 字段，不再直读常量）。 */
 const ORGANIZE_TIMEOUT_MS = 120_000;
 /** 单个关键文件的摘要字节上限。harness 的 readWholeText 无上限，超限文件整份
  *  跳过（不截半份——半份摘要会以"全量"的名义喂给模型，比没有更误导），
@@ -242,8 +242,8 @@ const MAX_SNIPPET_BYTES = 256 * 1024;
 /** 单次润色带进模型的全部摘要的**总量**上限。
  *
  *  为什么需要总量而单文件上限不够：`maxSnippetBytes` 只管每个文件，而条目数不设上界
- *  （用户拍板）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，请求
- *  仍要过宿主 /api 网关的请求体上限，摘要一多就顶得过它，结果是 context 读面成功、
+ *  （用户定下）。于是 client 把所有摘要拼成 `entriesSummary` 原样回投 organize，请求
+ *  仍要过宿主 /api 网关的请求体上限，摘要一多就顶得过它，结果是 context 读取方法成功、
  *  UI 正常列出文件树，用户点「润色」才在网关处失败。这里给总量封顶，让「context 成功」
  *  不再意味着「organize 必然失败」。留足余量：JSON 转义与 client 侧的拼接还会再放大一截。 */
 const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
@@ -277,23 +277,23 @@ export function clampInt(value: number, min: number, max: number, fallback: numb
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-// ── host 服务面（全部绑官方声明，不再本地镜像）────────────────────────────
+// ── host 用到的宿主服务（全部绑官方声明，不再本地镜像）────────────────────────────
 // 这一族此前是「按源码逐字段核对的最小 interface」——本包当时不声明 @deepseek-ai/dsh-fs /
-// dsh-llm / dsh-session 依赖，只能手抄。手抄的代价在这批里最重的一处是 `FsTarget.targetKey`：
-// 官方它是品牌串 `FsTargetKey = Branded<'FsTargetKey'>`（installed
+// dsh-llm / dsh-session 依赖，只能照抄。照抄的代价在这批里最重的一处是 `FsTarget.targetKey`：
+// 官方它是带 `brand` 的串类型 `FsTargetKey = Branded<'FsTargetKey'>`（installed
 // @deepseek-ai/dsh-fs/lib/types/types.d.ts），抄成裸 `string` 之后品牌信息在
 // 整条 stream/摘要链上永久丢失（编译器不再拦得住"拿错 targetKey"）。现在本包声明这些官方包为
-// devDependency（type-only，运行时仍由 ctx 注入），每个服务面都改成官方成员的 `Pick` 投影：
-// 入参、返回、可选性、品牌一律由官方交出，上游改名/加必填位即在此编译不过。
+// devDependency（type-only，运行时仍由 ctx 注入），每个服务都改成官方成员的 `Pick` 投影：
+// 入参、返回、可选性、`brand` 一律由官方交出，上游改名/加必填位即在此编译不过。
 
 // 下列形状全部 **export**：测试注入的假服务必须是这些形状的合法实现（而非
-// `as never` / `as unknown as X` 绕过），类型面同样参与回归锁定。
-/** 目标的官方形状直接 re-export（`targetKey` 就此是官方 `FsTargetKey` 品牌，不再降级成 string）。 */
+// `as never` / `as unknown as X` 绕过），类型上同样参与回归锁定。
+/** 目标的官方形状直接 re-export（`targetKey` 就此带官方 `FsTargetKey` 的 `brand`，不再降级成 string）。 */
 export type { FsDirEntry, FsTarget } from "@deepseek-ai/dsh-fs";
 
 /**
  * 官方 `FileSystem`（installed @deepseek-ai/dsh-fs/lib/types/index.d.ts，cordis `Service`
- * 子类 → 名义比较）的方法面投影：本包用 `resolve` / `listDir` / `readText`
+ * 子类 → 名义比较）的方法子集投影：本包用 `resolve` / `listDir` / `readText`
  * / `contains` / `stat`。旧镜像漏抄了官方那几位的可选 `signal?: AbortSignal`
  * 形参（抄本里没有的形参在 TS 里是"少收一个参数"，调用点不会报错，但真实宿主多一档取消
  * 语义）；投影之后它回到官方形状。
@@ -306,7 +306,7 @@ export type { FsDirEntry, FsTarget } from "@deepseek-ai/dsh-fs";
 export type FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" | "contains" | "stat">;
 
 /**
- * 本包从会话消息史的读取面 = **官方 `Message` 的键名投影**（installed
+ * 本包从会话消息历史里读到的类型 = **官方 `Message` 的键名投影**（installed
  * @deepseek-ai/dsh-llm/lib/types/message.d.ts `MessageBase` 与各变体的 `role`），
  * 三位各自取到"本包能凭运行时守卫负责的那一档"：
  * - `role` 就此是官方 `Message['role']` 的字面量联合（上游加/改角色即在此编译不过，
@@ -335,7 +335,7 @@ export interface DerivedMessageView {
 }
 
 /**
- * 本包读到的会话面 = 官方 `Session` 两位成员的**边界投影**（installed
+ * 本包读到的会话类型 = 官方 `Session` 两位成员的**边界投影**（installed
  * @deepseek-ai/dsh-session/lib/types/index.d.ts：`readonly header: SessionHeader`、
  * `deriveMessages(): Message[]`）。
  * 键名一律借自官方（`header` 借 `Session`、`cwd` 借 `SessionHeader`，installed
@@ -357,13 +357,13 @@ export interface SessionLike {
  * `brandString<SessionId>`），返回值域换成上面的 `SessionLike` 投影——直接取官方返回的整枚
  * `Session` 类会把名义类一路渗进本包（`private log`/`surfaceManager`），那三道运行时
  * 守卫当场在编译器眼里变成死代码，而它们挡的是真实输入。返回 `undefined` 与官方一致。
- * 口径同 danger-guard/host.ts 的 `GuardExecution`（借键名、值域换投影）。
+ * 做法同 danger-guard/host.ts 的 `GuardExecution`（借键名、值域换投影）。
  */
 export interface SessionsService {
   get: (id: SessionId) => SessionLike | undefined;
 }
 
-/** 活 Agent 的模型选择面（新版 `model.current()`；旧版只有 `options`）。 */
+/** 活 Agent 的模型选择接口（新版 `model.current()`；旧版只有 `options`）。 */
 export interface LiveModelSelection {
   readonly provider: string;
   readonly model: string;
@@ -378,21 +378,21 @@ export interface LiveAgent {
     readonly reasoningEffort?: ModelSelection["reasoningEffort"];
   };
 }
-/** 宿主 agent 注册表读面：按会话 id 取活 Agent。 */
+/** 宿主 agent 注册表的读取接口：按会话 id 取活 Agent。 */
 export interface AgentsService {
   get: (id: SessionId) => LiveAgent | undefined;
 }
 
 /** 会话 id 的官方品牌构造：把边界上读来的裸 string 送进 `SessionStore.get`。 */
 const sessionIdOf = (value: string): SessionId => brandString<SessionId>(value);
-/** `ReasoningEffortId` 取官方真品牌（`Branded<'ReasoningEffortId'>`，以 dsh-brand 的
- *  `unique symbol` 为键）。本地重述成 `string & { effortBrand: ... }` 是**假品牌**：
+/** `ReasoningEffortId` 取官方真 `brand`（`Branded<'ReasoningEffortId'>`，以 dsh-brand 的
+ *  `unique symbol` 为键）。本地重述成 `string & { effortBrand: ... }` 只是**自造的假类型品牌**：
  *  键不同名即不同型，宿主真值塞不进来、任何带该属性的字符串反倒能通过，注释里那句
  *  「转换点为 0」并不成立。取官方类型后模型选择与 stream 入参两侧共用同一真值。 */
 export type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 /** 默认模型选择的三位形状：与官方 `ModelSelection`（`@deepseek-ai/dsh-agent` 的
- *  model-selection.d.ts）同形。`reasoningEffort` 用官方真品牌 `ReasoningEffortId`（上面已按
- *  dsh-llm 的 peer 面 re-export），品牌值塞不进 stream 入参的静默丢字段风险仍在类型面上。
+ *  model-selection.d.ts）同形。`reasoningEffort` 用官方真 `brand` 类型 `ReasoningEffortId`（上面已按
+ *  dsh-llm 的 peer 声明里的 re-export），`brand` 值塞不进 stream 入参时静默丢字段的风险仍留在类型上。
  *
  *  为什么不直接 import/re-export 官方类型：那会在 `types/host.d.ts` 里留下裸说明符
  *  `@deepseek-ai/dsh-agent`，按本仓门禁它只能落进 peer 表，而本包运行期并不 import 它——
@@ -403,12 +403,12 @@ export interface ModelSelection {
   readonly reasoningEffort?: ReasoningEffortId;
 }
 
-/** 默认模型服务的读面投影：本包只 `currentSelection()`，不写回（`saveSelection` 归 composer）。
+/** 默认模型服务里本包用到的那部分：只 `currentSelection()`，不写回（`saveSelection` 归 composer）。
  *
  *  刻意不 `Pick<AgentDefaultModelConfig, …>`：那个声明文件 import 了它自己没声明的
  *  `@deepseek-ai/dsh-agent`，干净检出里这条链会退化成 error 类型，类型感知的 oxlint 在 CI
  *  上整片报 `no-unsafe-*`（伞根里经 hoist 解析得开，本机门禁看不见）。返回值用本仓的
- *  结构等价 `ModelSelection`，与真实服务的官方类型在成员面上相容。 */
+ *  结构等价 `ModelSelection`，与真实服务的官方类型在成员上相容。 */
 export interface AgentDefaultModel {
   readonly currentSelection: () => ModelSelection;
 }
@@ -431,7 +431,7 @@ export type LlmStreamOptions = Pick<
 >;
 
 /** 官方 `LlmRuntime`（`Context.llm` 的类型，installed @deepseek-ai/dsh-llm/lib/types/
- *  index.d.ts）的方法面投影：本包只 `stream`。旧镜像把返回抄成
+ *  index.d.ts）的方法子集投影：本包只 `stream`。旧镜像把返回抄成
  *  `AsyncIterable<StreamChunk>`——官方那一位的真实返回域由成员自己交出，重述一次就多一处
  *  会漂移的判决（`stream` 在 installed index.d.ts 上有数枚同名成员，本包用的是 runtime 那枚）。 */
 export type LlmService = Pick<LlmRuntime, "stream">;
@@ -452,7 +452,7 @@ function hasFnMember(value: unknown, member: string): boolean {
 /**
  * 官方 `SettingsForms`（installed @deepseek-ai/dsh-settings/lib/types/index.d.ts，
  * `Service` 子类 + private `ownerContext/revisions/closed/scheduled/presentations` → 名义
- * 比较）的方法面投影：本包只用 `describe`（跨命名空间读官方 locale 偏好）与 `configure`
+ * 比较）的方法子集投影：本包只用 `describe`（跨命名空间读官方 locale 偏好）与 `configure`
  * （页面策略）。守卫的谓词类型若写成**整个类**，那是一条对本包需求的过度声明——
  * 它宣称「宿主必须给我一枚完整的 settings 服务」，而下面每个服务守卫都只点名自己用到的成员。
  */
@@ -472,7 +472,7 @@ function isAgentsService(value: unknown): value is AgentsService {
 }
 // stat 与 resolve 同为硬依赖：单文件导入的字节上限只有 stat 能给（见 FsService 注释）。
 // 守卫漏掉它，缺 stat 的服务会以 "resolve is not a function" 的形态炸在请求中途，
-// 而不是读面回一句「fs 服务不可用」。
+// 而不是读取方法回一句「fs 服务不可用」。
 function isFsService(value: unknown): value is FsService {
   return (
     hasFnMember(value, "resolve") &&
@@ -554,7 +554,7 @@ async function mapBounded<TItem, TResult>(
 
 function isKeyFile(name: string): boolean {
   const lower = name.toLowerCase();
-  // 敏感面排除优先：命中凭据/密钥模式的文件永不取摘要
+  // 敏感文件排除优先：命中凭据/密钥模式的文件永不取摘要
   if (SECRET_PATTERN.test(lower)) {
     return false;
   }
@@ -564,11 +564,11 @@ function isKeyFile(name: string): boolean {
   }
   // 扩展名比对着 lower 取，不对着的后果是**静默丢数据**：`README.MD`/`config.JSON`
   // 既拿不到摘要，又不计入任何 skip 计数——LLM 收到一份「该文件没有内容」的目录表，
-  // UI 上也看不出少了东西。密钥面早就用的是 lower，只有这一面漏了。
+  // UI 上也看不出少了东西。密钥那条早就用的是 lower，只有这里漏了。
   return KEY_EXT.has(lower.slice(dot));
 }
 
-/** 关键文件摘要：全量正文（用户拍板不截断——上下文完整性优先，
+/** 关键文件摘要：全量正文（用户定下不截断——上下文完整性优先，
  *  模型 context 超限由模型报错提示用户自行处理）。仅 trim 去头尾空白。
  *  ⚠ 行尾先归一：官方 readText 承诺 byte-for-byte（**不归一 CRLF**，宿主 fs-local
  *  源码注明），于是 Windows 仓库里的 `\r` 会原样进摘要；client 侧的折行压平只换
@@ -607,7 +607,7 @@ function classifyRead(
 ): ReadDecision {
   const bytes = read.snippet === undefined ? 0 : Buffer.byteLength(read.snippet, "utf8");
   if (read.tooLarge === true || read.unreadable === true || read.snippet === undefined) {
-    // unreadable 的计数由调用方单独记（两类计数口径不同，不能合并）
+    // unreadable 的计数由调用方单独记（两类计数的规则不同，不能合并）
     return { snippet: undefined, keptBytes: 0, countTooLarge: read.tooLarge === true };
   }
   if (usedBytes + bytes > maxTotalBytes) {
@@ -643,20 +643,20 @@ export interface DirEntry {
   snippet: string | undefined;
 }
 
-/** 静默丢数据的记账（"读失败即 undefined、超限即忽略"的话没有任何回执，
- *  界面与 host 都显示成功）。dir context 与 import 两个读面共用此形状。 */
+/** 静默丢数据的记录（"读失败即 undefined、超限即忽略"的话没有任何回执，
+ *  界面与 host 都显示成功）。dir context 与 import 两个读取方法共用此形状。 */
 export interface SkipCounts {
   /** 字节超限、整份跳过的文件数。 */
   tooLarge: number;
   /** 读取失败（含 EMFILE / 权限 / 非 UTF-8）的文件数。 */
   unreadable: number;
-  /** 只在更深一层、被扫描深度限制造漏掉的 .md 数（仅导入读面用）。 */
+  /** 只在更深一层、被扫描深度限制造漏掉的 .md 数（只有导入接口用到）。 */
   deeper: number;
-  /** 读到了但解析不出角色 name（非角色文件）而被跳过的文件数（仅导入读面用）。 */
+  /** 读到了但解析不出角色 name（非角色文件）而被跳过的文件数（只有导入接口用到）。 */
   unnamed: number;
   /** 真实目标落在允许根之外（符号链接指向根外文件）而被策略排除的文件数。
    *  必须单列：它既不是读失败也不是超限，把「凭据文件被链接进工作目录」这类事
-   *  混进 unreadable，用户就看不出是安全闸门拦的还是目录本身坏了。 */
+   *  混进 unreadable，用户就看不出是被安全检查拦下的，还是目录本身坏了。 */
   escaped: number;
 }
 
@@ -700,8 +700,8 @@ async function readSnippetBounded(
   }
 }
 
-/** 读面实际用的收集函数：fs 服务 → DirEntry[]（含关键文件全文摘要）。
- *  条目数不设上限（用户拍板），但单文件按 MAX_SNIPPET_BYTES 整份跳过、
+/** 这几个方法实际用的收集函数：fs 服务 → DirEntry[]（含关键文件全文摘要）。
+ *  条目数不设上限（用户定下），但单文件按 MAX_SNIPPET_BYTES 整份跳过、
  *  读取按 READ_CONCURRENCY 有界并发；跳过项计入 skipped 并让 truncated 反映事实。
  *  回执文案取自注入的字典（纯函数不读设置）。 */
 export interface DirScanLimits {
@@ -713,21 +713,21 @@ export interface DirScanLimits {
   maxTotalBytes?: number;
 }
 
-/** 缺省部署值（schema .default 的同源常量）；limitsOf()/collect* 的回落单源。 */
+/** 缺省部署值（schema .default 的同源常量）；limitsOf()/collect* 的回落唯一来源。 */
 const DEFAULT_LIMITS = {
   organizeTimeoutMs: ORGANIZE_TIMEOUT_MS,
   maxSnippetBytes: MAX_SNIPPET_BYTES,
   readConcurrency: READ_CONCURRENCY,
 };
 
-/** 读面实际用的 limits 全集。 */
+/** 这几个方法实际用的 limits 全集。 */
 type RouteLimits = DirScanLimits & { organizeTimeoutMs: number };
 
 /**
- * 部署值的唯一收口：把会致命的几个数夹进安全区间，再交给读面。
+ * 部署值唯一一处统一处理：把会致命的几个数夹进安全区间，再交给读取方法。
  *
  * 为什么放在这里而不是各消费点：`limitsOf()` 是 context/organize/importTemplates
- * 三个读面读 limits 的**唯一入口**，一处收口就不会漏掉将来新增的读面；而散在
+ * 三个方法读 limits 的**唯一入口**，一处统一处理就不会漏掉将来新增的方法；而散在
  * 各消费点夹，哪天新增一个调用点就等于新增一个漏洞。
  *
  * 夹哪两个、为什么：
@@ -738,7 +738,7 @@ type RouteLimits = DirScanLimits & { organizeTimeoutMs: number };
  *   「调大超时」变成「立刻失败」。
  *
  * 剩下 `maxSnippetBytes` **故意不夹**：schema 已经挡住 NaN/±Infinity/负数/小数，
- *  唯一还能配出来的越界值 `0` 有确定且已记账的行为（全跳过并计 tooLarge），那是用户
+ *  唯一还能配出来的越界值 `0` 有确定且已记录的行为（全跳过并计 tooLarge），那是用户
  *  的显式意图，不该被悄悄改写。
  *
  * @param limits - 未经夹位的部署值
@@ -838,7 +838,7 @@ export interface ImportResult {
 }
 
 /**
- * 导入路径安全策略（只读读面，无副作用：不调 LLM、不写盘，结果回给设置卡）。
+ * 导入路径安全策略（只做读取，无副作用：不调 LLM、不写盘，结果回给设置卡）。
  * 规则名：「cwd 内 + 内置角色目录 allowlist」。
  *
  * 允许根只有三类（除此之外**一律拒绝**，含所有绝对路径）：
@@ -847,8 +847,8 @@ export interface ImportResult {
  * - 用户在设置 `importAllowRoots` 里逐条登记的目录。
  *
  * 拒绝规则（确定性，测试锁死）：
- * - 空串/纯空白不是路径 → 拒（读面把「精确空串」当作"导入内置库"的哨兵并在调用前
- *   拦掉，走到这里说明调用方没做归一，绝不静默降级成"全量导入"）；
+ * - 空串/纯空白不是路径 → 拒（读取方法把「精确空串」当作"导入内置库"的哨兵并在调用前
+ *   拦掉，走到这里说明调用方没做归一，绝不会静默降级成"全量导入"）；
  * - **先查原始串的段**再查解析结果：path.resolve 会把 `..` 归一掉，只查解析后的
  *   绝对路径等于放行 `../../etc/passwd.md`（审计复现）；原始串只判 `.` / `..`，
  *   隐藏段留到「命中根之后」再判（内置库就装在 ~/.dsh 下，隐藏段是安装位置）；
@@ -876,7 +876,7 @@ function pathSegments(absolute: string): string[] {
   return absolute.split(PATH_SEPARATOR).filter((token) => token.length > 0);
 }
 
-/** 逐段校验：段为 "." / ".." 一律拒（归一前必须先拦，否则 path.resolve 吃掉 `..`）；
+/** 逐段校验：段为 "." / ".." 一律拒（归一前必须先拦，否则 `..` 会被 path.resolve 合并掉）；
  *  checkHidden=true 时额外拒隐藏段（凭据/敏感目录，如 `.ssh`）。 */
 function pathTokensError(
   absolute: string,
@@ -895,7 +895,7 @@ function pathTokensError(
 }
 
 /** child 是否落在 root 之内（含"child 就是 root 本身"= 导入根目录）。
- *  包含关系交给 `path.relative`：win32 的盘符大小写由它的平台语义收口
+ *  包含关系交给 `path.relative`：win32 的盘符大小写由它的平台语义统一处理
  *  （实测 `path.win32.relative("C:\\Users\\Me\\Roles", "c:\\users\\me\\roles\\x.md")`
  *  给出 `x.md`），而兄弟目录仍以 `..` 开头被拒。 */
 function isWithinRoot(root: string, child: string): boolean {
@@ -935,11 +935,11 @@ function importRootsOf(
 }
 
 /** 越界回执里最多列出几个允许根。这条文本会进会话日志与模型上下文，而允许根的清单
- *  来自设置存储——手改过的 settings 或脏数据能把几百项拼进一条 403，所以列举面要有界。
+ *  来自设置存储——手改过的 settings 或脏数据能把几百项拼进一条 403，所以列举结果要有界。
  *  被省略的数量以 `…<条数>` 收尾：只用标点与数字，不引入未经 locale 的新词。 */
 const OUTSIDE_ROOTS_LISTED = 5;
 
-/** 越界回执文本：点名每一类允许区并回显解析后的绝对路径——越界不做静默降级，
+/** 越界回执文本：点名每一类允许区并回显解析后的绝对路径——越界时不做无声的降级，
  *  必须让模型/人一眼看清"规则是什么、这次解析到了哪里"。 */
 function outsideRootsError(
   absolute: string,
@@ -997,7 +997,7 @@ export function importPathError(
   messages: HostMessages,
 ): string | undefined {
   const trimmed = requested.trim();
-  // ① 空串/纯空白不是路径（留空的语义由读面按"导入内置库"处理，不经本函数）
+  // ① 空串/纯空白不是路径（留空的语义由读取方法按"导入内置库"处理，不经本函数）
   if (trimmed.length === 0) {
     return messages.emptyImportPath;
   }
@@ -1023,7 +1023,7 @@ export function importPathError(
   //    命中的根可能不止一个：会话 cwd 与 cwd 内登记的允许根会同时命中。只拿**第一个**
   //    （cwd 列表头部）算剩余段，会把「cwd/roles/.hidden/x.md」在 cwd 内合法登记时判成
   //    隐藏段越权——这是过度限制，不是绕过。按根路径长度**降序**（最深优先）逐个复判，
-  //    任一通过即放行；全部不过时回最深根给出的那条错误（它最贴近实际落点）。
+  //    任一通过即放行；全部不过时回最深根给出的那条错误（它最贴近实际改到的路径）。
   const ordered = matched.toSorted((left, right) => right.absolute.length - left.absolute.length);
   const errors = ordered.map((root) =>
     pathTokensError(path.relative(root.absolute, absolute), true, messages),
@@ -1082,13 +1082,13 @@ type CandidateRead =
   | { readonly kind: "unreadable" }
   | { readonly kind: "unnamed" };
 
-/** 目录项是「可见子目录」？（顶层与子层两处同一判据：隐藏项不进扫描面）。 */
+/** 目录项是「可见子目录」？（顶层与子层两处同一判据：隐藏项不进扫描范围）。 */
 function isVisibleDirectory(child: FsDirEntry): boolean {
   return child.type === "directory" && !child.name.startsWith(".");
 }
 
 /** 扩展名是否 .md：不区分大小写。macOS 默认文件系统不区分大小写，`Agent.MD` 在用户看来
- *  就是一份角色文件；按字节判后缀会把它静默丢在扫描面之外（且不计任何 skipped）。 */
+ *  就是一份角色文件；按字节判后缀会把它静默丢在扫描范围之外（且不计任何 skipped）。 */
 function isMdName(name: string): boolean {
   return name.toLowerCase().endsWith(".md");
 }
@@ -1107,7 +1107,7 @@ function isVisibleMdFile(child: FsDirEntry): boolean {
 
 /** 一层目录内容 → 顶层 .md 候选（跳过隐藏项，按名排序保确定性）。
  *  `skipped` 就地累加 escaped 计数：被 contains 拦下的链接文件如果不数出来，
- *  用户只会看到「导入 3 条」而不知道有一份被安全闸门挡在门外。 */
+ *  用户只会看到「导入 3 条」而不知道有一份被安全检查挡在门外。 */
 function mdCandidates(
   fs: Pick<FsService, "contains">,
   parent: FsTarget,
@@ -1172,7 +1172,7 @@ function importGate(
   return skip ? undefined : importPathError(requested, cwd, allowRoots, messages);
 }
 
-/** 单个候选的字节上限判定：与 readSnippetBounded 同一口径——**size 未知即拒读**。
+/** 单个候选的字节上限判定：和 readSnippetBounded 同一种做法——**size 未知即拒读**。
  *
  * 为什么单文件分支也需要这道门：目录分支的每个候选都自带 `listDir` 给的 `size`，于是
  * `readCandidate` 能在读之前判上限；而单文件导入只有一个 `resolve` 出来的 target，
@@ -1194,7 +1194,7 @@ async function fileBytesWithin(
   const info = await fs.stat(target).catch(() => null);
   // 官方签名为 `stat(target): Promise<FsInfo>`（**不**含 undefined），而缺席路径的
   // 文档语义是「返回 undefined」（installed dsh-fs/lib/types/index.d.ts：
-  // "or undefined when the target does not exist"）。声明面比实现面窄——跨进程
+  // "or undefined when the target does not exist"）。声明比实现窄——跨进程
   // 递来的后端未必守得住——所以这里的 `?.` 是运行时兜底，不是给类型擦补丁：
   // 缺席与「报不出 size」同档处理（都不读）。
   const size = info?.size;
@@ -1232,7 +1232,7 @@ async function importFromFile(
     return { entries: [], truncated: false, skipped, error: messages.missingRoleName };
   }
   // 正文为空或围栏未闭合时 agentEntryFromFile 交回 undefined：按 unnamed 计数，并把
-  // truncated 置真，让读面知道「有一份没进来」而不是看着 0 条以为库里是空的。
+  // truncated 置真，让读取方法知道「有一份没进来」而不是看着 0 条以为库里是空的。
   const entry = agentEntryFromFile(
     stripMdSuffix(path.basename(absolute)),
     path.basename(path.dirname(absolute)),
@@ -1247,13 +1247,13 @@ async function importFromFile(
 }
 
 /**
- * listDir 的降级读面：列不出来（EACCES / ELOOP / 枚举期间被删）时记 unreadable 并交空表。
+ * listDir 的降级路径：列不出来（EACCES / ELOOP / 枚举期间被删）时记 unreadable 并交空表。
  *
  * 为什么必须有：`mapBounded` 内部是 `Promise.all`，worker 一抛就整批 reject，把**同一批
  * 里已经读完的结果一起丢掉**，上层 `collectAgentTemplates` 的 catch 再把整次导入变成
  * 「导入失败」。实测：一个 chmod 000 的子目录就让同层读得好好的 .md 一条都进不来。
  * 文件级读取早就有这道降级（`readCandidate` → `{kind:"unreadable"}`），目录枚举却漏了，
- * 口径不一致；`mapBounded` 自己的注释也写着「worker 自己负责错误降级（不抛）」。
+ * 两边的规则不一致；`mapBounded` 自己的注释也写着「worker 自己负责错误降级（不抛）」。
  */
 async function listDirOrUnreadable(
   fs: Pick<FsService, "listDir">,
@@ -1289,7 +1289,7 @@ async function countDeeperMdFiles(
 }
 
 /** 一条读取结果 → 条目或计数：坏读归入 `skipped`，好读装配进 `entries`
- *  （id 碰撞由 `collided` 记账，确定性改写）。 */
+ *  （id 碰撞由 `collided` 记录，确定性改写）。 */
 function pushReadResult(
   read: CandidateRead,
   entries: TemplateEntry[],
@@ -1339,8 +1339,8 @@ async function importFromDirectory(
   const subDirs = rootChildren
     .filter((child) => {
       // 链接进来的子目录，其 target 可能已经在根外：枚举它会带出根外的名字与结构
-      // （文件正文另有 mdCandidates 的 contains 复判）。不 contained 的按 escaped 记账，
-      // 与同层的链接文件同一口径。
+      // （文件正文另有 mdCandidates 的 contains 复判）。不 contained 的按 escaped 记录，
+      // 和同层的链接文件用同一种处理。
       const visible = isVisibleDirectory(child);
       if (!visible) {
         return false;
@@ -1392,7 +1392,7 @@ async function importFromDirectory(
  *  truncated 反映"确实有东西没进来"，不再硬编码 false。
  *  skipPolicy 用于内置角色库自检（AGENTS_DIR 是策略里的允许根，用户输入路径正常
  *  不需要它；保留这个开关只为让"内置全量导入"不依赖安装位置是否命中隐藏段判断）。
- *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由读面注入）。 */
+ *  allowRoots = 设置 importAllowRoots 登记的额外允许目录（由读取方法注入）。 */
 export async function collectAgentTemplates(
   fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains" | "stat">,
   requested: string,
@@ -1471,7 +1471,7 @@ export interface OrganizeInput {
   entriesSummary?: string;
   /** 会话最近对话文本（user/assistant 交替，host 侧从 deriveMessages 提取）。 */
   recentTurns?: string;
-  /** 参考角色上下文（提炼自模板正文；可选）。提供时借用该角色的术语与风格润色草稿。 */
+  /** 参考角色上下文（提炼自模板正文；可选）。提供时借用该角色的术语与风格润色 `prompt`。 */
   roleText?: string;
   model?: ModelSelection;
 }
@@ -1505,7 +1505,7 @@ export function buildOrganizeSystem(
 }
 
 /**
- * user 消息 = 草稿 + 围栏起来的不可信数据块。
+ * user 消息 = 用户草稿（`prompt`）+ 围栏起来的不可信数据块。
  *
  * 围栏用**成对的定界标记**而不是缩进或横线：模型侧最容易被无视的是「看起来像普通内容」
  * 的标记，而成对标签既显眼、又便于判断边界。
@@ -1587,7 +1587,7 @@ function recentTurnLine(msg: DerivedMessageView): string | undefined {
 
 /**
  * 会话最近真人对话提取（deriveMessages → "user:/assistant:" 文本串）。
- * 不设条数/字符上限（用户拍板不截断：上下文完整性优先，模型
+ * 不设条数/字符上限（用户定下不截断：上下文完整性优先，模型
  * context 超限由模型报错提示用户自行处理）。
  *
  * 注入过滤（隐藏 bug 复查 实测确认：真实会话 log 里 user 角色
@@ -1635,7 +1635,7 @@ export async function drainStreamToText(
     // 官方 `FinishReason` 把判别位 `kind` 声明成**必选**（FinishReasonMap 每个变体都带），
     // 但 chunk 是外部流数据：坏形状 `{ type: "finish", reason: {} }` 实测能一路走到这里
     // （test/host.test.ts 的 badChunk 用例锁住 /unknown/ 回落）⇒ 本地把该位投影成可选，
-    // 守卫保留；不改官方类型面，也不因"类型说非空"就删掉运行时兜底。
+    // 守卫保留；不改官方的类型声明，也不因"类型说非空"就删掉运行时兜底。
     const kind = (finish as { kind?: string }).kind ?? "unknown";
     const reason =
       failureMessage !== undefined && failureMessage !== ""
@@ -1649,19 +1649,19 @@ export async function drainStreamToText(
   return text.trim();
 }
 
-/** 润色入口（读面调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
+/** 润色入口（读取方法调用；导出供测试注入假 stream）。失败文案与 system 提示都来自
  *  注入的字典，本函数不读设置。 */
 export async function runOrganize(
   llm: LlmService,
   input: OrganizeInput,
   messages: HostMessages,
   timeoutMs: number = ORGANIZE_TIMEOUT_MS,
-  // 调用方的可选取消信号（当前读面不传；保留给直接调用方）。
+  // 调用方的可选取消信号（当前读取方法不传；保留给直接调用方）。
   callerSignal?: AbortSignal,
 ): Promise<{ content: string }> {
   const { prompt } = input;
-  // prompt 在 OrganizeInput 里是必选 string（organize 读面已用 `typeof === "string"` 收敛成
-  // 字符串再传入），故无需可选链；空判用显式比较而非真值折叠。
+  // prompt 在 OrganizeInput 里是必选 string（organize 读取方法已用 `typeof === "string"` 收敛成
+  // 字符串再传入），故无需可选链；判空写成 `=== ""`，不把 `trim()` 的结果交给真值判断。
   if (prompt.trim() === "") {
     throw new Error(messages.emptyPrompt);
   }
@@ -1681,11 +1681,11 @@ export async function runOrganize(
   const controller = new AbortController();
   // 超时与「调用方取消」共用同一个 controller，所以必须区分成因：两者都让 llm 服务
   // 以 AbortError 收尾，而那条英文串（实测 "This operation was aborted"）不是字典文案，
-  // 直接回给用户与「固定文案全部来自字典」的口径不符。timer 自己置位，catch 里据此换成
+  // 直接回给用户与「固定文案全部来自字典」的规则不符。timer 自己置位，catch 里据此换成
   // 带 timeoutMs 的字典文案；调用方取消仍原样上抛。
   let timedOut = false;
   // 经函数读：直接 `if (timedOut)` 时类型检查把它收窄成字面量 false（赋值在另一个
-  // 回调里，tsc 看不见），于是那条判据会被判成「恒假」的死分支。经函数返回的
+  // 回调里，tsc 看不见），于是那条判据会被判成永远不成立的死分支。经函数返回的
   // boolean 不再收窄。
   const hasTimedOut = (): boolean => timedOut;
   const timer = setTimeout(() => {
@@ -1695,7 +1695,7 @@ export async function runOrganize(
   // 调用方主动取消也要中止：没有这条，一次已放弃的润色会继续烧满整个超时窗口和
   // 一份真实 token 账单，而响应反正没人收。abort 监听用 once + finally 里摘除，
   // 免得在长驻的宿主进程里给每次请求留一个悬挂监听。
-  // （当前读面不传 callerSignal：客户端超时只放弃等待，宿主仍由自己的 timer 收口。）
+  // （当前读取方法不传 callerSignal：客户端超时只放弃等待，宿主仍由自己的 timer 收尾。）
   const onCallerAbort = (): void => {
     controller.abort();
   };
@@ -1743,7 +1743,7 @@ export async function runOrganize(
 // ── 模板 settings（隐式注册 + volatile 字段）───────────────────────────────
 
 /** 单条模板的 settings schema 形状（与 src/templates.ts 的 TemplateEntry 对齐：
- *  description/group/emoji 收敛为空串默认，旧存量条目（无新字段）写入时也能过校验）。 */
+ *  description/group/emoji 统一成空串默认，旧存量条目（无新字段）写入时也能过校验）。 */
 const TemplateEntrySchema = Schema.object({
   id: Schema.string(),
   name: Schema.string(),
@@ -1753,7 +1753,7 @@ const TemplateEntrySchema = Schema.object({
   emoji: Schema.string().default(""),
 });
 
-/** settings 命名空间与 loader 行 config 共用同一 schema（单源，防漂移）。
+/** settings 命名空间与 loader 行 config 共用同一 schema（唯一来源，防漂移）。
  *  值名退避为 configSchema：避免与同名 interface Config 触发 no-redeclare；
  *  外部仍以 `Config` 名导入（export as），公开 API 不变。
  *  写入校验由 dsh-settings 在持久化前按此 schema 完成；凡是要出现在卡上的字段都必须 `.volatile()`
@@ -1843,7 +1843,7 @@ export function importAllowRootsOf(raw: unknown): string[] {
 
 // ── 插件主体 ───────────────────────────────────────────────────────────────
 
-/** 注入的服务面：settings 为硬依赖（cordis 等它就绪才 apply）。
+/** 注入的服务：settings 为硬依赖（cordis 等它就绪才 apply）。
  *  命名空间是隐式的（= 本条目在 cordis.patch.yml 里的裸 id，可编辑字段取自
  *  导出的 Config），所以 settings 在这里的职责是「页面策略（configure）与跨命名空间读
  *  （describe）」，而非「注册的前提」；设置页只派发「host 已 serve 的命名空间 ∩
@@ -1851,8 +1851,8 @@ export function importAllowRootsOf(raw: unknown): string[] {
  *  发生在 apply 期，故仍硬注入。sessions/fs/llm/agentDefaultModel 仍可选读。 */
 export const inject = ["settings"];
 
-/** 读面依赖的可测提取：apply 用 ctx.get 的惰性 getter 调用（服务可能在读面
- *  注册后才就绪），测试可直接注入静态假服务。 */
+/** 这些方法用到的依赖，抽出来便于测试：apply 用 ctx.get 的惰性 getter 调用（服务可能在
+ *  注册之后才就绪），测试可直接注入静态假服务。 */
 export interface RouteDeps {
   sessions?: () => SessionsService | undefined;
   fs?: () => FsService | undefined;
@@ -1937,7 +1937,7 @@ function resolveRecentTurns(
   }
 }
 
-/** importTemplates 请求体的输入面（纯函数，测试锁死）：坏输入按顺序判别——path
+/** importTemplates 请求体的入参形状（纯函数，测试锁死）：坏输入按顺序判别——path
  *  非字符串先于"纯空白 path"，两者各带自己的状态码与文案。 */
 type ImportRequest =
   | { readonly rejected: true; readonly status: number; readonly error: string }
@@ -1973,14 +1973,14 @@ function importRequestOf(parsed: unknown, messages: HostMessages): ImportRequest
   };
 }
 
-/** 读面每次调用的共享面：服务 getter 与现读文案/限额。 */
+/** 读取方法每次调用共用的部分：服务 getter 与现读文案/限额。 */
 interface RemoteScope {
   readonly deps: RouteDeps;
   readonly messagesOf: MessagesOf;
   readonly limitsOf: () => RouteLimits;
 }
 
-/** 内置精选模板表的读面。两头都按需：表在独立产物 templates.data.mjs 里，第一次被
+/** 内置精选模板表的读取入口。两头都按需：表在独立产物 templates.data.mjs 里，第一次被
  *  调用时才 import；client 首次打开「模板」下拉时才拉这一发。 */
 async function defaultsPayload(scope: RemoteScope): Promise<Record<string, unknown>> {
   try {
@@ -2055,7 +2055,7 @@ function modelPayload(scope: RemoteScope): Record<string, unknown> {
   }
 }
 
-/** organize 请求体的输入面：JSON 已解析的 unknown → 润色入参（非字符串一律按空值处理）。 */
+/** organize 请求体的入参形状：JSON 已解析的 unknown → 润色入参（非字符串一律按空值处理）。 */
 function organizeRequestOf(body: Record<string, unknown>): {
   readonly prompt: string;
   readonly entriesSummary: string;
@@ -2071,7 +2071,7 @@ function organizeRequestOf(body: Record<string, unknown>): {
   };
 }
 
-/** 润色：LLM 调用与两层错误回执。内层 catch 是「润色过程本身失败」（回裸 errorText），
+/** 润色：LLM 调用与两层错误回执。内层 catch 是「润色过程本身失败」（原样返回 errorText），
  *  外层是「装配入参时炸」。`messages` 每次调用现读一次，不在此处二次现读。 */
 async function organizePayload(
   scope: RemoteScope,
@@ -2188,7 +2188,7 @@ async function importPayload(
   }
 }
 
-/** 五个读面的纯载荷入口（服务与测试共用）：不含任何传输层判定。 */
+/** 五个方法的纯载荷入口（服务与测试共用）：不含任何传输层判定。 */
 export function createRemotePayloads(
   deps: RouteDeps,
   messagesOf: MessagesOf,
@@ -2232,7 +2232,7 @@ interface ImportTemplatesRequest {
 }
 
 /**
- * 设置卡的宿主读面（官方 Typert Remote）：目录上下文、当前模型、润色、导入与内置模板。
+ * 设置卡的宿主侧接口（官方 Typert Remote）：目录上下文、当前模型、润色、导入与内置模板。
  * 本包不自建 HTTP 端点，认证与分派由宿主 /api 网关负责。
  */
 export class DirPrepRemoteService extends TypertRemoteService {
@@ -2290,7 +2290,7 @@ markRemote(DirPrepRemoteService.prototype, "model");
 markRemote(DirPrepRemoteService.prototype, "organize");
 markRemote(DirPrepRemoteService.prototype, "importTemplates");
 
-/** 注册读面（构造即注册）；替身上下文没有注册口时只少掉这一栏。 */
+/** 注册这组远端方法（构造即注册）；替身上下文没有注册口时只少掉这一栏。 */
 export function installDirPrepRemote(ctx: Context, scope: RemoteScope): boolean {
   if (!isRecord(ctx) || !isRecord(ctx.reflect) || typeof ctx.reflect.provide !== "function") {
     return false;
@@ -2305,7 +2305,7 @@ function noopDisposer(): void {
   /* 占位：无需清理 */
 }
 
-/** host apply：登记设置页策略 + 注册官方 Remote 读面（注入子上下文，卸载即撤）。
+/** host apply：登记设置页策略 + 注册官方 Remote 服务（注入子上下文，卸载即撤）。
  *  模板设置是**隐式注册**的（导出的 Config + 字段上的 .volatile()），本函数
  *  不再向 settings 注册任何东西；配置值由 cordis 校验并填过默认后按 volatile 引用交进来
  *  （第二参数 config），读当前值一律 `.get()`。 */
@@ -2325,9 +2325,9 @@ export function apply(ctx: Context, config: Config): void {
   // describe() 一条路：全部条目的表单投影里挑 ns === 'locale' 那条的 value。
   // 没装官方 locale 插件（该条目未被投影）或 settings 形状不符 → 取到 undefined →
   // resolveLocalePreference 落中文默认，不抛。
-  // describe() 也是迁移后**唯一还会抛**的宿主调用面（旧的 settings.register 已消失），
+  // describe() 也是迁移后**唯一还会抛**的宿主调用点（旧的 settings.register 已消失），
   // 而它落在每个请求的取表路径上：不兜住就是把一句没来由的 500 甩回界面，与文件头
-  // "插件不炸"的承诺相反 → 大声 error 后回落中文默认（ctx-observe 对同一调用同口径）。
+  // "插件不炸"的承诺相反 → 大声 error 后回落中文默认（ctx-observe 对同一个调用用同一种做法）。
   const localeMessages = (): HostMessages => {
     const rawSettings = getService("settings");
     // 单 return 满足 consistent-return；describe 抛错/缺服务时 described 保持 undefined。
@@ -2362,8 +2362,8 @@ export function apply(ctx: Context, config: Config): void {
       return settings.configure({ auto: false }, ctx.fiber);
     }, "dir-prep-organize: settings presentation");
   });
-  // 读面走官方 Typert Remote：经注入子上下文注册。没有 remote 网关的宿主只是设置卡
-  // 读不到数据面，目录润色与模板这两项能力本身只依赖 settings 与 fs，照常可用。
+  // 这些方法走官方 Typert Remote：经注入子上下文注册。没有 remote 网关的宿主只是设置卡
+  // 读不到数据那一栏，目录润色和模板这两项能力本身只依赖 settings 与 fs，照常可用。
   // 各服务经惰性 getter + 形状守卫投影（服务可能晚于本条目就绪；替代 `svc.get(...) as X`）。
   // 部署值：每次请求现读（volatile 位 .get()；非 volatile 位直读普通值）。
   const limitsOfConfig = (): RouteLimits => ({

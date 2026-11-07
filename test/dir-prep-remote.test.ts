@@ -1,5 +1,5 @@
-// 设置卡读面（官方 Typert Remote）的直测：descriptor 与宿主标记对质、边界码器、
-// 命名空间缺口的报错面，以及五个方法的位置传参。真实卡片链路在 test/client.test.ts。
+// 设置卡读取方法（官方 Typert Remote）的直测：descriptor 与宿主标记对质、边界码器、
+// 命名空间缺口时的报错内容，以及五个方法的位置传参。真实卡片链路在 test/client.test.ts。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { Context } from "@deepseek-ai/cordis";
@@ -69,7 +69,7 @@ function strictOf(method: string): TypertCodec & { mode: "strict" } {
   return parameter.codec;
 }
 
-describe("设置卡读面（官方 Typert Remote）", () => {
+describe("设置卡读取方法（官方 Typert Remote）", () => {
   it("五条 descriptor 与宿主标记逐项对质", () => {
     const service = new DirPrepRemoteService(new Context(), scopeOf());
     const markers = remoteMethods(service)
@@ -139,7 +139,7 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     }
   });
 
-  it("没有 remote 读面或它没有挂载口 → undefined", () => {
+  it("没有 remote 服务或它没有挂载口 → undefined", () => {
     assert.equal(createDirPrepReader({}), undefined);
     assert.equal(createDirPrepReader({ get: () => null }), undefined);
     assert.equal(createDirPrepReader({ get: () => ({ $mount: 42 }) }), undefined);
@@ -387,7 +387,7 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     await assert.rejects(reader.defaults(), /ok 分支缺 value 字段/u);
   });
 
-  it("查 remote 面时显式传 strict=false，与查命名空间的口径一致", async () => {
+  it("查 remote 面时显式传 strict=false，与查命名空间的做法一致", async () => {
     const seen: (boolean | undefined)[] = [];
     const reader = createDirPrepReader({
       get: (name: string, strict?: boolean): unknown => {
@@ -407,12 +407,12 @@ describe("设置卡读面（官方 Typert Remote）", () => {
       },
     });
     assert.ok(reader !== undefined);
-    assert.deepEqual(seen, [false], "两次读都用同一个口径：显式传 false");
+    assert.deepEqual(seen, [false], "两次读都用同一个做法：显式传 false");
     await reader.defaults();
     assert.deepEqual(seen, [false, false], "查命名空间这次同样传 false");
   });
 
-  it("反射面读到一半抛错 → 只少掉读面，不把异常抛给卡片", () => {
+  it("反射接口读到一半抛错 → 只少掉读取方法，不把异常抛给卡片", () => {
     assert.equal(
       createDirPrepReader({
         get: (): unknown => {
@@ -423,7 +423,7 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     );
   });
 
-  it("宿主上下文没有注册口 → 只少掉读面，不抛错", () => {
+  it("宿主上下文没有注册口 → 只少掉读取方法，不抛错", () => {
     assert.equal(installDirPrepRemote({} as never, scopeOf() as never), false);
   });
 
@@ -454,7 +454,7 @@ describe("设置卡读面（官方 Typert Remote）", () => {
     assert.equal(imported["status"], 400);
   });
 
-  it("坏形状请求与缺省 limits 走同一条读面", async () => {
+  it("坏形状请求与缺省 limits 走同一条读取方法", async () => {
     const llm = {
       async *stream() {
         yield { type: "finish", reason: { kind: "stop" } } as const;

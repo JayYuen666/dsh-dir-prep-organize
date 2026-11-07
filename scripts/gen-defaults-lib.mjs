@@ -4,7 +4,7 @@
 // 测试要拿它做全量漂移锁就必须能"只 import 不执行"。这里放镜像实现与常量表，
 // scripts/gen-defaults.mjs 只做 IO + 退出码。
 //
-// 与 src/templates.ts 的单源约束：以下 parseFrontmatterFields / stripPairQuotes /
+// 与 src/templates.ts 的唯一来源约束：以下 parseFrontmatterFields / stripPairQuotes /
 // parseAgentFrontmatter / condenseRoleBody / groupLabelOf / AGENT_DIR_GROUP_LABELS /
 // CURATED_SLUGS 都是 templates.ts 的镜像实现/镜像常量表。test/gen-defaults.test.ts
 // 会全量比对（全表逐字段 + 两张表的键序 + 生成文件字节级一致），漂移即红。
@@ -16,11 +16,11 @@ import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-/** 插件根目录与内置角色库（lib 自带，测试与 CLI 同一路径口径）。 */
+/** 插件根目录与内置角色库（lib 自带，测试与 CLI 同一路径做法）。 */
 export const PLUGIN_ROOT = path.dirname(import.meta.dirname);
 export const AGENTS_DIR = path.join(PLUGIN_ROOT, "agents");
 export const GENERATED_FILE = path.join(PLUGIN_ROOT, "src", "default-templates.generated.ts");
-/** 分组标签的生成落点（单源=本文件 AGENT_DIR_GROUP_LABELS；templates.ts 从这里
+/** 分组标签的生成位置（唯一来源=本文件 AGENT_DIR_GROUP_LABELS；templates.ts 从这里
  *  re-export，宿主/客户端共用同一份，"保持同步"从纪律变成结构）。 */
 export const GROUP_LABELS_FILE = path.join(PLUGIN_ROOT, "src", "group-labels.generated.ts");
 
@@ -457,7 +457,7 @@ export function renderGenerated(entries) {
 const OXFMT_BIN = path.join(PLUGIN_ROOT, "node_modules", "oxfmt", "bin", "oxfmt");
 
 /**
- * 起 oxfmt 子进程（裸路径参数 = 就地排版；`--check` 才是不写盘）。
+ * 起 oxfmt 子进程（只给路径参数 = 就地排版；`--check` 才是不写盘）。
  *
  * 为什么是同步实现：这一段有三条判据互斥的实测形状 ——
  *  - `promisify(execFile)` 被 `typescript/strict-void-return` 判死（execFile 返回 ChildProcess，
@@ -494,10 +494,10 @@ function runOxfmt(args) {
  * 生成物的排版步骤：渲染出的源码文本 → oxfmt 的规范形态。
  *
  * 为什么这一步属于生成器而不是"人记得跑一次格式化"：两份 `.generated.ts` 不进包内
- * fmt:check 的面（.prettierignore 排除），它们的规范形态只由本链路保证——
+ * fmt:check 的扫描范围（.prettierignore 排除），它们的规范形态只由本链路保证——
  * test/gen-defaults.test.ts 里那条"磁盘生成物 = 生成器输出"锁的是字节级相等，
  * 生成器自己先吐规范形态，重跑对比与字节锁才有稳定的基准。排版因此并入生成链路
- * （排除面一条都没加）。
+ * （排除名单一条都没加）。
  *
  * 临时文件落在 `tmpdir()`：本仓的 oxfmt 配置只提供 `ignorePatterns`、不提供任何排版选项，
  * 所以默认形态与在 `src/` 里就地排版一致；这一条由 `checkFormatted` 在写盘后实证，不靠推断。
@@ -517,12 +517,12 @@ export function formatGenerated(code) {
 }
 
 /**
- * 实证"落盘的生成物已是 oxfmt 规范形态"：把磁盘内容再过一遍同一套排版链路，字节必须不变。
+ * 实证"写到磁盘的生成物已是 oxfmt 规范形态"：把磁盘内容再过一遍同一套排版链路，字节必须不变。
  *
  * 为什么不用 `oxfmt --check <文件>`：单文件路径上的行为随 oxfmt 版本翻转——有的版本只报
  * `Expected at least one target file.` 并退出 0，有的版本真的按文件查到问题并退出非零。
  * 判据不能建在随依赖版本翻转的行为上，所以这里不拿它当判据。
- * 幂等比较走的是 formatGenerated 同一条路径，与 oxfmt 的路径匹配口径无关，各版本下含义相同。
+ * 幂等比较走的是 formatGenerated 同一条路径，与 oxfmt 的路径匹配做法无关，各版本下含义相同。
  * @param {string} file - 生成物的绝对路径
  * @returns {void}
  */
@@ -538,7 +538,7 @@ export function checkFormatted(file) {
   }
 }
 
-/** 渲染 src/group-labels.generated.ts（分组标签的单源出口）。
+/** 渲染 src/group-labels.generated.ts（分组标签的唯一生成处）。
  *  @param {Record<string, string>} labels
  *  @returns {string}
  */

@@ -1,12 +1,12 @@
-// src/client-timeouts.ts —— 卡片侧读面超时的取值与夹位（单源，client 半内部用）。
+// src/client-timeouts.ts —— 卡片侧读取方法超时的取值与夹位（唯一来源，client 半内部用）。
 //
-// 为什么单独成文件：这两条规则全在 `setTimeout` 的**静默失败**上——延时超过 2^31-1 ms
+// 为什么单独成文件：这两条规则全在 `setTimeout` 的**静默失效**上——延时超过 2^31-1 ms
 // 时 V8 只往 stderr 打一条 TimeoutOverflowWarning，然后把延时夹成 1 ms，于是「把超时
 // 调大」被反转成「立刻失败」，配置界面上看不出任何异常。规则本身只有两行，但它的
 // 理由必须与代码同处（否则下一个人只会看到 `Math.min` 而不知道为什么），而
 // client-entry.ts 已经在 max-lines 的线上，把这块挪出来既保住约束又不给主文件加负担。
 //
-// host 侧对同一件事的夹位见 host.ts 的 clampInt / MAX_TIMER_MS：两边必须同口径，
+// host 侧对同一件事的夹位见 host.ts 的 clampInt / MAX_TIMER_MS：两边必须用同一种做法，
 // 而 client 半**不 import host.ts**（它打的是浏览器包，host.ts 跑在 node 上），
 // 所以同源靠注释锁定。要统一就把这两个常量一起提进 `@jayyuen66/dsh-plugin-shared`。
 
@@ -31,8 +31,8 @@ function isUsableTimeoutMs(value: unknown): value is number {
 /**
  * `organizeTimeoutMs` 的前端取表。
  *
- * 上界与 host 同为 `[1, MAX_TIMER_MS]`：host 自己夹了上界正是为了躲开上面那个静默夹断，
- * 而这一侧是**唯一**发起润色读面调用的地方，它要是没夹，host 夹得再对也没用。
+ * 上界与 host 同为 `[1, MAX_TIMER_MS]`：host 自己夹了上界正是为了躲开上面那个静默的夹断，
+ * 而这里是**唯一**发起润色读取方法调用的地方，它要是没夹，host 夹得再对也没用。
  *
  * @param value - 配置表单投影值
  * @returns `[1, MAX_TIMER_MS]` 区间内的整数；不合法时 undefined（回落默认）
@@ -62,7 +62,7 @@ export function organizeFetchTimeoutMs(raw: number | undefined): number {
   // 「配了一个很小的合法值」；这里与 `rawOrganizeTimeoutMsOf` 回落到同一条默认值。
   const base = isUsableTimeoutMs(raw) ? raw : ORGANIZE_TIMEOUT_FALLBACK_MS;
   // 先给余量留出空间再相加：`MAX_TIMER_MS + 余量` 自己就越界，旧写法靠最后那道 Math.min
-  // 把它夹回上界——结果客户端时限**等于** host 时限，余量被吃掉，回执还在路上就判超时。
+  // 把它夹回上界——结果客户端时限**等于** host 时限，余量没有了，回执还在路上就判超时。
   // 把 base 先压到 `MAX_TIMER_MS - 余量`，相加后恒 ≤ MAX_TIMER_MS；只有 base 本身已经贴着
   // 上界时才会与它相等（那种配置下没有多余空间可留，这是物理上限而不是取舍）。
   const capped = Math.min(base, MAX_TIMER_MS - ORGANIZE_TIMEOUT_SLACK_MS);

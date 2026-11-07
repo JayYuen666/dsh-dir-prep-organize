@@ -1,12 +1,12 @@
 // createRemotePayloads + apply 的载荷契约测试。
 //
-// 覆盖口径（重写后的覆盖面）：
+// 覆盖做法（重写后的覆盖面）：
 //   · 五个载荷入口（defaults/context/model/organize/importTemplates）的业务回执：
 //     服务缺失降级、坏形状请求、越界状态码、跳过计数与正常回执。
 //   · 审计修复锁死：导入路径策略的 400/403 分支、越界回执回显解析后的路径、
 //     空正文/缺 frontmatter 的跳过计数。
 //   · apply 装配：settings 页面策略登记一次且 owner 是本插件 fiber / settings 缺独有
-//     成员守卫不认 / describe 抛错兜住（回落中文、读面照常）/ ctx 无 get 面；
+//     成员守卫不认 / describe 抛错时回退（回落中文、读取方法照常）/ ctx 无 get 面；
 //     注册的 Remote 服务反向驱动，覆盖四个惰性服务 getter 的命中与未命中两支。
 //
 // 传输层已由宿主 /api 网关接手：本文件不再测方法守卫/跨域/CSRF/body 上限，
@@ -47,7 +47,7 @@ import type { TemplateEntry } from "../src/templates.ts";
 
 /** 测试适配器：把请求形状接到生产载荷入口（传输层已由官方 Remote 网关接手）。
  *  只负责从夹具里取 sessionId / JSON body 并装回 {statusCode, body}；不复制任何
- *  鉴权、方法守卫或体积判定——那些面已随旧 HTTP 数据面删除。 */
+ *  鉴权、方法守卫或体积判定——那些判定已随旧 HTTP 数据那一栏删除。 */
 function respondJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -229,18 +229,18 @@ async function callOrganize(
   return out;
 }
 
-/** 内存替身的固定版本号（品牌串只是不透明 token，用例不解释）。 */
+/** 内存替身的固定版本号（`brand` 串只是不透明 token，用例不解释）。 */
 const FAKE_VERSION = "fake";
 const MEM_VERSION = "mem";
 
 /** 替身里的 stat 版本号。走 `brandString` 而不是 dsh-fs 的 `FsVersion(...)`：
  *  两者都是恒等函数，但后者大写开头会被 eslint/new-cap 当成构造函数调用；
- *  本仓对品牌串一律走 brandString（见上面 fsTargetOf 的 targetKey），同一口径。 */
+ *  本仓对 `brand` 串一律走 brandString（见上面 fsTargetOf 的 targetKey），同一做法。 */
 const inoVersion = (ino: number): FsVersion => brandString<FsVersion>(String(ino));
 const fakeVersion = (raw: string): FsVersion => brandString<FsVersion>(raw);
 
-/** fs target 替身：`targetKey` 是官方品牌 `FsTargetKey`（installed dsh-fs types.d.ts），
- *  合法构造口只有官方 `brandString`（恒等函数）——替身也走它，不用 `as` 绕过；品牌位直接
+/** fs target 替身：`targetKey` 是带官方 `brand` 的 `FsTargetKey`（installed dsh-fs types.d.ts），
+ *  合法构造口只有官方 `brandString`（恒等函数）——替身也走它，不用 `as` 绕过；`brand` 类型名直接
  *  索引官方成员形状（dsh-fs 根模块未 re-export 该名字）。
  *  `FsVersion` 同理走官方构造口（types.d.ts）：它是后端给的**不透明新鲜度 token**，
  *  消费方不解释，本包只原样取回。 */
@@ -341,12 +341,12 @@ function fsReturning(children: FsDirEntry[]): FsService {
   };
 }
 
-/** 局部依赖表 → 完整 RouteDeps：键限定为 RouteDeps 的键，值面保持 unknown（夹具只实现被调用的成员）。 */
+/** 局部依赖表 → 完整 RouteDeps：键限定为 RouteDeps 的键，值类型保持 unknown（夹具只实现被调用的成员）。 */
 const depsOf = (partial: Partial<Record<keyof RouteDeps, unknown>>): RouteDeps =>
   ({ ...partial }) as RouteDeps;
 
 /** 一条正常完成的润色流（text-delta + finish(stop)）。
- *  `satisfies` 校验它确实是 host 的 LlmService，同时保留"stream 无参"的调用面。 */
+ *  `satisfies` 校验它确实是 host 的 LlmService，同时保留"stream 无参"的调用签名。 */
 const FINISH_STOP = { type: "finish", reason: { kind: "stop" } } as const;
 /** 官方 StreamChunk 的 text 增量判别位（字面量重复超阈值，提出来免得抄错）。 */
 const TEXT_DELTA = "text-delta";
@@ -400,7 +400,7 @@ interface Harness {
   serviceRegistry: Record<string, unknown>;
 }
 
-/** 造一个 ctx 替身的数据面：get 从 serviceRegistry 取值，effect 收集 factory 并立即执行，
+/** 造一个 ctx 替身的数据那一栏：get 从 serviceRegistry 取值，effect 收集 factory 并立即执行，
  *  inject 同步以**同一个 ctx** 回调一次（cordis 语义：依赖已就绪，子上下文解析同一批服务）。
  *  服务形状刻意做成"真成员名"（describe+configure / register+registerFallback），
  *  以便走通 isSettingsService / isWebServerService 的守卫。 */
@@ -451,7 +451,7 @@ function harness(overrides: Record<string, unknown> = {}): Harness {
   return env;
 }
 
-/** 把 Harness 包成 host 认识的 ctx（apply 用到 get/effect/inject/fiber 四面）。 */
+/** 把 Harness 包成 host 认识的 ctx（apply 用到 get/effect/inject/fiber 四处）。 */
 interface CtxStub {
   get: (name: string) => unknown;
   effect: (factory: () => (() => void) | undefined, label?: string) => void;
@@ -513,7 +513,7 @@ async function runRoutes(env: Harness): Promise<{ route: string; response: FakeR
 }
 
 /** 测试适配器的 path 常量：**不是**生产路由。
- *  host.ts 已无 HTTP 路由注册（数据面走 Typert Remote 服务，传输层由宿主 /api 网关接手），
+ *  host.ts 已无 HTTP 路由注册（数据那一栏走 Typert Remote 服务，传输层由宿主 /api 网关接手），
  *  下面这些串只用来把请求形状接到载荷入口；与旧版 host.ts 的同名路径不是同一个契约。 */
 const CONTEXT_PATH = "/_dsh/dir-prep/context";
 const ORGANIZE_PATH = "/_dsh/dir-prep/organize";
@@ -521,7 +521,7 @@ const IMPORT_PATH = "/_dsh/dir-prep/import";
 const DEFAULTS_PATH = "/_dsh/dir-prep/default-templates";
 const MODEL_PATH = "/_dsh/dir-prep/model";
 
-/** 生产注册的 Remote 服务读面：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
+/** 生产注册的 Remote 服务读取方法：服务经 ctx.get 取，方法签名与 descriptor 一致。 */
 interface DirPrepServiceShape {
   defaults: () => Promise<Record<string, unknown>>;
   context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
@@ -535,7 +535,7 @@ function sessionIdOf(req: IncomingMessage): string {
 }
 
 /** 把生产注册的 Remote 服务接成请求形状：只解析 sessionId / JSON body，
- *  不复制任何守卫——那几面已随旧 HTTP 数据面删除。 */
+ *  不复制任何守卫——那几处已随旧 HTTP 数据那一栏删除。 */
 function attachRouteAdapters(env: Harness): void {
   const service = env.serviceRegistry["dirPrepOrganize"] as DirPrepServiceShape;
   env.routes = [
@@ -604,22 +604,22 @@ function applyTo(env: Harness): void {
   assert.deepEqual(
     env.routes,
     [],
-    "host.ts 的 apply 不该注册 HTTP 路由：数据面是 Typert Remote 服务；若重新注册路由，这条先红",
+    "host.ts 的 apply 不该注册 HTTP 路由：数据那一栏是 Typert Remote 服务；若重新注册路由，这条先红",
   );
   attachRouteAdapters(env);
 }
 
-// ── 请求夹具单源（重复 3 次以上的输入值集中在此）────────────────────────────
+// ── 请求夹具唯一来源（重复 3 次以上的输入值集中在此）────────────────────────────
 // 这些是**喂给 handler 的输入**与**断言用的期望值**，刻意写死而不引 host.ts / shared
 // 里的同名常量：拿实现自己的常量当期望值，断言就退化成同义反复。
 
 /** DNS 重绑定用例的恶意 Host 值（Origin 与 sec-fetch-site 都能自洽，只有 Host 腿拒得了）。 */
-/** sec-fetch-site 的跨站取值（闸门与自家 isCrossOrigin 支共用的那一档）。 */
+/** sec-fetch-site 的跨站取值（这里与自家 isCrossOrigin 分支共用同一档）。 */
 /** 带会话查询位的 context URL（handler 只读 query，路由匹配在 dispatcher 侧，path 随意）。 */
 const CONTEXT_QUERY_URL = "/c?sessionId=s";
 /** 三类允许根之外的绝对路径（策略必须默认拒绝的那一类）。 */
 const OUTSIDE_IMPORT_PATH = "/etc/passwd.md";
-/** per-apply CSRF 令牌夹具值（下发面与回填面必须同一个串才验得出闸门真在比对）。 */
+/** per-apply CSRF 令牌夹具值（下发与回填必须用同一个串，才验得出令牌真的在比对）。 */
 
 /** context 的正常查询请求（sessionId=s1）。 */
 const getCtxQuery = { method: "GET", url: `${CONTEXT_PATH}?sessionId=s1` };
@@ -665,7 +665,7 @@ function sessionsWithMessages(
   };
 }
 
-describe("defaults 端点（内置精选角色表的按需读面）", () => {
+describe("defaults 端点（内置精选角色表的按需读取方法）", () => {
   it("GET → ok:true，且下发的就是 host 侧那份表（单源，不在 client 复制）", async () => {
     const handlers = createRouteHandlers(depsOf({}), "t");
     const { res, out } = makeRes();
@@ -725,8 +725,8 @@ describe("defaults 端点（内置精选角色表的按需读面）", () => {
   });
 
   it("首读失败不留缓存 → 下一次调用真的重试（Retry 不能永远重放同一个 rejection）", async () => {
-    // 缓存里存的是 promise 本身：失败那一份若留在缓存里，读面的 Retry 拿到的永远是同一个
-    // rejection，一次瞬时失败（例如产物还在落盘）就把整次会话钉死成「永远失败」。
+    // 缓存里存的是 promise 本身：失败那一份若留在缓存里，读取方法的 Retry 拿到的永远是同一个
+    // rejection，一次瞬时失败（例如产物还在写到磁盘）就把整次会话钉死成「永远失败」。
     // 判据必须发生在真抛之后：第一次注入失败载入器，第二次换成成功载入器，第二次要能拿到表。
     // 模块级缓存与本文件其它用例共享（有的用例让 defaults 端点走真实载入器），
     // 所以这里取一份「缓存是空的」模块实例，判据才只反映本用例的两次调用。
@@ -1218,7 +1218,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     assert.deepEqual(
       env.injected,
       [["settings"], []],
-      "页面策略经 inject(['settings'])，读面经空的注入子上下文注册",
+      "页面策略经 inject(['settings'])，读取方法经空的注入子上下文注册",
     );
     assert.equal(env.configureCalls.length, 1, "configure 恰好一次（重复登记会被宿主抛）");
     assert.deepEqual(env.configureCalls.at(0)?.presentation, { auto: false });
@@ -1228,18 +1228,22 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
       "owner 必须显式是本插件 fiber（缺省是 settings 服务自己的 fiber，传错等于给别人的页面定策略）",
     );
     assert.equal(env.routes.length, 5);
-    assert.notEqual(env.serviceRegistry["dirPrepOrganize"], undefined, "读面服务已注册到根上下文");
+    assert.notEqual(
+      env.serviceRegistry["dirPrepOrganize"],
+      undefined,
+      "读取方法服务已注册到根上下文",
+    );
     assert.ok(disposers.length > 0, "apply 必须经 ctx.effect 登记可回收面");
     for (const dispose of disposers) {
       dispose();
     }
-    // 读面是「构造即注册、随插件生命周期存续」（installDirPrepRemote 无拆卸口），
-    // disposer 只回卷 settings 那几面，不该把服务从上下文里摘掉——这里钉住它，
-    // 免得以后有人以为 disposal 会一并注销读面（旧标题「注销全部」正是这个误解）。
+    // 读取方法是「构造即注册、随插件生命周期存续」（installDirPrepRemote 无拆卸口），
+    // disposer 只回卷 settings 那几项，不该把服务从上下文里摘掉——这里钉住它，
+    // 免得以后有人以为 disposal 会一并注销读取方法（旧标题「注销全部」正是这个误解）。
     assert.notEqual(
       env.serviceRegistry["dirPrepOrganize"],
       undefined,
-      "读面注册随插件生命周期存续：disposer 不注销 Remote 服务",
+      "读取方法注册随插件生命周期存续：disposer 不注销 Remote 服务",
     );
   });
 
@@ -1367,7 +1371,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     // 旧断言盯的是 settings.register 的 try/catch（存量配置坏一段就直接抛出 apply）。
     // register 已被宿主移除：配置非法在**装载期**由 cordis 按 Config schema 校验时抛，
     // 插件侧不再有可兜的那条路。仍然可达的同类故障只剩 describe()（跨命名空间读 locale），
-    // 它落在每个请求的取表路径上，故按同一口径 re-anchor：装配不炸、路由照常、文案回落中文。
+    // 它落在每个请求的取表路径上，故按同一做法 re-anchor：装配不炸、路由照常、文案回落中文。
     const env = harness({ fs: realFsService() });
     env.describeThrows = new Error("settings service is not ready");
     assert.doesNotThrow(() => {
@@ -1606,7 +1610,7 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
 
   it("apply：引用里是 .default([]) 的空表 → 只剩内置库根（绝对路径一律 403）", async () => {
     // 旧版这条盯的是「register 未返回可用 scope」；scope 这个概念已随 register 消失。
-    // 仍然要锁的是同一件事的**策略面**：读不到登记目录 = 空表 = 不放行绝对路径。
+    // 仍然要锁的是同一件事的**策略**：读不到登记目录 = 空表 = 不放行绝对路径。
     const env = harness({ fs: realFsService() });
     applyTo(env);
     assert.deepEqual(

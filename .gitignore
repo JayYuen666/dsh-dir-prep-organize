@@ -11,5 +11,5 @@ node_modules/
 /src/*.tmp
 /coverage/
 
-# 统一构建件的原子落盘草稿目录（shared/lib/build-artifacts 的 writeArtifact）。
+# 统一构建件的原子写到磁盘草稿目录（shared/lib/build-artifacts 的 writeArtifact）。
 /.tmp/

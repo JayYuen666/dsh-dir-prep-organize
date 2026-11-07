@@ -53,7 +53,7 @@
   - 下拉按条目的 `group` 字段分组，`group` 为空的条目落在「通用」里。
 - **润色**会把草稿、会话 cwd 的顶层（文件名、大小、关键文本文件的全文）以及会话里**真实的** user/assistant 轮次交给当前会话选定的模型（取不到时回落宿主默认模型），然后用重写结果替换草稿。只有会话、草稿版本与输入阶段都没变时才写回。
   - 失败时草稿**绝不**被改动：按钮进入错误态若干秒，原因写在其 tooltip 里。
-- **模板**经输入框的插入面写到光标处：引用块与附件保持原样；插入凭据过期时宿主拒绝插入，而不是重建整份草稿。输入框处于提交期时两个控件禁用。
+- **模板**经输入框的插入接口写到光标处：引用块与附件保持原样；插入凭据过期时宿主拒绝插入，而不是重建整份草稿。输入框处于提交期时两个控件禁用。
 - 内置集是 **85 条精选角色模板**，由 `scripts/gen-defaults.mjs` 从本包的 `agents/` 角色库生成——那是从上游项目移入的几百份角色 `.md`，分布在二十多个部门目录下。对用户有意义的是那 85 条；角色库的份数不在这里钉死，因为上游一刷新它就变。
   - 这张表**只在宿主侧**：客户端产物不再内联它。生成文件约 640 KB，曾把 `client.js` 推到约 711 KB。
   - 浏览器**懒加载、只调一次** Remote 的 `defaults` 方法（首次打开菜单或首次进设置卡），之后在进程内复用。用户已经有自己的模板时**一个字节都不拉**。
@@ -72,7 +72,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 - **要求 Node.js `>= 24.9`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
 - **要求宿主 `dsh` 在 `0.2.1-rc.5` 或 `0.2.2-alpha.3` 这条宿主线上。** 宿主真正读的是 `engines.dsh`（`^0.2.1-rc.5 || ^0.2.2-alpha.3`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2` 与 `0.2.1-rc.3` **被拒**，`0.2.1-rc.5` 与 `0.2.2` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
 - **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-rc.1`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.1-rc.5 || ^0.2.2-alpha.3`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
-- **`dependencies` 里不放任何 `@deepseek-ai/*`，这是契约**（`test/publish-manifest.test.ts` 钉着）。消费方 profile 用 `nodeLinker: hoisted` 且 `autoInstallPeers: false` 安装，于是写在 `dependencies` 里的宿主包会被落成**真实目录**，与运行中的宿主已加载的那份并存。`@deepseek-ai/dsh-tools` 的工具运行期调度键是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例算：宿主从 profile 副本上读那个键拿到 `undefined`，于是**每一次原生工具调用都抛**——而本包的构建、类型检查、覆盖率门禁在此之前全部照绿。
+- **`dependencies` 里不放任何 `@deepseek-ai/*`，这是约定**（`test/publish-manifest.test.ts` 钉着）。消费方 profile 用 `nodeLinker: hoisted` 且 `autoInstallPeers: false` 安装，于是写在 `dependencies` 里的宿主包会被落成**真实目录**，与运行中的宿主已加载的那份并存。`@deepseek-ai/dsh-tools` 的工具运行期调度键是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例算：宿主从 profile 副本上读那个键拿到 `undefined`，于是**每一次原生工具调用都抛**——而本包的构建、类型检查、覆盖率检查在此之前全部照绿。
 - **`host.js` 按值导入的那两枚宿主包是必需 peer**：`@deepseek-ai/schemastery`（宿主 fork——只有它能把 `.volatile()` 字段解析成活引用）与 `@deepseek-ai/dsh-brand`。`build-host.mjs` 外部化 `dependencies` **与** `peerDependencies`，所以裸说明符留在产物里；只写 `devDependencies` 会让打包器把官方函数体内联进去。`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」。
 - **声明里点到的每一枚宿主包都落在 `peerDependencies`**，凡是只能从那里到达的都是 *optional*（`@deepseek-ai/cordis`、`cosmokit`，以及 `dsh-agent-default-model` / client-ui / `fs` / `llm` / `session` 那一族）。声明它们不是仪式：pnpm 严格布局下，`types/host.d.ts` 里一枚没有被任何 manifest 表点名的裸说明符在消费方侧解析不到，而本仓自己的类型检查照样绿。那条清单由测试从 `types/**/*.d.ts` 现量读，不从这段文字读，所以两边不会漂移。
 - **随包发的东西**：`host.js`、`client.js`、`templates.data.mjs`、`types/`、`cordis.patch.yml`、`agents/`、`locale/`、`docs/` 与 `THIRD_PARTY_NOTICES.md`。`package.json`、`README*` 与 `LICENSE` 由发布器无条件附带。
@@ -97,7 +97,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 找之前先知道这几件事：
 
 - **它不注册任何模型工具。** 宿主半只 inject `settings`，从不碰工具注册表。没有 `organize_text` 这类工具可调。
-- **它没有自建的 HTTP 路由。** 数据面是官方 Typert Remote 命名空间 `dirPrepOrganize`，经注入的子 fiber 注册，走宿主 `/api` 网关。认证、Host/DNS 重绑定/Origin 判据、签名浏览器会话 cookie、body 上限全归网关——本包不持有 CSRF token，也没有路由表。
+- **它没有自建的 HTTP 路由。** 数据那一栏是官方 Typert Remote 命名空间 `dirPrepOrganize`，经注入的子 fiber 注册，走宿主 `/api` 网关。认证、Host/DNS 重绑定/Origin判据、签名浏览器会话 cookie、body 上限全归网关——本包不持有 CSRF token，也没有路由表。
 - **它不加 CLI 子命令。**
 - **它不读任何环境变量**，也没有自己的出站请求。
 - 它**确实**消费的东西：宿主 `settings` 服务（硬注入，缺它条目根本不激活）、`llm.stream`、`agentDefaultModel`，以及会话、Agent 与文件系统服务。设置表单本身没就绪时，卡片禁用并显示状态提示，下拉回落到内置精选集。
@@ -107,7 +107,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 - 安装即贡献组合包补丁层（`dsh.bundle.patch` → `./cordis.patch.yml`），插入 `- id: dir-prep-organize`，`name` 指向包名。
 - **客户端半**注册两个槽位外加设置卡：
   - `conversation.input.right`——润色按钮（id `dir-prep-organize`，order 99）与模板下拉（id `dir-prep-organize-templates`，order 100）。
-  - `plugins.bundle.config`——设置卡，按 **bundle 包名** `@jayyuen66/dsh-dir-prep-organize` 作 key。宿主派发 `entryKey: pkg.name`（真源是 profile `package.json` 里的 `dsh.profile.bundles`），所以写成裸条目 id 永远匹配不上，卡片哪都不渲染。
+  - `plugins.bundle.config`——设置卡，按 **bundle 包名** `@jayyuen66/dsh-dir-prep-organize` 作 key。宿主派发 `entryKey: pkg.name`（唯一来源是 profile `package.json` 里的 `dsh.profile.bundles`），所以写成裸条目 id 永远匹配不上，卡片哪都不渲染。
   - 设置命名空间与 `configForms.get()` 仍是**裸条目 id** `dir-prep-organize`——与那个槽位 key 刻意不是同一个标识。
 - 客户端半是 `dsh.client.platform = web` 且带 `immediately`。
 - 卡片的文案遵循官方 locale 插件的偏好；宿主半每次请求现读该偏好，所以切语言不必重启。
@@ -119,7 +119,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 |---|---|
 | 传输 | 宿主 `llm.stream`：一条**仅请求态**的 user 文本消息（无 `id`、无 `source`）加一段 `system` 规则块 |
 | 模型 | 先取会话活 Agent 的当前选择——新宿主读 `agent.model.current()`，旧宿主回落 `agent.options`——再回落 `agentDefaultModel.currentSelection()`。取不到时回报 "No model selection is available" |
-| 写回闸门 | 只有会话 id、输入动作面身份、草稿版本与输入阶段（`plain`）都没变时才写回。否则回报「输入框内容已变化，润色结果未写回」，草稿保持原样 |
+| 写回条件 | 只有会话 id、输入动作对象的身份、草稿版本与输入阶段（`plain`）都没变时才写回。否则回报「输入框内容已变化，润色结果未写回」，草稿保持原样 |
 | 角色风格 | 可选的 `roleText` 注入 user 消息的 `<data>` 围栏（不进 system——见 `buildOrganizeSystem` 的信任序注释）。它只借用术语与语气，**从不执行该角色的任务** |
 | finish reason | 除 `stop` 之外（含缺 finish 块）一律**失败**，且绝不写回草稿 |
 | 超时 | `organizeTimeoutMs`，默认 120000 ms，每次请求经 `.get()` 读。客户端 fetch 超时是它 + 5000 ms |
@@ -133,7 +133,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 | 条目形状 | `{ id, name, description, text, group, emoji }`，全部字符串。`description` / `group` / `emoji` 默认空串 |
 | 保存时校验 | `name` 或 `text` 为空的条目被丢掉；`emoji` 截到 12 字符；缺失或撞车的 `id` 确定性地替换成 `tpl-<index>` |
 | 内置集 | 从 `agents/` 角色库生成的 85 条精选模板。`templates` 未设置时下拉回落到它们 |
-| 插入 | 走输入框的版本校验插入面（`captureInsertion()` + `insertText()`）。文本写到光标处，引用块与附件保持原样；凭据过期时什么都不插入 |
+| 插入 | 走输入框的版本校验插入接口（`captureInsertion()` + `insertText()`）。文本写到光标处，引用块与附件保持原样；凭据过期时什么都不插入 |
 | 「未设置」= 空数组 | 隐式注册下 schemastery 会把缺失的数组字段 cast 成 `[]`，所以**空列表永远意味着「回落到内置」**。只有非空数组且条目全部非法，才渲染成空列表 |
 | 恢复默认 | 把 `templates` 退回精选集，`importAllowRoots` 不动。两步确认，第二次点击须在 4 秒内 |
 | 导入 | 按路径：本地 `.md` 文件或目录。`path` 恰为空串 = 导入整套内置库。角色文件的代码围栏没有结束标记时直接拒绝，不会静默只导入半篇正文 |
@@ -172,10 +172,10 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 
 | 面 | 事实 |
 |---|---|
-| 网络 | 没有自己的出站请求：数据面走宿主网关的 RPC 通道。不读任何环境变量 |
-| 落盘 | 唯一写盘的是宿主设置文件里的 `templates` 与 `importAllowRoots` |
+| 网络 | 没有自己的出站请求：数据那一栏走宿主网关的 RPC 通道。不读任何环境变量 |
+| 写到磁盘 | 唯一写盘的是宿主设置文件里的 `templates` 与 `importAllowRoots` |
 | 一次润色发出去什么 | 完整草稿、会话 cwd 路径、顶层目录条目**连同关键文本文件的全文**、真实的 user/assistant 轮次（框架注入的消息与工具结果被滤掉），以及可选的角色正文 |
-| 哪些文件会取摘要 | 只有 20 种代码/文档扩展名（ts/tsx/js/jsx/mjs/cjs/py/rs/go/java/rb/json/toml/md/sql/graphql/proto/css/scss/less）。`yaml` / `env` **不在**白名单 |
+| 哪些文件会取摘要 | 只有 20 种代码/文档扩展名（ts/tsx/js/jsx/mjs/cjs/py/rs/go/java/rb/json/toml/md/sql/graphql/proto/css/scss/less）。`yaml` / `env` **不在**白名单里 |
 | 敏感文件名 | 名字在**分隔符边界**上命中 `credentials` / `secret(s)` / `id_rsa` / `pem` / `p12` / `pfx` / `keystore` / `env` / `key(s)` / `token(s)` / `auth` / `passwd` / `password` / `account(s)` 的文件，永不取摘要。边界是刻意的：朴素子串匹配会误杀 `monkey.js` 与 `AUTHORS.md`，而漏匹配会把凭据全文发给第三方模型 |
 | 上限与并发 | 单个文件超过 `maxSnippetBytes`、或大小未知，整份跳过——绝不半份摘要。收集到的摘要共享 2 MiB 总量预算；用完之后其余整份跳过并计入 `skipped.tooLarge`。读按 `readConcurrency` 跑 |
 | 计数器 | 过大 / 读不出 / 更深层 / 非角色这几类计入 `skipped`，在 UI 里显示，并由 `truncated` 如实反映 |

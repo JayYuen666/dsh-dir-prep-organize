@@ -1,15 +1,15 @@
-// test/publish-manifest.test.ts —— 发布形态门禁：入口面必须**与发布器无关**地可解析。
+// test/publish-manifest.test.ts —— 发布形态门禁：入口必须**与发布器无关**地可解析。
 //
-// 为什么值得一条测试：构建与单测都在源码侧跑绿，而真实故障发生在装出去之后。两类坑都在
-// 那一侧。其一是入口指向没随包发出去的文件；其二是入口覆盖写在 `publishConfig` 里——
+// 为什么值得一条测试：构建与单测都在源码里跑绿，真实故障却发生在装出去之后。两类坑都在那之后：
+// 其一是入口指向没随包发出去的文件；其二是入口覆盖写在 `publishConfig` 里——
 // pnpm 发布时把它合并到顶层，npm 不合并（npm 会打印
 // "Unknown publishConfig config main/exports" 并忽略），同一个仓库换个发布器就发出一个
 // import 必失败的包。这里不模仿任何发布器的实现，而是把不变式钉成断言：**顶层入口自己就
 // 完整可解析，且 publishConfig 不再承载入口字段**，于是两套发布器语义的差恒为空。
 //
 // 第二组门禁扫注释：日期与轮次编号写下时有用，读的人只会困惑，且没有任何读者能从中重建
-// 当时的上下文。只扫注释行与文档；测试夹具里的日期（modifiedAfter 之类的边界值）是数据，
-// 角色文档里的日期是内容，两者都不在禁面内。
+// 当时的上下文。只扫注释行与文档；夹具里的日期（modifiedAfter 之类的边界值）是数据，
+// 角色文档里的日期是内容，两者都不在禁止名单内。
 import { existsSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
@@ -29,20 +29,20 @@ const FORBIDDEN_IN_COMMENTS: readonly RegExp[] = [/\b(?:19|20)\d{2}-\d{2}-\d{2}\
 
 /** 「这一行是注释」的判据：行首（含缩进）是 //、/*、* 或 #。
  *  注释门禁与 stripComments 共用同一枚正则——两处各写一份时，一处放宽另一处没放宽，
- *  「哪些文本算注释」就出现第二种口径（曾经就是两份一模一样的字面量）。 */
+ *  「哪些文本算注释」就出现第二种做法（曾经就是两份一模一样的字面量）。 */
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#)/u;
 
-/** `publishConfig` 里唯一允许出现的字段：可见性与源，都不是入口面。 */
+/** `publishConfig` 里唯一允许出现的字段：可见性与源，都不是入口字段。 */
 const ALLOWED_PUBLISH_CONFIG = new Set(["access", "registry"]);
 
-/** 遍历时跳过的目录：依赖、产物、以及本门禁刻意不管的面。 */
+/** 遍历时跳过的目录：依赖、产物、以及本门禁刻意不管的目录。 */
 const SKIP_DIRS = new Set([
   "node_modules",
   "coverage",
   "_env",
   "dist",
   ".git",
-  // 测试夹具里的日期与轮次编号是数据，不是注释噪音。
+  // 夹具里的日期与轮次编号是数据，不是注释噪音。
   "test",
   "tests",
   "__tests__",
@@ -50,7 +50,7 @@ const SKIP_DIRS = new Set([
   "agents",
 ]);
 
-/** package.json 里与入口面有关的形状；其余字段本门禁不关心。 */
+/** package.json 里与入口有关的形状；其余字段本门禁不关心。 */
 interface Manifest {
   readonly main?: string;
   readonly types?: string;
@@ -120,7 +120,7 @@ async function expand(shape: PatternShape): Promise<string[]> {
     return existsSync(path.join(pkgDir, shape.file)) ? [shape.file] : [];
   }
   const dir = path.join(pkgDir, shape.dir);
-  // 目录不存在时 readdir 抛的是裸 ENOENT：看不出是哪一条 files 写坏了，也分不清
+  // 目录不存在时 readdir 抛的是一句没有路径信息的 ENOENT：看不出是哪一条 files 写坏了，也分不清
   // 「files 写错」与「产物没构建」。这里点名模式与解析后的目录，再去列。
   assert.ok(
     existsSync(dir),
@@ -246,7 +246,7 @@ async function readSurfaceOnce(): Promise<{ manifest: Manifest; shipped: Set<str
   return { manifest, shipped: new Set([...groups.flat(), ...attached]) };
 }
 
-/** readSurface 的进程内缓存：同一个测试文件里有六处要这同一份磁盘面，读六遍既不快也没有新信息。
+/** readSurface 的进程内缓存：同一个测试文件里有六处要读同一份磁盘内容，读六遍既不快也没有新信息。
  *  缓存的是 Promise 而不是结果，于是并发的两处调用也只真跑一遍。 */
 let surface: Promise<{ manifest: Manifest; shipped: Set<string> }> | undefined;
 
@@ -293,7 +293,7 @@ async function collectSources(dir: string, prefix: string): Promise<string[]> {
  * 取一段文本里属于注释或文档的行。文档（`.md`）整体算；代码只取注释行，免得把字符串
  * 字面量里的数据（日期夹具、示例路径）误判成注释噪音。
  *
- * @param file - 相对包根的文件名，用于决定判定口径
+ * @param file - 相对包根的文件名，用于决定判定做法
  * @param text - 文件全文
  * @returns 参与门禁的行
  */
@@ -338,7 +338,7 @@ function atLeast(version: string, bound: string): boolean {
 }
 
 /**
- * 取区间声明的下界版本：`>=X`、`^X`、裸 `X` 都落到 X；`A || B` 取各段下界里**最低**的
+ * 取区间声明的下界版本：`>=X`、`^X`、只写版本号都落到 X；`A || B` 取各段下界里**最低**的
  * 那个，它才代表「声称支持的最老宿主」。
  *
  * 遇到没见过的写法返回空串，让下游断言**失败**而不是静默放过：一条看不懂的区间声明
@@ -429,7 +429,7 @@ describe("发布形态", () => {
 
   it("声明产物不含本机绝对路径或包管理器内部路径", async () => {
     // 声明文件现在随包发布，路径泄漏从「仓库内问题」变成「分发问题」：消费方的类型检查
-    // 会去解析一个指向别人机器的 specifier，报出来的是一条比原始故障更难查的错。
+    // 会去解析一个指向别人机器的模块说明符（说明符），报出来的是一条比原始故障更难查的错。
     // recursive readdir 把目录也一并交回；按后缀收成文件，否则下一步 readFile 撞 EISDIR。
     const entries = await readdir(path.join(pkgDir, "types"), { recursive: true });
     const files = entries.filter((file) => file.endsWith(".d.ts"));
@@ -477,7 +477,7 @@ describe("发布形态", () => {
 describe("宿主依赖的版本形状（升级防线）", () => {
   it("@deepseek-ai/* 一律不进 dependencies：装出去会在宿主进程里物化第二份", async () => {
     // 钉的是「全绿但宿主瘫痪」这一类坑，别把它当风格偏好，更别把任何 @deepseek-ai/*「恢复」回
-    // dependencies。本插件被装进消费方 profile 的口径是 `nodeLinker: hoisted` 且
+    // dependencies。本插件被装进消费方 profile 的做法是 `nodeLinker: hoisted` 且
     // `autoInstallPeers: false`（见 pnpm-workspace.yaml），所以 `dependencies` 里的每一枚宿主包
     // 都会在那棵 profile 依赖树里落成**真实目录**，与宿主进程已经加载的那份并存在一起。
     // 而 `@deepseek-ai/dsh-tools` 的 TOOL_RUNTIME_SCHEDULER 是普通 `Symbol`（不是 `Symbol.for`），
@@ -500,14 +500,17 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // registry 上的 dist-tag 是实测出来的陷阱：`latest` 可能指向远早于宿主 ABI 的版本。
     // 精确钉是让「不带版本地装成远古版本」这件事不发生的最小条件；一旦放宽成 `^`/`~`，
     // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让本包在没有测试的
-    // 情况下换掉编译用的宿主类型面。
-    // 只判 dev 这一侧：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
+    // 情况下换掉编译用的宿主类型声明。
+    // 只判 dev这一侧 段：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
     // 装什么版本由宿主决定，那一条判据在下面。
     const { manifest } = await readSurface();
     const dshDeps = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
       name.startsWith(DSH_PREFIX),
     );
-    expect(dshDeps.length, "至少要钉住一枚 dsh-* 开发依赖，否则这道门是空转").toBeGreaterThan(0);
+    expect(
+      dshDeps.length,
+      "至少要固定一枚 dsh-* 开发依赖，否则这道检查没有实际校验作用",
+    ).toBeGreaterThan(0);
     const ranged = dshDeps.filter(
       ([, range]) => !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/u.test(range),
     );
@@ -521,8 +524,8 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // 要么为了门禁绿而不敢放宽。于是拆成各自成立的两条不变式。
     //
     // 真正要防的故障是「同一个会话里出现同一枚宿主包的两份拷贝」——它不报编译错，
-    // 只在运行期报「认不出这个 callId」，是本仓最难查的一类问题。那一面读 dev：
-    // devDependencies 里的 dsh-* 才是编译期真实存在的那份类型面。
+    // 只在运行期报「认不出这个 callId」，是本仓最难查的一类问题。那一条读 dev：
+    // devDependencies 里的 dsh-* 才是编译期真实存在的那份类型上。
     const { manifest } = await readSurface();
     const peer = manifest.peerDependencies?.["@deepseek-ai/dsh"];
     expect(peer, "peer 依赖缺失：支持窗口就失去基准了").toBeDefined();
@@ -530,7 +533,10 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     const installed = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
       name.startsWith(DSH_PREFIX),
     );
-    expect(installed.length, "至少要钉住一枚 dsh-* 开发依赖，否则这条是空转").toBeGreaterThan(0);
+    expect(
+      installed.length,
+      "至少要固定一枚 dsh-* 开发依赖，否则这条没有实际校验作用",
+    ).toBeGreaterThan(0);
     expect(new Set(installed.map(([, range]) => range)).size, "dsh-* 钉在了不同版本上").toBe(1);
     const pinned = installed[0]?.[1] ?? "";
     // ② 不高于 peer 下界：钉的版本比声称支持的宿主区间还高，就是「装得上、跑不了」。
@@ -540,7 +546,7 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // 而这正是这条不变式最危险的失效方向：区间写错了，门禁却报绿。
     expect(
       bound,
-      `peer 区间「${peer}」的写法认不出来（本门禁只支持 >=X / ^X / 裸 X 及其 || 组合）`,
+      `peer 区间「${peer}」的写法认不出来（本门禁只支持 >=X / ^X / 只写版本号，以及它们的 || 组合）`,
     ).not.toBe("");
     for (const [name] of installed) {
       expect(
@@ -562,7 +568,7 @@ const DECLARATION_SPECIFIER = /(?<=\bfrom\s*["']|\bimport\(\s*["'])[^"']+(?=["']
 /**
  * 把一条说明符收成**包名**（剥掉子路径），供与 manifest 的表键比对。
  *
- * @param specifier - 声明产物里出现的一条说明符
+ * @param说明符- 声明产物里出现的一条说明符
  * @returns 包名；相对路径与 `node:` 内置返回 undefined（它们不由 manifest 决定能否解析）
  */
 function packageNameOf(specifier: string): string | undefined {
@@ -599,14 +605,14 @@ async function declarationPackages(dir: string): Promise<Set<string>> {
 }
 
 /**
- * 参与「引用面」扫描的文件后缀：源码、构建脚本、配置与测试。
+ * 参与「引用」扫描的文件后缀：源码、构建脚本、配置与测试。
  *
  * `tsx` 不在列内——本包不产 tsx，留着只会让将来任何 tsx 夹具悄悄逃过判定。
  */
 const REFERENCE_SUFFIXES = /\.(?:ts|mts|cjs|mjs)$/u;
 
 /**
- * 引用面扫描跳过的目录。
+ * 引用扫描跳过的目录。
  *
  * 不能沿用注释门禁那张 {@link SKIP_DIRS}：它贴着 `test`，而集成层的四个用例恰好是宿主包
  * 唯一的引用现场（`dsh-app-boot` / `dsh-config-editor` 只在测试里 import）。照抄过去会让
@@ -615,7 +621,7 @@ const REFERENCE_SUFFIXES = /\.(?:ts|mts|cjs|mjs)$/u;
 const CODE_SKIP_DIRS = new Set(["node_modules", "coverage", "_env", "dist", ".git", "agents"]);
 
 /**
- * 免检的直接依赖：以「引用面」判会被误杀的例外，键是包名，值是为什么必须留着。
+ * 免检的直接依赖：以「是否被引用」判会被误杀的例外，键是包名，值是为什么必须留着。
  *
  * 每条都必须是**可复查的事实**，不是习惯。加一条就等于承认这道门在这一处不成立，所以
  * 宁可留空也要先按实证办法（摘掉→跑 typecheck+test）试一遍。
@@ -636,7 +642,7 @@ const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {
  *
  * 顺序必须是**先按行剥、再剥块**：本仓注释里会出现 `fetch('/_dsh/dir-prep/*')` 这种带
  * `/*` 的示例路径，先跑块注释正则会从那一处一路吞到下一个 `*\/`，把整段 import 当成注释
- * 抹掉——那道「必须有引用面」的门于是把 host.ts 真正 import 的包全判成孤儿。
+ * 抹掉——那道「必须有引用」的门于是把 host.ts 真正 import 的包全判成孤儿。
  */
 function stripComments(text: string): string {
   const lines = text.split("\n").filter((line) => !COMMENT_LINE.test(line));
@@ -649,7 +655,7 @@ function stripComments(text: string): string {
  * 为什么按引号串而不是只按 `from "…"`：构建脚本的 externalNames 是一张裸字符串表
  * （build-host.mjs 里那张），那同样是「代码按名字引用了这枚包」。为什么先去注释：本仓注释里
  * 大量讨论宿主包名（`peer 面`、`第二份实例` 的成因就写在注释里），留着注释等于让门禁自己
- * 判定自己——注释提一句就算引用，那道门就空转了。
+ * 判定自己——注释提一句就算引用，那道检查就没有实际校验作用了。
  *
  * @param dir - 起始目录或文件路径
  * @param found - 累积的包名集合（就地累加，返回同一枚引用）
@@ -689,12 +695,13 @@ describe("声明产物的可解析性（升级防线）", () => {
     // 判据取**产物**而不是源码：type-only 导入在 host.ts 里随构建擦除，却原样留在
     // types/host.d.ts 的裸说明符里。消费方那侧只按 manifest 装依赖，声明里没这个名字
     // 就是 TS2307，而本仓自己的 typecheck 全照绿——dev 与 peer 两张表我们都有它。
-    // 宿主包不许进 dependencies（见上面那条门禁），所以唯一的合法落点就是 peer。
+    // 宿主包不许进 dependencies（见上面那条门禁），所以唯一的合法写法就是 peer。
     const { manifest } = await readSurface();
     const referenced = await declarationPackages(path.join(pkgDir, "types"));
-    expect(referenced.size, "至少要扫到一枚被声明产物引用的包，否则这道门是空转").toBeGreaterThan(
-      0,
-    );
+    expect(
+      referenced.size,
+      "至少要扫到一枚被声明产物引用的包，否则这道门没有实际校验作用",
+    ).toBeGreaterThan(0);
     const missing = [...referenced]
       .filter((name) => name.startsWith(HOST_PREFIX))
       .filter((name) => manifest.peerDependencies?.[name] === undefined)
@@ -715,12 +722,15 @@ describe("声明产物的可解析性（升级防线）", () => {
     // 不是「为填 peer 而加」的重演，是 autoInstallPeers: false 下必须由本仓自己声明的 peer 闭包。
     // 判据取两处并集：代码里的引号串（import 说明符 + 构建脚本的 external 名单），以及
     // types/ 点名的裸说明符（type-only 面，见下面那条 peer 门禁的同一份读法）。
-    // 剩下的缺口是「有引用但引用面是死代码」——那归覆盖率与 lint 管，不在本门禁扩面。
+    // 剩下的缺口是「有引用但那段引用是死代码」——那归覆盖率与 lint 管，不在本门禁的范围里。
     const { manifest } = await readSurface();
     const declared = Object.keys(manifest.devDependencies ?? {}).filter((name) =>
       name.startsWith(HOST_PREFIX),
     );
-    expect(declared.length, "至少要有一枚宿主 devDependency，否则这道门是空转").toBeGreaterThan(0);
+    expect(
+      declared.length,
+      "至少要有一枚宿主 devDependency，否则这道门没有实际校验作用",
+    ).toBeGreaterThan(0);
 
     const cited = new Set([
       ...(await declarationPackages(path.join(pkgDir, "types"))),
@@ -732,7 +742,7 @@ describe("声明产物的可解析性（升级防线）", () => {
       .toSorted();
     expect(orphans, "这些宿主包没有引用面：删掉，或在例外表里写明依据").toStrictEqual([]);
 
-    // 例外表不许长草：条目对应的包一旦重新有了引用面（或已被删掉），就该从表里摘走。
+    // 例外表不许长草：条目对应的包一旦重新被引用（或已被删掉），就该从表里摘走。
     const stale = Object.entries(REFERENCE_EXEMPTION)
       .filter(([name]) => cited.has(name) || manifest.devDependencies?.[name] === undefined)
       .map(([name, reason]) => `${name}（${reason}）`)
@@ -765,7 +775,7 @@ describe("注释与文档没有内部指涉", () => {
   });
 });
 
-/** 版本字面量在本段反复出现，提为常量：断言要钉的是规则，逐处手抄版本号只会抄错。 */
+/** 版本字面量在本段反复出现，提为常量：断言要钉的是规则，逐处照抄的那一份本号只会抄错。 */
 const V_RC2 = "0.2.0-rc.2";
 const V_ALPHA1 = "0.2.1-alpha.1";
 const V_ALPHA2 = "0.2.1-alpha.2";
@@ -773,7 +783,7 @@ const V_BETA = "0.2.1-beta";
 const V_PLAIN = "0.2.1";
 
 describe("版本区间比较（门禁自带的两个纯函数）", () => {
-  it("lowerBoundOf 只认 >=X / ^X / 裸 X，其余写法返回空串", () => {
+  it("lowerBoundOf 只认 >=X / ^X / 只写版本号，其余写法返回空串", () => {
     assert.equal(lowerBoundOf(`>=${V_RC2}`), V_RC2);
     assert.equal(lowerBoundOf(`^${V_ALPHA1}`), V_ALPHA1);
     assert.equal(lowerBoundOf(V_PLAIN), V_PLAIN);

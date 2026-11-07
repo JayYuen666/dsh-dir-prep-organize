@@ -1,4 +1,4 @@
-// 路径导入策略与模板清洗的属性面：单测（test/host.test.ts、test/templates.test.ts）钉的是
+// 路径导入策略与模板清洗的属性测试：单测（test/host.test.ts、test/templates.test.ts）钉的是
 // 手工枚举的形状，这一层用 fast-check 扫「任意段组合」。期望值全部来自探针实测与
 // host.ts / src/templates.ts 头注写明的判据（原始段检查先于 resolve；"." 与 ".." 与
 // 隐藏段一律非法；allowRoots 只收绝对形），不从实现派生。
@@ -107,7 +107,7 @@ describe("clampInt 的取值域性质", () => {
 });
 
 describe("buildOrganizeUser 的围栏 defuse 性质", () => {
-  /** 混入围栏标记与正文的数据文本（注入面的生成域）。 */
+  /** 混入围栏标记与正文的数据文本（注入的生成域）。 */
   const dataTextArb = fc
     .array(fc.constantFrom("正文", zh.sysDataFenceStart, zh.sysDataFenceEnd, "plain"), {
       maxLength: 4,
@@ -233,7 +233,7 @@ describe("sanitizeAllowRoots 的绝对形状判据", () => {
     );
   });
 
-  it("探针实测的三种绝对形都保留，盘符相对（C:rel）被丢弃（client 半无 node:path 的形状判据）", () => {
+  it("实测的三种绝对形都保留，盘符相对（C:rel）被丢弃（client 半无 node:path 的形状判据）", () => {
     assert.deepEqual(
       sanitizeAllowRoots([...absoluteShapes, driveRelative, "rel", ""]),
       absoluteShapes,
@@ -251,7 +251,7 @@ describe("tryCondenseRoleBody 的围栏判据", () => {
     );
   });
 
-  it("开围栏没有闭围栏：交回开栏行号（探针实测第 2 行）", () => {
+  it("开围栏没有闭围栏：交回开栏行号（实测第 2 行）", () => {
     const unclosedCrlf = tryCondenseRoleBody("body\r\n```code\r\ntail");
     assert.equal(unclosedCrlf.unclosedFenceLine, 2);
     const unclosedLf = tryCondenseRoleBody("body\n```code\ntail");

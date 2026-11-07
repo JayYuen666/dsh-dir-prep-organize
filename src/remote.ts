@@ -1,7 +1,7 @@
-// src/remote.ts —— 设置卡读面（官方 Typert Remote 的消费侧）。
+// src/remote.ts —— 设置卡的读取接口（官方 Typert Remote 的消费侧）。
 //
 // descriptor 手写（来源模式要求）、参数走 strict 形状校验，结果走 src-json；宿主侧按
-// 方法签名推参数名。`remote` 是可选读面：没有它时设置卡照常渲染，只把数据面显示为读不到。
+// 方法签名推参数名。`remote` 是可选服务：没有它时设置卡照常渲染，只把数据那两栏显示为读不到。
 import type {
   InvocationDescriptor,
   RemoteResult,
@@ -10,7 +10,7 @@ import type {
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/client";
 import { z } from "zod";
 
-/** Typert Remote 命名空间（client 半这一侧的唯一一枚）。
+/** Typert Remote 命名空间（client 半只用这一枚）。
  *
  *  宿主半的注册键在 host.ts 的 `DIR_PREP_REMOTE_NAMESPACE`——两半各自打包、client 包
  *  不能 import host.ts，所以这一枚字面量必然有两份。两边取值必须一致：写岔了的表现是
@@ -81,7 +81,7 @@ const ORGANIZE_CODEC: TypertCodec<{
       roleText?: string;
     } {
       const request = parseOrThrow(ORGANIZE_SCHEMA, value);
-      // zod 的 optional 输出带 `undefined` 这一臂，而请求类型在 exactOptionalPropertyTypes
+      // zod 的 optional 输出带 `undefined` 这一分支，而请求类型在 exactOptionalPropertyTypes
       // 下只能“缺席”或“有值”；这里显式收成原 parser 的形状。
       return request.roleText === undefined
         ? {
@@ -230,7 +230,7 @@ function buildReader(ctx: RemoteHost, remote: RemoteMounter): DirPrepReader {
   const namespaceOf = async (): Promise<DirPrepNamespace> => {
     // 被拒的挂载不留在缓存里：$mount 失败一次（宿主还没起远端栈、descriptor 与当前协议版
     // 不兼容）之后每一次读都该重试，否则整张卡在这个页面生命周期内永久显示「读不到」，
-    // 而症状看起来是数据面没挂上——与真实成因无关。
+    // 而看起来像是数据那栏没挂上——和真实原因没有关系。
     //
     // 无条件清空即可：这一行是同步赋值，清缓存又发生在同一个 promise 的 catch 里，
     // 因此「清掉别人刚建好的挂载」这一刻在时序上不存在（并发等待者共享同一枚在途
@@ -265,12 +265,12 @@ function buildReader(ctx: RemoteHost, remote: RemoteMounter): DirPrepReader {
   };
 }
 
-/** 造读取器；当前部署没有远程面时 undefined（卡片只显示读不到）。
+/** 造读取器；当前部署没有远程通道时 undefined（卡片只显示读不到）。
  *
- *  `get` 的两个口径与 buildReader 里查命名空间时保持一致，都显式传 `strict = false`：
+ *  `get` 这两处的做法和 buildReader 里查命名空间时保持一致，都显式传 `strict = false`：
  *  不传时 cordis 默认只返回「提供者 fiber 当前 active」的实现，而设置卡可能在 fiber
- *  就绪前就挂上——那时读面会拿到 undefined 并显示「读不到」，看起来是插件没装。
- *  `get` 本身也可能抛（宿主版本演进后反射面可能不再接受 bool），兜住它只是为了把这
+ *  就绪前就挂上——那时读取方法会拿到 undefined 并显示「读不到」，看起来是插件没装。
+ *  `get` 本身也可能抛（宿主版本演进之后，反射接口可能不再接受 bool），接住它只是为了把这
  *  一栏降级成「读不到」，不让整张卡片跟着炸。 */
 export function createDirPrepReader(ctx: RemoteHost): DirPrepReader | undefined {
   // 单出口满足 consistent-return：任一分支取不到可挂载的 remote 面都保持 undefined。

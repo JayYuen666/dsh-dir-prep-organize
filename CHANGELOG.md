@@ -6,17 +6,17 @@
 
 ## 0.1.9
 
-宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 地板抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。导入面补上两条收口：越界回执的列举有界、允许根的形状归一。默认配置不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包，以及 cordis / cosmokit 的 peer 由确切版本改成范围后宿主装载门的差别。
+宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 下限抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。导入这条路径补上两条统一处理：越界回执的列举有界、允许根的形状统一处理。默认配置不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包，以及 cordis / cosmokit 的 peer 由确切版本改成范围后宿主装载门的差别。
 
 ### Changed
 
 - **shared 抬到 0.2.4**：catalog、生成物与 lockfile 随之同步；shared 新增的普通依赖 `@deepseek-ai/dsh-fs-patch` 由 shared 自己安装，本包不重复声明。
-- **宿主开发基线**：`devDependencies` 的 `@deepseek-ai/dsh-*` 全族抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`，`@deepseek-ai/cosmokit` 抬到 `1.9.0`，`@deepseek-ai/schemastery` 抬到 `3.19.0`，cordis 插件组两枚抬到 `1.1.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
-- **支持窗口写成并集**：`engines.dsh` 与 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`（`0.2.2` 线宿主自己的地板，写低了等于承诺一个宿主不会启动的运行环境）。
-- **cordis 与 cosmokit 的 peer 由确切版本改成范围**：`@deepseek-ai/cordis` 原为 `~4.0.5 || 4.0.6-alpha.1`、`@deepseek-ai/cosmokit` 原为裸 `1.8.7-alpha.1`，现分别写成 `^4.0.5 || ^4.0.6-alpha.2` 与 `^1.8.6 || ^1.8.7-alpha.2`。宿主对写成字面版本的 peer 做**确切版本**强校验并在不匹配时 `skipping profile bundle`——装得上、永远不生效，而 `--dump-config` 仍退 0，是这类失败最难查的形态；`@deepseek-ai/schemastery` 的 peer 同步放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本对齐。
+- **宿主开发基线**：`devDependencies` 里整组 `@deepseek-ai/dsh-*` 包抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`，`@deepseek-ai/cosmokit` 抬到 `1.9.0`，`@deepseek-ai/schemastery` 抬到 `3.19.0`，cordis 插件组两枚抬到 `1.1.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
+- **支持窗口写成并集**：`engines.dsh` 与 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`（`0.2.2` 线宿主自己的下限，写低了等于承诺一个宿主不会启动的运行环境）。
+- **cordis 与 cosmokit 的 peer 由确切版本改成范围**：`@deepseek-ai/cordis` 原为 `~4.0.5 || 4.0.6-alpha.1`、`@deepseek-ai/cosmokit` 原为只写版本号的 `1.8.7-alpha.1`，现分别写成 `^4.0.5 || ^4.0.6-alpha.2` 与 `^1.8.6 || ^1.8.7-alpha.2`。宿主对写成字面版本的 peer 做**确切版本**强校验并在不匹配时 `skipping profile bundle`——装得上、永远不生效，而 `--dump-config` 仍退 0，是这类失败最难查的形态；`@deepseek-ai/schemastery` 的 peer 同步放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本对齐。
 - **卡片组件改由 shared 的 `./client` 供**：`src/client-entry.ts` 与 `src/remote.ts` 的运行期值导入迁到 `./client`，`package.json` 新增 `dsh.bundle.client.external`，`build-client.mjs` 的外置清单同步；`cordis.patch.yml` 因此插入一条**不写 id** 的 `@jayyuen66/dsh-plugin-shared` 组件行（写 id 会在插件页多出一个可关闭的组件，关掉后设置卡失去组件供应）。
 - **CI 的 node 矩阵收敛**：`ci.yml` 的 `node: [22, 24]` 加 macOS 排除改为单格 `node: [24.9]`，`ci.yml` 与 `publish.yml` 的 `node-version` 由 `24` 改为 `24.9`，与 `engines.node` 同值。
-- **发布预检按 catalog 的范围口径改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根真源按设计写的是范围（`^0.2.4`）——不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出面是同一口径。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝。
+- **发布预检按 catalog 的范围做法改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根唯一来源按设计写的是范围（`^0.2.4`）——不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出名单是同一做法。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝。
 
 ### Fixed
 
@@ -30,26 +30,26 @@
 
 ## 0.1.8
 
-一轮跨面审查修复：模板导入判据与解析收口，客户端超时与写回时序修正，CI 与发布链同步加固。
+一轮跨模块审查修复：模板导入判据与解析统一处理，客户端超时与写回时序修正，CI 与发布链同步加固。
 
 ### Changed
 
-- **发布链加固**（`.github/workflows/publish.yml`）：拆 build/publish 两 job，`id-token: write` 只留 publish job；预检补本包版本占用检查与全部 `catalog:` 依赖可见性遍历；tarball 打包一次经 artifact 传递，发布前校验身份一致且无 `catalog:`/`workspace:` 残留，发布后轮询 registry 至可见（上限 5 分钟）。CI 侧 actionlint 改按文件豁免，codeql/scorecard/dependabot 同步收口。
+- **发布链加固**（`.github/workflows/publish.yml`）：拆 build/publish 两 job，`id-token: write` 只留 publish job；预检补本包版本占用检查与全部 `catalog:` 依赖可见性遍历；tarball 打包一次经 artifact 传递，发布前校验身份一致且无 `catalog:`/`workspace:` 残留，发布后轮询 registry 至可见（上限 5 分钟）。CI 侧 actionlint 改按文件豁免，codeql/scorecard/dependabot 同步统一处理。
 - **依赖与元数据**：author 改对象形（name+url）；`@deepseek-ai/schemastery` peer 放宽为 `^3.18.6-alpha.1`；devDependencies 删孤儿 `@deepseek-ai/dsh-host-webserver`、新增 fast-check 4.10.2；catalog 的 shared 抬到 0.2.2。
 
 ### Fixed
 
-- **模板导入**（`host.ts`）：导入失败的 promise 先清出缓存再重抛，读面 Retry 不再永远重放同一 rejection；单文件正文围栏未闭合按 `truncated` 记账不再让整次导入失败；多根命中按绝对路径长度降序逐个复判，cwd 内合法登记不再被判隐藏段越权；子目录加 `fs.contains` 复判，链接进根外的目录按 escaped 记账；`.md` 后缀大小写不敏感；导入允许根拒收相对路径并按 resolve 去重。
+- **模板导入**（`host.ts`）：导入失败的 promise 先清出缓存再重抛，读取方法 Retry 不再永远重放同一 rejection；单文件正文围栏未闭合按 `truncated` 记录不再让整次导入失败；多根命中按绝对路径长度降序逐个复判，cwd 内合法登记不再被判隐藏段越权；子目录加 `fs.contains` 复判，链接进根外的目录按 escaped 记录；`.md` 后缀大小写不敏感；导入允许根拒收相对路径并按 resolve 去重。
 - **模板解析**（`src/templates.ts`）：emoji 按 Unicode 码点截断不再劈开代理对；frontmatter 上限 20→200 行、缩进子键不再当顶层键；空 id 合并处理；`sanitizeAllowRoots` 只收绝对路径（POSIX/盘符/UNC）。
 - **客户端超时与写回**（`src/client-timeouts.ts`、`src/input-writeback.ts`、`src/client-entry.ts`）：fetch 超时先压 base 再加余量，配置顶格时客户端时限不再等于宿主时限；导入回执 count 坏值回落真实条数并追加 truncated 提示；保存往返期间用户的新输入不再被清洗结果覆盖；写回 commit 现判 sessionId/phase，组件卸载作废在途票据；润色超时抛本地化错误，英文界面不再见硬编码中文。
 
 ### Added
 
-- **测试三层**：`test/e2e/product-load.e2e.test.ts`（rolldown 产物原生 import 装载加真宿主服务链全链）、`test/platform/paths.platform.test.ts`（跨平台路径形状）、`test/property/import-policy.property.test.ts`（fast-check 属性面）。
+- **测试三层**：`test/e2e/product-load.e2e.test.ts`（rolldown 产物原生 import 装载加真宿主服务链全链）、`test/platform/paths.platform.test.ts`（跨平台路径形状）、`test/property/import-policy.property.test.ts`（fast-check 属性测试）。
 
 ## 0.1.7
 
-这一版让润色跟随会话当前的模型选择，把模板写入改成宿主校验的光标插入，并把插件页展示面收进包内。
+这一版让润色跟随会话当前的模型选择，把模板写入改成宿主校验的光标插入，并把插件页展示收进包内。
 
 ### Changed
 
@@ -57,7 +57,7 @@
   两者都没有才用 `agentDefaultModel.currentSelection()`。
 - **模板改为光标插入**：`captureInsertion()` + `insertText()` 由宿主按发起的选区核验，草稿里的引用块与附件
   不再被整稿替换抹平；输入框处于提交期时两个入口禁用，宿主拒绝插入时不回落 `setDraft`。
-- **润色结果写回增加版本凭据**：新增 `src/input-writeback.ts`，按会话 id、草稿版本、输入动作面身份与
+- **润色结果写回增加版本凭据**：新增 `src/input-writeback.ts`，按会话 id、草稿版本、输入动作对象的身份与
   `phase` 判定；请求期间继续输入、切换会话或进入提交期都会放弃写回，并提示「输入框内容已变化」。
 - **设置卡改用 shared 的卡片骨架**：正文改为「角色库」小节，保存与撤销走统一 `SaveBar`，样式使用
   `CARD_UI_CSS` 与 `dsu-*` 控件类。
@@ -71,29 +71,29 @@
 ### Fixed
 
 - **请求在途时用户继续编辑，旧润色结果会覆盖新草稿**：写回改为读最新一帧并核对版本戳，过期结果不再落地。
-- **模板插入会重建整份草稿**：改走输入框的插入面后只插入文本，引用块与附件保持原样。
-- **干净 npm 安装与宿主品牌包的 cordis 线冲突**：`@deepseek-ai/cordis` 的 optional peer 改为
+- **模板插入会重建整份草稿**：改走输入框的插入接口后只插入文本，引用块与附件保持原样。
+- **干净 npm 安装与宿主自带的 cordis 版本线冲突**：`@deepseek-ai/cordis` 的 optional peer 改为
   `~4.0.5 || 4.0.6-alpha.1`，既接受宿主当前要求的 `~4.0.5`，也接受编译所用的
   `4.0.6-alpha.1`；编译期精确钉版仍留在 `devDependencies`。
 
 ## 0.1.6
 
-这一版收口客户端交互与错误文案，并把构建、CI 与伞工作区基线统一；模板数据与 85 条内置精选不变。
+这一版统一处理客户端交互与错误文案，并把构建、CI 与伞工作区基线统一；模板数据与 85 条内置精选不变。
 
 ### Changed
 
-- **宿主线抬到 `0.2.1-rc.3`**：`engines.dsh`、peer/dev 依赖、`pnpm-workspace.yaml` 的 overrides 与 README 徽标/正文同值；shared 下限随根真源投影。
+- **宿主线抬到 `0.2.1-rc.3`**：`engines.dsh`、peer/dev 依赖、`pnpm-workspace.yaml` 的 overrides 与 README 徽标/正文同值；shared 下限随根唯一来源投影。
 - **构建编排统一进 shared 的 `lib/build-*`**：host/client/types 构建脚本只剩薄配置层，产物仍落 `dist/`。
 - **润色链路的错误文案跟随界面语言**：客户端自己产生的错误（目录上下文失败、读取模型失败、输入为空、回执不可解析）改走本地化消息键，宿主回执里的原文不翻译、作为 `{message}` 原样带出。
 - **超时值的非法输入回落到默认值**：`NaN`、`0`、负数与小数不再被折算成 1 ms 或负数——那会让「配错」看起来像「配了一个很小的合法值」，实际是立刻超时。
 - **编辑中的草稿与写入操作互斥**：模板行、导入面板与允许根面板在保存期间禁用；保存成功后只清本次真正写下的键。
-- **Remote 读面按运行期形状校验**：`ok: true` 但缺 `value` 的应答不再被当成「成功但空」；`$mount` 失败不缓存，下一次读会重试。
+- **Remote 读取方法按运行期形状校验**：`ok: true` 但缺 `value` 的应答不再被当成「成功但空」；`$mount` 失败不缓存，下一次读会重试。
 - **样式补兜底与可访问性**：所有 `var()` 带回落值，错误态 hover 不被基础样式覆盖，补 `:focus-visible` 与 `prefers-reduced-motion`。
 
 ### Fixed
 
-- **同一轮事件里的第二次点击会再发一次 LLM 请求**：`loading` 要等一次重渲染才生效，两道读状态的闸门都拦不住；改为在 `await` 之前置同步在途标记。
-- **新增模板行的正文会把占位提示落盘**：占位改由 textarea 的 placeholder 承担，新行正文从空串开始。
+- **同一轮事件里的第二次点击会再发一次 LLM 请求**：`loading` 要等一次重渲染才生效，两道读状态的检查都拦不住；改为在 `await` 之前置同步在途标记。
+- **新增模板行的正文会把占位提示写到磁盘**：占位改由 textarea 的 placeholder 承担，新行正文从空串开始。
 - **角色文件的代码围栏没有结束标记时只导入半篇正文**：现在直接报错并点明起始行，不再静默截断。
 - **恢复默认的二次确认文案写死 4 秒**：改为按实际确认窗口插值。
 
@@ -108,15 +108,15 @@
 
 - **命名与文案统一**：「整理」改为「润色」，「提示词模板」改为「模板库」，「角色视角」改为「角色风格」；中英文案、`package.json` 描述与关键字、`cordis.patch.yml` 与两份 README 同步。
 - **prompt 信任序**：目录摘要、最近若干轮与角色正文改由 `buildOrganizeUser` 放进 user 消息的 `<data>` 围栏，system 只拿会话 cwd；数据行里的围栏标记先替换成 `[fence-open]` / `[fence-close]`，避免草稿自己关掉围栏。
-- **客户端竞态收口**：内置快照读面加世代号，`reset` 之后晚到的应答不再写回 store；「恢复默认」与「保存」共用 busy 门禁；▾ 菜单项与主按钮同用 `loading || !canWrite`；超时下界夹到 1 ms。
-- **Remote 读面**：`unwrap` 按运行期形状校验应答；`mount` 的 promise 失败后清缓存。
+- **客户端竞态统一处理**：内置快照读取方法加世代号，`reset` 之后晚到的应答不再写回 store；「恢复默认」与「保存」共用 busy门禁；▾ 菜单项与主按钮同用 `loading || !canWrite`；超时下界夹到 1 ms。
+- **Remote 读取方法**：`unwrap` 按运行期形状校验应答；`mount` 的 promise 失败后清缓存。
 - **跨平台构建**：`.gitattributes` 钉 `eol=lf`；生成器用 `process.execPath` 跑 oxfmt 包内入口；构建产物改临时文件 + `rename`；核对产物里的 `BUNDLE_PKG` 与包名同源；补 `dist-size` 预算与 `.prettierignore` 第二份生成物。
 - **CI 与发布**：新增三平台 × node 22/24 的 `ci.yml`、`codeql.yml`、`scorecard.yml` 与 `dependabot.yml`；`publish.yml` 改 OIDC 优先、静态 token 兜底，挂 `npm-publish` 环境、加 concurrency 与超时，action 钉 commit SHA。
 
 ### Fixed
 
 - 内置快照 `reset` 之后可能被恢复前那次请求的旧快照覆盖。
-- 「恢复默认」与「保存」并发时最后写入者赢，没有共同门禁。
+- 「恢复默认」与「保存」并发时最后写入者赢，没有共同检查。
 - 写不回草稿时，▾ 菜单要烧完整次 LLM 往返才在写回那步报错。
 - `Math.trunc` 把 `(0,1)` 的配置值取整成 0，加完余量后可能变成 0 或负数，被当成「当场超时」。
 
@@ -133,11 +133,11 @@
 
 - **导入同 slug 碰撞时 id 改写进入死循环**（会同步阻塞宿主）：改为循环内自增后缀，并加回归用例。
 - **允许根包含判据只按 `/` 拆段**：win32 上合法子路径一律判越界、`..\` 漏检；改用 `path.relative` + 双分隔符拆段。
-- **client 读面的模块级全局不随卸载清理**：收进 `ctx.effect` disposer，按身份比较防误清。
+- **client 读取方法的模块级全局不随卸载清理**：收进 `ctx.effect` disposer，按身份比较防误清。
 
 ### Changed
 
-- **Typert 迁移收尾**：五条 `/_dsh/dir-prep/*` 端点改为官方 `dirPrepOrganize` Remote；HTTP handler、信任/CSRF 闸门、`guardBody` 与只为 body 上限存在的 `importBodyMaxBytes` 删除，webserver 集成测试一并删除。
+- **Typert 迁移收尾**：五条 `/_dsh/dir-prep/*` 端点改为官方 `dirPrepOrganize` Remote；HTTP handler、信任与 CSRF 检查、`guardBody` 与只为 body 上限存在的 `importBodyMaxBytes` 删除，webserver 集成测试一并删除。
 - 删除 `peerDependencies.react`：宿主运行时是 18.x，devDependency 保留。
 - 清理迁移遗留的 HTTP 契约文本、`invalidJsonBody` 死键、指错行的证据引用与失真计数。
 
@@ -149,19 +149,19 @@
 - **单文件导入没有字节上限**：`cwd/roles.md` 直接调 `fs.readText`，不看 `maxSnippetBytes`；现在按官方 `stat` 判大小，未知或超限即跳过并计入 `skipped.tooLarge`。
 - **目录枚举逐个降级**：`fs.listDir` 在 `mapBounded` worker 里没有 try/catch，一个 `chmod 000` 的子目录就让整次导入归零；现在逐个降级并计入 `skipped.unreadable`。
 - **导入回填按最新草稿合并**：`onImported` 闭包用点击那一刻的草稿，等待一整次网络往返期间用户改的行会被整份旧草稿覆盖；改为函数式更新。
-- **fetch 超时夹到 2^31-1**：`organizeTimeoutMs + 5000` 越界时 V8 会静默夹成 1 ms，把「调大超时」反转成「立刻失败」；取值与夹位单源挪到 `src/client-timeouts.ts`。
+- **fetch 超时夹到 2^31-1**：`organizeTimeoutMs + 5000` 越界时 V8 会静默夹成 1 ms，把「调大超时」反转成「立刻失败」；取值与夹位唯一来源挪到 `src/client-timeouts.ts`。
 - **「恢复默认」纳入 busy 门禁**；「整理」按钮在 `setDraft` 不可用时禁用。
 
 ### Changed
 
-- `@jayyuen66/dsh-plugin-shared` 从 `^0.1.4` 升到 `^0.1.5-rc`，吃进三处信任闸门修复；验证不止比版本号：`npm pack` 拉下发布产物逐条比对行为。
+- `@jayyuen66/dsh-plugin-shared` 从 `^0.1.4` 升到 `^0.1.5-rc`，带上三处信任校验的修复；验证不止比版本号：`npm pack` 拉下发布产物逐条比对行为。
 - 新增集成层（真磁盘 + 真 FileSystem 抽象类）：上面三条 host 缺陷都是手搓桩测不出来的。
 
 ## 0.1.2-rc
 
 ### Changed
 
-- **宿主包整体精确钉到 `0.2.1-alpha.2`**；`@jayyuen66/dsh-plugin-shared` 升到 `^0.1.4`，工具链随 catalog 更新。
+- **宿主包整体精确对齐到 `0.2.1-alpha.2`**；`@jayyuen66/dsh-plugin-shared` 升到 `^0.1.4`，工具链随 catalog 更新。
 - **`servingNonLoopback` 改由 shared 的 `isNonLoopbackBindHost` 取**：宿主把 `Config.host` 收成任意本机接口 IP 字面量、通配地址在载入即拒，旧的 `=== "0.0.0.0"` 恒为 false，局域网请求整片吃 403 而本地门禁全绿。
 - **peerDependencies 补齐声明产物点名却未认领的宿主包**，写成 optional；值导入的 `dsh-brand` 与 `schemastery` 保持必选。
 - 升级带来的声明行号位移逐条对表修正。
@@ -183,7 +183,7 @@
 ### Fixed
 
 - `check` 补上 `build:types`：此前校验的声明产物压根没被构建过。
-- 发布清单门禁覆盖入口面、第三方声明、运行期产物、声明覆盖全部导出，以及不泄漏本机或包管理器内部路径。
+- 发布清单检查覆盖入口、第三方声明、运行期产物、声明覆盖全部导出，以及不泄漏本机或包管理器内部路径。
 
 ## 0.1.0
 

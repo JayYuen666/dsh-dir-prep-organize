@@ -2,12 +2,12 @@
 //
 // 装的全是真件（发布在 npm 上的同一份 0.2.1-alpha.2，版本与本包 peer 面逐条对齐）：
 //   SessionStore      @deepseek-ai/dsh-session             真会话仓库（cwd 校验、header 冻结）
-//   LlmRuntime        @deepseek-ai/dsh-llm                 真适配器注册表 + 真 stream 管线
-//   AgentDefaultModel @deepseek-ai/dsh-agent-default-model 真默认模型读面（volatile 引用）
+//   LlmRuntime        @deepseek-ai/dsh-llm                 真适配器注册表 + 真 stream 流水线
+//   AgentDefaultModel @deepseek-ai/dsh-agent-default-model 真默认模型读取方法（volatile 引用）
 //   DiskFileSystem    ./real-fs.ts                         真磁盘上的 FileSystem 子类
-// 宿主 HTTP 层不在这里装配：本仓数据面已交给 Typert Remote（服务名 dirPrepOrganize），
-// 没有任何 /_dsh/dir-prep/* 路由可挂；插件的路由装配面由 test/routes.test.ts 直接驱动 apply 覆盖。
-// 曾有一整套 node:http 探针（wireRequest / csrfToken / url），随路由面删除后已无消费方 —— 留着
+// 宿主 HTTP 层不在这里装配：本仓数据那一栏已交给 Typert Remote（服务名 dirPrepOrganize），
+// 没有任何 /_dsh/dir-prep/* 路由可挂；插件的路由装配由 test/routes.test.ts 直接驱动 apply 覆盖。
+// 曾有一整套基于 node:http 的探测（wireRequest / csrfToken / url），随路由一起删除后已无消费方 —— 留着
 // 只会让读者以为 HTTP 层仍被这组用例覆盖，故一并删除。
 //
 // 只有 `settings` 是一枚**形状合规的桩**：真 `SettingsForms` 硬注入 `configEditor` +
@@ -87,7 +87,7 @@ export class ScriptedAdapter extends LlmAdapter {
   }
 }
 
-/** `settings` 桩里本包真会调的那两位（形状守卫 `hasFnMember(value,'describe')` 认这个面）。 */
+/** `settings` 桩里本包真会调的那两位（形状守卫 `hasFnMember(value,'describe')` 认这个形状）。 */
 export interface SettingsStub {
   describe: () => { ns: string; value: unknown; revision: number }[];
   configure: (presentation: { auto?: boolean }, owner: unknown) => () => void;
@@ -109,7 +109,7 @@ export interface HostStack {
   dispose: () => Promise<void>;
 }
 
-/** 一次装配的可选面。 */
+/** 一次装配的可选项。 */
 export interface BootOptions {
   /** 行 config（cordis 校验+填默认后进 `apply` 的第二参数）。 */
   row?: Record<string, unknown>;

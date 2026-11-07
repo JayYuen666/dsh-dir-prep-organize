@@ -37,7 +37,7 @@ export async function clientFreshnessEvidence(testFileUrl: string): Promise<Fres
     /"name":\s*"(?<pkgName>[^"]+)"/u.exec(
       readFileSync(path.resolve(pkgDir, "package.json"), "utf8"),
     )?.groups?.["pkgName"] ?? "unknown";
-  // 动态导入 .mjs 对 TS 为 any，先收窄到调用面再 await（避免 no-unsafe-*）。
+  // 动态导入 .mjs 对 TS 为 any，先收窄到调用处再 await（避免 no-unsafe-*）。
   const mod = (await import(pathToFileURL(path.resolve(pkgDir, "build-client.mjs")).href)) as {
     buildClient: () => Promise<string>;
   };

@@ -1,4 +1,4 @@
-// dir-prep-organize 模板单源。
+// dir-prep-organize 模板唯一来源。
 //
 // 能力（直接用 agency-agents-zh 内容、文件移入插件目录、精选默认 + 全量可导入）：
 //   - TemplateEntry 字段：id/name/description（悬停简介）/text/group（分组）/emoji，
@@ -8,12 +8,12 @@
 //     全量角色可经设置页「导入角色」一键导入（路径留空 = 导入内置 agents/ 全部；
 //     填路径按「cwd 内 + 内置角色目录 allowlist」策略放行，绝对路径默认拒绝，见 host）。
 //   - 角色文件解析（parseAgentFrontmatter）/ 正文提炼（condenseRoleBody）纯函数共享
-//     host（导入读面）与 client（「以该角色风格润色」的角色上下文），单源防两份副本漂移；
+//     host（导入读取方法）与 client（「以该角色风格润色」的角色上下文），唯一来源防两份副本漂移；
 //     生成脚本为镜像实现，测试锁「生成结果与真实文件一致」（漂移即红）。
-//   - 不设字符上限（用户拍板）：正文提炼只做叙述主干/代码围栏清洗，
+//   - 不设字符上限（用户定下）：正文提炼只做叙述主干/代码围栏清洗，
 //     不做长度截断——上下文完整性优先，模型 context 超限由模型报错提示用户自行处理。
 //
-// 单源约束：host 半的精选表产物（templates.data.mjs，build-host.mjs 从同一份生成物打出）
+// 唯一来源约束：host 半的精选表产物（templates.data.mjs，build-host.mjs 从同一份生成物打出）
 // 与 src/client-entry.ts（下拉兜底 + 设置卡）都源自本文件/生成文件，杜绝"两份默认副本漂移"。
 //
 // 正文形状约束：所有模板正文不含反引号（插入输入框不破坏 markdown 围栏，测试锁死）；
@@ -41,7 +41,7 @@ export interface TemplateEntry {
   emoji: string;
 }
 
-/** 角色正文提炼/「按角色风格润色」上下文：不设字符上限（用户拍板，
+/** 角色正文提炼/「按角色风格润色」上下文：不设字符上限（用户定下，
  *  上下文完整性优先；模型 context 超限由模型报错提示用户自行处理）。 */
 
 // ── agency-agents-zh 角色目录 → 中文分组标签（导入角色时按父目录取组）────────────
@@ -56,7 +56,7 @@ export interface TemplateEntry {
 /** 仓库目录名 → 分组标签（groupLabelOf(engineering) === "工程"；未收录回落目录名）。
  *  必须只认**自有属性**：`AGENT_DIR_GROUP_LABELS["constructor"]` 会命中原型上的
  *  function（`?? dirName` 不触发）→ TemplateEntry.group 拿到函数、JSON.stringify
- *  静默丢掉整个 group 键（探针：{"id":"a"}）；"__proto__" 同理返回 {}。 */
+ *  静默丢掉整个 group 键（实测样例：{"id":"a"}）；"__proto__" 同理返回 {}。 */
 export function groupLabelOf(dirName: string): string {
   const mapped = Object.hasOwn(GENERATED_GROUP_LABELS, dirName)
     ? GENERATED_GROUP_LABELS[dirName]
@@ -125,7 +125,7 @@ function readFrontmatterPair(line: string): { key: string; value: string } | und
 }
 
 /** 按 Unicode 码点截断：`String#slice` 数的是 UTF-16 码元，会把一个 emoji（代理对）或
- *  组合字符劈成半个，落进模板后显示成空白方块。两个截断点（frontmatter 与设置卡草稿）
+ *  组合字符劈成半个，落进模板后显示成空白方块。两个截断点（frontmatter 解析与 `sanitizeTemplateList`）
  *  共用这一份实现，scripts/gen-defaults-lib.mjs 有同源镜像。 */
 function truncateCodePoints(value: string, max: number): string {
   // 按码点切：展开运算符会触发 no-misused-spread（它建议 Intl.Segmenter），
@@ -205,11 +205,11 @@ export function parseAgentFrontmatter(text: string): AgentFileInfo | undefined {
  * 规则（确定性，测试锁死）：
  * - ``` 围栏行整体剔除（围栏内容多为长代码样例，对角色语境价值低）；
  * - 行内反引号一并剔除——沿用"正文不含反引号、插入不破坏 markdown 围栏"不变式；
- * - 不设字符上限（用户拍板）：全量保留叙述内容，避免截断影响
+ * - 不设字符上限（用户定下）：全量保留叙述内容，避免截断影响
  *   「以角色风格润色」的上下文完整性；模型 context 超限由模型报错提示用户自行处理；
  * - 结果 trim；空正文（全围栏/全空白）→ 空串；
  * - 围栏未闭合时**不抛**：把行号作为结果交出，由调用方决定是拒绝整份文件还是跳过它。
- *   异常只由 `condenseRoleBody` 这一层抛（生成器要据此拒绝产出），导入读面拿到的是结果。
+ *   异常只由 `condenseRoleBody` 这一层抛（生成器要据此拒绝产出），导入读取方法拿到的是结果。
  */
 export interface CondenseResult {
   /** 清洗后的正文（围栏未闭合时是围栏起始行之前的那些行）。 */
@@ -242,7 +242,7 @@ export function tryCondenseRoleBody(body: string): CondenseResult {
 }
 
 /** `tryCondenseRoleBody` 的严格形态：围栏未闭合时抛错，供生成器拒收畸形角色文件。
- *  导入读面不用这一支——一份漏写结束围栏的文件不该让同目录其余角色全部失败。 */
+ *  导入读取方法不用这一支——一份漏写结束围栏的文件不该让同目录其余角色全部失败。 */
 export function condenseRoleBody(body: string): string {
   const result = tryCondenseRoleBody(body);
   if (result.unclosedFenceLine !== undefined) {
@@ -267,9 +267,9 @@ function uniqueEntryId(candidate: string, index: number, seen: Set<string>): str
 }
 
 /**
- * 导入条目并入现有草稿：与既有 id 碰撞时确定性改写（追加 `-i` 直到唯一）。
+ * 导入条目并入 `existing`（设置卡上未保存的 `draft` 列表）：与既有 id 碰撞时确定性改写（追加 `-i` 直到唯一）。
  * 返回新数组（不改输入），保证 pre-save 阶段 React key 唯一。sanitizeTemplateList 对**存量
- * 快照**同样按序号补 id（缺失/空/撞名三档都管），这边要额外做的是避开草稿里已有的 id
+ * 快照**同样按序号补 id（缺失/空/撞名三档都管），这边要额外做的是避开 `existing` 里已有的 id
  * ——两个入口各管一段，不靠对方兜底。
  */
 export function mergeImportedTemplates(
@@ -279,9 +279,9 @@ export function mergeImportedTemplates(
   const ids = new Set(existing.map(({ id }) => id));
   const out: TemplateEntry[] = [...existing];
   for (const { id: baseId, ...rest } of incoming) {
-    // 空 id 不能原样进草稿：React key 会变成空串，保存前 sanitize 又改写成另一套
-    // `tpl-<index>`，同一条目在保存前后换了 id。这里直接按 sanitize 的同一套序号口径
-    // 取名，草稿与落盘结果保持一致。
+    // 空 id 不能原样进结果数组：React key 会变成空串，保存前 sanitize 又改写成另一套
+    // `tpl-<index>`，同一条目在保存前后换了 id。这里直接按 sanitize 用的同一套序号取名，
+    // 未保存列表与保存落盘的 id 因此一致。
     let id = baseId.trim();
     if (id === "") {
       id = uniqueEntryId("", out.length, ids);
@@ -340,7 +340,7 @@ function normalizeEntry(
   return result;
 }
 
-/** 任意来源（settings 快照 / 设置卡草稿）→ 合法模板列表（纯函数，测试锁死）。
+/** 任意来源（settings 快照 / 设置卡未保存的 `draft`）→ 合法模板列表（纯函数，测试锁死）。
  *
  *  - 非数组输入 → []（调用方自行决定是否回落 DEFAULT_TEMPLATES）；
  *  - 剔除非对象条目与 name/text trim 后为空的条目；
@@ -366,7 +366,7 @@ const BACKSLASH = String.fromCodePoint(92);
 const WIN_DRIVE_LETTER = /^[A-Za-z]:$/u;
 const TRAILING_SEPARATORS = /[/\\]+$/u;
 
-/** 绝对路径形状（与 host 侧 path.isAbsolute 同口径的宽松版：POSIX 根、win32 盘符、UNC）。
+/** 绝对路径的形状（比 host 侧 path.isAbsolute 宽松一档的同一套判断：POSIX 根、win32 盘符、UNC）。
  *  client 半跑在浏览器里，没有 node:path 可用，故按形状判。 */
 function isAbsolutePath(value: string): boolean {
   const winDrive =
@@ -384,7 +384,7 @@ function normalizeRootShape(value: string): string {
   return stripped;
 }
 
-/** 任意来源（settings 快照 / 设置卡草稿）→ 合法的「导入允许目录」列表（纯函数）。
+/** 任意来源（settings 快照 / 设置卡未保存的 `rootsDraft`）→ 合法的「导入允许目录」列表（纯函数）。
  *  host 的导入策略是「会话 cwd + 内置角色库 + importAllowRoots」，绝对路径默认拒绝，
  *  这里登记的每一项都是**放一个读盘口子**，故：
  *  - 非数组 → []（未设置 = 一条都不登记，不是"全放行"）；
@@ -393,9 +393,9 @@ function normalizeRootShape(value: string): string {
  *  - **非绝对路径 → 丢弃**：契约是「额外允许的绝对目录」，相对项会被 host 按它自己的
  *    进程 cwd 解析，等于登记了一条用户没写过、界面上也看不出指向哪里的允许根；`~`
  *    靠 shell 展开，host 的 path.resolve 不展开它，同归这一档；
- *  - 末尾分隔符归一后去重（`/a` 与 `/a/` 是同一棵树，不该在界面上摆两行）；
+ *  - 末尾分隔符归一后去重（`/a` 与 `/a/` 是同一棵目录树，不该在界面上摆两行）；
  *  - 条数与单条长度都不设上限：静默丢一条就是「看着成功、内容没进去」；条目多撑长的
- *    越界回执由 host 侧的列举上限收口。 */
+ *    越界的回执由 host 侧的列举上限限制住。 */
 export function sanitizeAllowRoots(raw: unknown): string[] {
   const out: string[] = [];
   if (Array.isArray(raw)) {

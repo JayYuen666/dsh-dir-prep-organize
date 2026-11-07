@@ -4,9 +4,9 @@
 // 构建 host 产物（host.js + templates.data.mjs）：每个入口单独一次 rolldown，打成
 // 自包含单文件 ESM，落在**包根**（与源码同目录，故 `import.meta.dirname` 的语义与源码态
 // 完全一致）。
-// 编排（依赖段外部化、输出守卫、region 正典化、moduleIds 结构性判据）统一住在
+// 编排（依赖段外部化、输出守卫、region 路径规范化、moduleIds 结构性判据）统一实现在
 // @jayyuen66/dsh-plugin-shared/lib/build-host，一处可改；本文件只声明本仓的产物表与
-// 生成头。本文件不产 .d.ts：类型面由 build-types.mjs 单独跑 tsc 生成到 types/。
+// 生成头。本文件不产 .d.ts：类型上由 build-types.mjs 单独跑 tsc 生成到 types/。
 //
 // 本包的产物表：内置精选模板表（src/default-templates.generated.ts，生成物约 640 KB
 // 源码）是独立产物而不是打进 host.js——宿主载入插件的那一刻不该整张精选表就占住内存，
@@ -22,7 +22,7 @@ export { singleEntryChunk } from "@jayyuen66/dsh-plugin-shared/lib/build-artifac
 
 const root = import.meta.dirname;
 
-/** 产物表：源码入口 → 落盘文件名与生成头。 */
+/** 产物表：源码入口 → 写到磁盘文件名与生成头。 */
 const ARTIFACTS = [
   {
     source: "host.ts",
@@ -39,7 +39,7 @@ const ARTIFACTS = [
 ];
 
 /**
- * 逐个产物跑一遍构建，交回「落盘绝对路径 → 正文」。
+ * 逐个产物跑一遍构建，交回「写到磁盘绝对路径 → 正文」。
  *
  * 返回 Map 而不是单串，是为了让 test/host-freshness.ts 的逐字节门禁把两个产物都算进去：
  * 它对 Map 形态会折成「相对路径 + 摘要」清单两侧比对，任一产物停在上一次构建都会红。
