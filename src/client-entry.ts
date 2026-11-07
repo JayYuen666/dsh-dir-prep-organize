@@ -2,9 +2,9 @@ import { createElement, useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { mergeImportedTemplates, sanitizeAllowRoots, sanitizeTemplateList } from "./templates.ts";
 import type { TemplateEntry } from "./templates.ts";
-// 润色时限的取值与夹位（连同「为什么必须夹」的证据）单源在 client-timeouts.ts。
+// 润色时限的取值与夹位（连同「为什么必须夹」的证据）唯一来源在 client-timeouts.ts。
 import { organizeFetchTimeoutMs, rawOrganizeTimeoutMsOf } from "./client-timeouts.ts";
-// 注入样式表（纯数据，单源在 client-styles.ts；理由见那份文件头）。
+// 注入样式表（纯数据，唯一来源在 client-styles.ts；理由见那份文件头）。
 import { CARD_STYLES } from "./client-styles.ts";
 import { UI_MESSAGES } from "./ui-messages.ts";
 import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
@@ -31,7 +31,7 @@ const NS: LocaleNs = "dir-prep-organize";
 const BUNDLE_PKG = "@jayyuen66/dsh-dir-prep-organize";
 
 const ERROR_FLASH_MS = 4000;
-/** 非润色读面的等待上限。润色那一发有自己的超时（来自设置卡的 organizeTimeoutMs）。 */
+/** 除润色之外的调用的等待上限。润色那一发有自己的超时（来自设置卡的 organizeTimeoutMs）。 */
 const REMOTE_TIMEOUT_MS = 125_000;
 const RESET_CONFIRM_MS = 4000;
 const EMOJI_PLACEHOLDER = "😀";
@@ -42,7 +42,7 @@ const CLASS_ROW_HEAD = "dpic-rowhead";
 const CLASS_IMPORT_PATH = "dpic-importpath";
 const SLOT_INPUT_RIGHT = "conversation.input.right";
 
-// ── 读面载荷类型（与 host.ts 契约一致）────────────────────────────────────
+// ── 读取方法载荷类型（与 host.ts契约一致）────────────────────────────────────
 
 export interface DirEntryView {
   name: string;
@@ -270,7 +270,7 @@ export function builtinTemplatesSnapshot(): BuiltinState {
 
 let dirPrepReader: DirPrepReader | undefined;
 
-/** 导出仅供单测：不经过 apply 的纯读面用例直接注入替身。 */
+/** 导出仅供单测：不经过 apply 的纯读取方法用例直接注入替身。 */
 export function setDirPrepReader(reader: DirPrepReader | undefined): void {
   dirPrepReader = reader;
 }
@@ -298,7 +298,7 @@ class LocalizedOrganizeError extends Error {
     this.params = params;
   }
 }
-/** 客户端超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收口。 */
+/** 客户端的超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收尾。 */
 async function within<Value>(pending: Promise<Value>, timeoutMs: number): Promise<Value> {
   const gate = Promise.withResolvers<never>();
   const timer = setTimeout(() => {
@@ -364,7 +364,7 @@ export function subscribeBuiltinTemplates(listener: () => void): () => void {
 }
 
 export function resetBuiltinTemplates(): void {
-  // 同时在飞的那一发不再能落盘：世代 +1 之后它的 finally 与 setState 都被挡在门外。
+  // 同时在飞的那一发不再能写到磁盘：世代 +1 之后它的 finally 与 setState 都被挡在门外。
   builtinGeneration += 1;
   builtinInflight = null;
   setBuiltinState(builtinInitial);
@@ -870,7 +870,7 @@ function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
       title: errTitle,
       "data-field": "dpi-organize-btn",
       "data-state": state,
-      // canWrite 与「模板」下拉项同口径（client-entry.ts 的 TemplateButton）：润色结果
+      // canWrite 与「模板」下拉项同一种做法（client-entry.ts 的 TemplateButton）：润色结果
       // 最终要写回输入框，写不回时整次调用就是纯浪费——一次真实的 LLM 请求 + 一份真实
       // 账单，换来一句错误文案。失败在写回那一步才抛（writeDraft），所以这道门只能
       // 在发请求**之前**判断，否则钱已经花完了。
@@ -1051,7 +1051,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
 
     const badge = organizeBadge(failed, loading, props.t);
     const replaceable = hasDraftFace(props.inputActions);
-    // 提交期（adjudicating/claimed/submitting/sending）编辑面是只读的，此刻发起的润色即使
+    // 处于提交期（adjudicating/claimed/submitting/sending）时输入区是只读的，此刻发起的润色即使
     // 返回也无处可写；把不可写推回发起之前，省下一次真实的 LLM 往返。
     // sessionId 缺席不是禁用理由：宿主侧 context/model 的 sessionId 都是可空位
     // （host.ts 的 cwdOf/liveModelOf 对 null 走缺省分支），无会话时照样能润色。
@@ -1112,7 +1112,7 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
         return;
       }
       // 插入语义，不是整稿替换：宿主按发起的选区做版本校验，稿里的引用块与附件都留着；
-      // 它在提交期或草稿已变时交回 false，这里不回落 setDraft（那会丢掉引用块）。
+      // 它在提交期或 `draftRev` 已变时交回 false，这里不回落 setDraft（那会丢掉引用块）。
       actions.insertText(text, actions.captureInsertion());
     }
 
@@ -1360,8 +1360,8 @@ function TemplateRow(props: {
     const nextText = text.trim();
     if (nextName === "" || nextText === "") {
       // 名称/正文是模板的必填项：保存时 sanitizeTemplateList 会把它整条丢掉，所以这一档
-      // 不产生草稿变更（也不回滚本地输入——回滚会让该行重新变成「可保存」，把用户刚清空的
-      // 必填项又悄悄塞回草稿里；这条由 client.test.ts 的「清空名称/正文的失焦…」钉住）。
+      // 不改动 `draft`（也不回滚本地输入——回滚会让该行重新变成「可保存」，把用户刚清空的
+      // 必填项又悄悄塞回 `draft`；这条由 client.test.ts 的「清空名称/正文的失焦…」钉住）。
       return;
     }
     const nextEmoji = emoji.trim();
@@ -1636,7 +1636,7 @@ function CardToolbar(props: {
       {
         type: "button",
         className: "dsu-btn dsu-btnDanger",
-        // busy 门禁与保存/撤销同口径：两者写的是同一份表单（reset 走 unset、保存走
+        // busy门禁与保存/撤销用同一种做法：两者写的是同一份表单（reset 走 unset、保存走
         // set），不挡住就能并发，于是 unset 与 set 落到同一字段上，最后写入者赢——
         // 而「恢复默认」是两步确认里的一步，用户极易在保存途中才想起来要点它。
         disabled: !editable || busy,
@@ -1703,7 +1703,7 @@ function createDraftActions(
         name: t("newTemplateName", { index: draft.length + 1 }),
         description: "",
         // 正文留空：占位提示由 textarea 的 placeholder（rowPlaceholderText）承担。
-        // 默认提示语当正文会随保存落盘——sanitize 只剔除空正文，拦不住"正文是提示语"。
+        // 默认提示语当成正文会随保存写到磁盘——sanitize 只剔除空正文，拦不住"正文是提示语"。
         text: "",
         group: "",
         emoji: "",
@@ -1711,10 +1711,10 @@ function createDraftActions(
     ]);
   }
   function onImported(incoming: readonly TemplateEntry[]): void {
-    // 必须走**函数式**更新：`onImport` 要先 await 一整个网络往返（内置角色库整棵树的
+    // 必须走**函数式**更新：`onImport` 要先 await 一整个网络往返（内置角色库目录树里的
     // 文件是秒级），回来时上面这个 `draft` 早已是点击那一刻的旧值。闭包直接用它，
-    // 用户在这段时间里改的行 / 加的行 / 删的行会被整份旧草稿静默覆盖（实测：在途期间
-    // 新增的一行被吃掉，界面还回显成导入结果的样子）。函数式更新把合并的基准换成
+    // 用户在这段时间里改的行 / 加的行 / 删的行会被那份旧 `draft` 静默覆盖（实测：在途期间
+    // 新增的一行被覆盖掉，界面还回显成导入结果的样子）。函数式更新把合并的基准换成
     // React 那一刻的最新值，id 去重也随之按真实已占用的 id 进行。
     setDraft((prev) => mergeImportedTemplates(prev, incoming));
   }
@@ -1826,7 +1826,7 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
         verifyRootsPersisted(t, readBack(), nextRoots);
       }
       setBusy(false);
-      // 保存往返期间用户可能又导入/编辑了表单：只有草稿仍是发起保存时那一份才写回
+      // 保存往返期间用户可能又导入/编辑了表单：只有 `draft` 仍是发起保存时那一份才写回
       // 清洗结果，否则保留用户这期间的新输入（服务端存的仍是刚写的那一份，下次保存再对齐）。
       setDraft((prev) => (prev === draft ? next : prev));
       setRootsDraft((prev) => (prev === rootsDraft ? nextRoots : prev));
@@ -1874,7 +1874,7 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
   return { onSave, onDiscard, onReset };
 }
 
-/** 展开态正文的输入：两份草稿、卡底状态与两张动作表（动作在此一次展开成 props）。 */
+/** 展开态正文的输入：`draft` 与 `rootsDraft` 两份未保存列表、卡底状态与两张动作表（动作在此一次展开成 props）。 */
 interface CardBodyView {
   readonly t: Translate;
   readonly statusHint: string;
@@ -1890,7 +1890,7 @@ interface CardBodyView {
   readonly persistActions: PersistActions;
 }
 
-/** 卡片正文：状态提示 + 工具条 + 角色行表 + 导入面 + 允许目录面 + 保存条。 */
+/** 卡片正文：状态提示 + 工具条 + 角色行表 + 导入区 + 允许目录区 + 保存条。 */
 function createCardBody(view: CardBodyView): ReactNode {
   const {
     t,
@@ -2067,7 +2067,7 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
 
 export interface ClientCtx {
   effect: Context["effect"];
-  /** 官方反射面：读面经 `get("remote")` 查出，不建立 inject 依赖（缺席只少一栏数据面）。 */
+  /** 官方的反射接口：远端接口经 `get("remote")` 取出来，不建立 inject 依赖（缺席只少一栏数据）。 */
   get: Context["get"];
   slots: Pick<SlotRegistry, "inject" | "register">;
   configForms: {
@@ -2147,7 +2147,7 @@ function injectCard(ctx: ClientCtx, store: TemplatesStore, t: Translate, scope: 
 }
 
 function apply(ctx: ClientCtx): void {
-  // 读面挂在模块级：卸载时必须随 effect 一起撤下，否则旧 ctx 与它的 remote 闭包
+  // 读取方法挂在模块级：卸载时必须随 effect 一起撤下，否则旧 ctx 与它的 remote 闭包
   // 一直留在内存里（重挂载后没人用得到，却仍被这个全局引用钉住）。
   // 身份比较防止「先卸旧、后装新」时旧 disposer 把新 reader 清掉。
   const reader = createDirPrepReader(ctx);

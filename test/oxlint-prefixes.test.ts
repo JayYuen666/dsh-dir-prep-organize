@@ -2,7 +2,7 @@
 //
 // 名单是手工镜像：用例标题以大写开头的术语/组件名靠它放行（vitest/prefer-lowercase-title）。
 // 没有这道比对时，重命名组件或删改用例会让条目静默失效、新标题则要到 lint 阶段才以
-// 难定位的方式报错。扫描面与 shared 基线的用例文件 override 同形状（*.test.ts(x) 与
+// 难定位的方式报错。扫描范围与 shared 基线的用例文件 override 同形状（*.test.ts(x) 与
 // test/**、__tests__/** 下的 *.spec.ts），标题抽取只认字面量实参（模板串以 `${` 开头的
 // 视为小写起步，不进比对）。
 import { readdir, readFile } from "node:fs/promises";
@@ -66,7 +66,7 @@ async function titlePrefixesInConfig(): Promise<string[]> {
 
 async function titlePrefixesInTitles(): Promise<Set<string>> {
   const files = await collectCaseFiles(pkgDir, "");
-  expect(files.length, "扫描面不该是空的：用例文件一个都没找到").toBeGreaterThan(0);
+  expect(files.length, "扫描范围不该是空的：用例文件一个都没找到").toBeGreaterThan(0);
   const sources = await Promise.all(
     files.map(async (rel) => ({ rel, text: await readFile(path.join(pkgDir, rel), "utf8") })),
   );

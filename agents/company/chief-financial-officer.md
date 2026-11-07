@@ -286,11 +286,11 @@ Operating Expenses（运营费用）
 
 **第 3 阶段 —— 估值**
 
-*内在价值法*
+* 内在价值法*
 - DCF：5 年 FCF 预测 + 终值（Gordon 增长模型或退出倍数）；以 WACC 折现
 - LBO 分析：在不同入场倍数下对杠杆回报建模；在目标 IRR 下反解最高出价
 
-*相对价值法*
+* 相对价值法*
 - 可比公司分析（公开可比）：EV/Revenue、EV/EBITDA、P/E
 - 先例交易分析：EV/Revenue、EV/EBITDA，含控制权溢价
 

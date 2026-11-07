@@ -4,8 +4,8 @@
 // 缺口所在：test/build-client.test.ts 只判产物字节新鲜度，test/client.test.ts 判的是
 // `src/client-entry.ts` 的行为契约——两边都没碰过「发出去的那份产物能不能被装载」。而这枚
 // 产物走的是宿主的模块表面协议：`window.__ModuleLoader__.load({ id, factory(require) })`
-// （注册面见 harness packages/client/modules/src/client/system.ts），宿主按**裸包名**建键、
-// 用自建的 require 物化。任何一处对不上——id 不等于包名、工厂要出宿主给不出的说明符、导出面
+// （注册入口见 harness packages/client/modules/src/client/system.ts），宿主按**不带子路径的包名**建键、
+// 用自建的 require 物化。任何一处对不上——id 不等于包名、工厂要出宿主给不出的模块说明符、导出名单
 // 缺 apply/inject——症状都是「插件在页面上整块不出现」，而源码侧的测试全照绿。
 //
 // 装载方式本身也是契约：client.js 顶层只有那一句 load(...)，文本同时是合法 ESM。所以这里用
@@ -76,7 +76,7 @@ async function loadRegistration(): Promise<Registration> {
 }
 
 /**
- * 物化导出面：宿主只提供平台模块表里的裸包名映射，所以除 react / zod 之外索取到任何
+ * 物化后的导出名单：宿主只提供平台模块表里那份按包名给出的映射，所以除 react / zod 之外索取到任何
  * 说明符都当场抛——那正是「页面上整块不出现」的第一现场，回 undefined 只会把症状拖成
  * 更难查的空态。
  */
@@ -97,7 +97,7 @@ async function materialize(): Promise<Record<string, unknown>> {
 }
 
 /**
- * 本文件只判**产物可装载性**这三件事：注册键、导出面、以及 require 面。
+ * 本文件只判**产物可装载性**这三件事：注册键、导出名单、以及 require 取到的值。
  *
  * 为什么不在这里跑 apply / 挂组件：产物的卡片 store 会在初始化时去拉内置精选集
  * （`/_dsh/dir-prep/default-templates`）。在源码侧的 test/client.test.ts 里，那发请求被
@@ -106,15 +106,23 @@ async function materialize(): Promise<Record<string, unknown>> {
  * apply 之后的行为契约属于 src 侧测试的职责，产物侧要判的是「宿主能不能装载它」。
  */
 describe("发布产物 client.js 的装载", () => {
-  it("按裸包名注册：宿主 client-modules 只认这一枚键", async () => {
+  it("按不带子路径的包名注册：宿主 client-modules 只认这一枚键", async () => {
     const taken = await loadRegistration();
-    assert.equal(taken.id, PKG_NAME, "id 不等于包名就永远装载不到本插件（宿主按裸包名建键）");
+    assert.equal(
+      taken.id,
+      PKG_NAME,
+      "id 不等于包名就永远装载不到本插件（宿主按不带子路径的包名建键）",
+    );
     assert.equal(typeof taken.factory, "function", "工厂形产物才有可物化的导出面");
   });
 
   it("物化只需要 react / zod 这两枚平台依赖，并交出宿主会调的两位", async () => {
     const bundle = await materialize();
-    assert.deepEqual(bundle["inject"], ["slots", "configForms", "locale"], "缺一位就少一个服务面");
+    assert.deepEqual(
+      bundle["inject"],
+      ["slots", "configForms", "locale"],
+      "缺一位就少一个宿主服务",
+    );
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 

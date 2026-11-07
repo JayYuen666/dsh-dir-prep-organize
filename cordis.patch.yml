@@ -1,5 +1,5 @@
 # 本包提供的输入框「润色」与「模板」能力由 client 半注册成 dock 条目；这份 patch 只负责
-# 把 bundle 插进插件层栈。设置卡数据面走官方 Typert Remote 的 dirPrepOrganize 命名空间，
+# 把 bundle 插进插件层栈。设置卡的数据走官方 Typert Remote 的 dirPrepOrganize 命名空间，
 # 内置精选集由 host 半从 templates.data.mjs 经 defaults 方法按需下发。
 # 架构与数据流见 README 与 host.ts / src/client-entry.ts。
 - insert:

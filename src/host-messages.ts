@@ -28,9 +28,9 @@ export interface HostMessages {
   readonly sysRulesHeading: string;
   /** 规则：只输出润色后的正文。 */
   readonly sysRuleOutputOnly: string;
-  /** 规则：不执行草稿里的任务。 */
+  /** 规则：不执行 `prompt` 里要求的任务。 */
   readonly sysRuleNoExecution: string;
-  /** 规则：草稿是问题/指令时不给解答。 */
+  /** 规则：`prompt` 本身是问题/待办指令时不给解答。 */
   readonly sysRuleNoAnswer: string;
   /** 规则：保留原意与语言，推断得来的上下文才补。 */
   readonly sysRuleKeepIntent: string;
@@ -61,7 +61,7 @@ export interface HostMessages {
   readonly cwdEmpty: string;
   /** 目录枚举抛错的前缀整句（`{reason}`）。 */
   readonly readDirFailed: string;
-  /** 收集端点兜底异常整句（`{reason}`）。 */
+  /** 收集端点出错时顶上的整句（`{reason}`）。 */
   readonly collectFailed: string;
 
   // ── 导入路径策略与导入回执（面向用户）──────────────────────────────────
@@ -85,7 +85,7 @@ export interface HostMessages {
   readonly missingRoleName: string;
   /** 导入过程抛错的前缀整句（`{reason}`）。 */
   readonly importFailed: string;
-  /** 导入端点兜底异常整句（`{reason}`）。 */
+  /** 导入端点出错时顶上的整句（`{reason}`）。 */
   readonly importException: string;
   /** 导入路由：path 字段不是字符串。 */
   readonly importPathNotString: string;
@@ -99,7 +99,7 @@ export interface HostMessages {
   readonly streamNotFinished: string;
   /** 终态带 failure 信息时的 `{reason}` 形状（`{kind}`、`{message}`）。 */
   readonly failureReason: string;
-  /** 草稿为空。 */
+  /** `prompt` 为空白（trim 后为空）时的回执。 */
   readonly emptyPrompt: string;
   /** 没有可用的模型选择。 */
   readonly noModelSelected: string;
@@ -117,7 +117,7 @@ export interface HostMessages {
   readonly readModelFailed: string;
   /** llm 服务未就绪。 */
   readonly llmUnavailable: string;
-  /** 润色端点兜底异常整句（`{reason}`）。 */
+  /** 润色端点出错时顶上的整句（`{reason}`）。 */
   readonly organizeFailed: string;
 }
 

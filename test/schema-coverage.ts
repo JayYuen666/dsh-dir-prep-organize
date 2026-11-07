@@ -17,7 +17,7 @@
 //     allowUnbound: [{ field: 'x', reason: '仅 CLI 侧使用，UI 无入口' }],
 //   }), []);
 //
-// 注意：绑定识别是"出现即算绑定"的宽松启发式（见 boundFieldsIn）。它会**漏拦**也会**假绿**：
+// 注意：绑定识别是"出现即算绑定"的宽松启发式（见 boundFieldsIn）。它会**漏拦**也会**误判通过**：
 //   · 多认（注释里的 set('x')、别的对象上的同名键）→ 门禁更宽松，那是已知代价；
 //   · 少认（组件是 .tsx、字段名拼在模板串里）→ 功能性缺失被放过，那是真漏拦。
 // 所以注释与字符串外的文本先剥一遍（stripComments），扩展名白名单也收 .tsx；剩下的
@@ -79,7 +79,7 @@ function previousSignificantChar(text: string, index: number): string {
  * `index` 处的 `/` 若是正则字面量的开头，交回它之后的下标；否则 `null`（除号）。
  *
  * 不认正则的代价不对称：正则里的引号会被当成字符串开头，于是后面整段代码都"在字符串里"，
- * 被注释掉的 `set('x')` / `field: 'x'` 于是算成已绑定——假绿；同一个误判还会让括号深度
+ * 被注释掉的 `set('x')` / `field: 'x'` 于是算成已绑定——误判通过；同一个误判还会让括号深度
  * 错位、截错 host 字段。判据用「前一个有效字符」：正则只能出现在一个值的起始位置。
  * 体内跳过 `\x` 转义与 `[...]` 字符类（字符类里的 `/` 不需要转义，直接收尾会截在半路），
  * 换行即判不成（正则不能跨行，当除号处理，免得把该行后半段整段吞掉）。
@@ -224,7 +224,7 @@ interface BracketWalk {
  * 非字面量位置的一步。交回 `true` 表示刚收到配平的右括号（区段到此结束）。
  *
  * 拆出来不是因为这段逻辑复杂，而是主循环里「跳过字面量」与「数括号」两件事混在一起时
- * 认知复杂度会越过 15（本仓 sonarjs 的门槛），读的人还得同时记住两个状态。
+ * 认知复杂度会越过 15（本仓 sonarjs 的阈值），读的人还得同时记住两个状态。
  */
 function bracketStep(
   state: BracketWalk,
@@ -342,7 +342,7 @@ function fieldsOfSchemaArgument(hostTs: string, argument: string): string[] | nu
  *
  * 绑定识别的两条正则都要扫**这条之后**的文本：否则被注释掉的旧代码、废弃分支里的
  * `field: 'x'` / `set('x')` 会算成"已绑定"，卡片明明没有那个控件却过门禁——这是漏拦
- * （假绿），比多认几个名字严重得多。字符串里的内容不抹：要认的字段名本身就写在字符串里
+ * （误判通过），比多认几个名字严重得多。字符串里的内容不抹：要认的字段名本身就写在字符串里
  * （`set("importAllowRoots")`），抹了等于一个都认不出。
  */
 function stripComments(src: string): string {
@@ -414,7 +414,7 @@ function hostSchemaFields(source: string): {
   return { fields: [...fields], unresolved, resolvedBlocks };
 }
 
-/** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里收口为 string）。 */
+/** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里统一处理为 string）。 */
 function group(match: RegExpExecArray, index: number): string {
   return match[index] ?? "";
 }
@@ -442,7 +442,7 @@ function boundFieldsIn(source: string): Set<string> {
 /** 卡片源码的扩展名白名单：组件可能是 .tsx，别只看 .ts。 */
 const CLIENT_SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs"] as const;
 
-/** 读不动的成因（`unknown` 收口成一句人话）。 */
+/** 读不动的成因（`unknown` 统一处理成一句人话）。 */
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -452,7 +452,7 @@ function isSkippedEntry(entry: Dirent): boolean {
   return entry.name === "node_modules" || entry.isSymbolicLink();
 }
 
-/** 一个文件项的收集：扩展名不在扫描面内就跳过，读不出来记一条带原因的点名项。 */
+/** 一个文件项的收集：扩展名不在扫描范围内就跳过，读不出来记一条带原因的点名项。 */
 function collectFileInto(filePath: string, name: string, out: string[], skipped: string[]): void {
   if (!(CLIENT_SOURCE_EXTENSIONS as readonly string[]).some((ext) => name.endsWith(ext))) {
     return;
@@ -567,11 +567,11 @@ export function schemaCoverageProblems(
       ].join("\n"),
     );
   }
-  // 扫描面不完整要先报：否则下面那串「卡片未暴露」的根因会被误读成没写控件。
+  // 扫描范围不完整要先报：否则下面那串「卡片未暴露」的真正的原因会被误读成没写控件。
   if (skipped.length > 0) {
     problems.push(
       [
-        `[${pkgName}] 卡片源码扫描面不完整（这些路径没扫到，不能当成「没有绑定」）：`,
+        `[${pkgName}] 卡片源码扫描范围不完整（这些路径没扫到，不能当成「没有绑定」）：`,
         ...skipped.map((line) => `  ${line}`),
       ].join("\n"),
     );

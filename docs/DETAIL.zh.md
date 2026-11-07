@@ -23,4 +23,4 @@
 
 ## 更完整的说明
 
-vendored 角色库、生成的默认模板表、导入扫描的层数规则都属于开发面，写在随包 README（`README.md` / `README.zh-CN.md`）。
+vendored 角色库、生成的默认模板表、导入扫描的层数规则都属于开发内容，写在随包 README（`README.md` / `README.zh-CN.md`）。

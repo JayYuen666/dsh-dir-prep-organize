@@ -31,7 +31,7 @@ import {
 } from "./gen-defaults-lib.mjs";
 
 /**
- * 原子落盘一份生成物：先写同目录临时文件并过一遍排版校验，两份都就绪后再统一 rename。
+ * 原子写到磁盘一份生成物：先写同目录临时文件并过一遍排版校验，两份都就绪后再统一 rename。
  * 校验或写盘失败时删除临时文件并原样上抛，磁盘上的旧生成物保持原样——不会留下
  * 「default-templates 已更新而 group-labels 还是旧的」这类新旧混合态。
  * @param {Array<{ target: string; content: string }>} staged - 目标路径与已排版内容
@@ -74,7 +74,7 @@ async function main() {
   }
   const entries = await buildEntries(bySlug, (filePath) => readFile(filePath, "utf8"));
   // 排版属于生成链路的一环（不是"记得顺手跑一次 oxfmt"）：生成物不进 fmt:check 面
-  // （.prettierignore 排除），它的规范形态由 checkFormatted 在落盘前实证——"临时目录里
+  // （.prettierignore 排除），它的规范形态由 checkFormatted 在写到磁盘前实证——"临时目录里
   // 排版与在 src/ 里排版是否等价"这条假设由那一遍实跑变成断言；磁盘产物则由
   // test/gen-defaults.test.ts 的字节锁与重跑对比守住。
   const rendered = [
@@ -91,7 +91,7 @@ async function main() {
 try {
   await main();
 } catch (error) {
-  // 入口统一收口：fs/oxfmt 的异常转成稳定退出码与一句话原因，不裸抛堆栈。
+  // 入口统一统一处理：fs/oxfmt 的异常转成稳定退出码与一句话原因，不裸抛堆栈。
   // 用 process.exitCode 而不是 process.exit：后者会截断还没刷完的 stdout/stderr。
   console.error(`[gen-defaults] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;

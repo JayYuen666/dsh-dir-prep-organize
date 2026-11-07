@@ -8,7 +8,7 @@
 // 用例要看日志内容时用 logged()/loggedText() 取，断言写在用例里（对这份账本自身的
 // 归一化行为有 meta 测试钉着：test/log-ledger.test.ts）。
 //
-// 本文件按「用例串行、日志同步产出」的前提记账，**不兼容 test.concurrent**：并行用例
+// 本文件按「用例串行、日志同步产出」的前提记录，**不兼容 test.concurrent**：并行用例
 // 共享下面这份模块级 records，beforeEach/afterEach 交错会互相清空、互相断言。
 import { afterAll, afterEach, beforeEach, expect } from "vitest";
 import assert from "node:assert/strict";
@@ -23,7 +23,7 @@ export const PKG_PREFIX = "[dir-prep-organize]";
 const PKG_TAG = PKG_PREFIX.slice(1, -1);
 
 /**
- * 接管的 console 级别。契约是「插件日志无论走哪个级别都必须被记账」，所以这里要覆盖
+ * 接管的 console 级别。契约是「插件日志无论走哪个级别都必须被记录」，所以这里要覆盖
  * 插件代码可能用到的每一个级别：新增 console.debug/trace 一样进账本，而不是漏账。
  * 联合类型取属性索引，避免以字符串索引 Console。
  */
@@ -53,18 +53,18 @@ const installed = new Map<
 
 /**
  * 接管一个级别。归一化三件事：util.format 展开全部实参（`%s` 占位、Error 的正文否则
- * 静默丢失，模板匹配会假阴）、剥 ANSI 色码、折叠空白并去首尾——首参带前导空格/换行
+ * 静默丢失，模板匹配会假阴）、剥 ANSI 色码、把连续空白换成单个空格并去掉首尾——首参带前导空格/换行
  * 时既进不了 ours 也进不了 strangers，正好躲过整套判据。
  * 处理器单独成函数，别在 for 里现造闭包（no-loop-func 拦的就是这个）。
  */
-/** 当前正在记账的用例名；用来把「用例串行」这条前提变成可判的契约（见 `spyLevel`）。 */
+/** 当前正在记录的用例名；用来把「用例串行」这条前提变成可判的契约（见 `spyLevel`）。 */
 let activeTest: string | undefined;
 
 function spyLevel(level: LogLevel): void {
   const original = console[level];
   const spy = (...args: unknown[]): void => {
     // 前提是串行：一旦检测到日志是在两个用例之间（或并发用例交错）打出来的，
-    // 继续记账只会把两条用例的日志混进同一个 records，失败信息还指不出成因。
+    // 继续记录只会把两条用例的日志混进同一个 records，失败信息还指不出成因。
     const current = expect.getState().currentTestName;
     if (current !== activeTest) {
       throw new Error(

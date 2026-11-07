@@ -19,7 +19,7 @@ import { hostFreshnessEvidence } from "./host-freshness.ts";
 /** 包根（本文件在 test/ 下）。产物必须落在这里，与 host.ts 同目录。 */
 const PKG_ROOT = path.dirname(import.meta.dirname);
 
-/** 残留的本地 .ts 说明符（`from "./x.ts"` / `from "../y/zz.ts"`）。 */
+/** 残留的本地 .ts 模块说明符：`from "./x.ts"` / `from "../y/zz.ts"`。 */
 const LOCAL_TS_IMPORT = /from\s*["']\.{1,2}\/[^"']*\.ts["']/u;
 
 /** 内置模板表的数据产物文件名（build-host.mjs 的 ARTIFACTS 里那一个）。 */
@@ -28,7 +28,7 @@ const TEMPLATES_DATA = "templates.data.mjs";
 /**
  * 从产物 Map 里取某个文件的正文。
  *
- * buildHost() 交回「落盘绝对路径 → 正文」：Map 形态是为了让 test/host-freshness.ts 的逐字节
+ * buildHost() 交回「写到磁盘绝对路径 → 正文」：Map 形态是为了让 test/host-freshness.ts 的逐字节
  * 门禁把**每个**产物都算进去（它对单串只比一个文件），模板数据产物才不会脱离这道门。
  *
  * @param artifacts - buildHost() 的返回值
@@ -84,7 +84,7 @@ describe("dir-prep-organize host 构建", () => {
     }
     assert.ok(
       text.includes('from "@deepseek-ai/dsh-brand"'),
-      "dsh-brand 必须外部化（口径 A：值导入落 peerDependencies、不进 dependencies，内联=复制官方构造器）",
+      "dsh-brand 必须外部化（做法 A：值导入落 peerDependencies、不进 dependencies，内联=复制官方构造器）",
     );
     assert.ok(!/^function brandString\(/mu.test(text), "产物不得内联 brandString 的函数体");
     // 设置 schema 引擎 = 宿主 fork 的 schemastery：0.1.7 的 `.volatile()` 只有它有实现，
@@ -101,7 +101,7 @@ describe("dir-prep-organize host 构建", () => {
     assert.ok(text.includes('from "node:path"'), "node: 内建不打包");
   });
 
-  it("产物里没有本地 .ts 说明符残留", async () => {
+  it("产物里没有本地 .ts说明符残留", async () => {
     for (const [file, text] of await buildHost()) {
       assert.equal(
         text.search(LOCAL_TS_IMPORT),
@@ -125,7 +125,7 @@ describe("dir-prep-organize host 构建", () => {
     // 宿主侧保留的只有「指向产物的 URL + import」这一步，不能出现表本身。
     assert.ok(
       host.includes('new URL("templates.data.mjs", import.meta.url)'),
-      "host.js 必须保留对 templates.data.mjs 的相对定位（与 AGENTS_DIR 同一套落点理由）",
+      "host.js 必须保留对 templates.data.mjs 的相对定位（与 AGENTS_DIR 同一套定位理由）",
     );
     assert.ok(!host.includes("DEFAULT_TEMPLATES = ["), "模板表字面量不得回到 host.js");
     // 产物那侧则必须真的带着表，且是具名导出（宿主按形状取）。
@@ -140,7 +140,7 @@ describe("dir-prep-organize host 构建", () => {
       host.includes('path.join(import.meta.dirname, "agents")'),
       "AGENTS_DIR 必须保持 import.meta.dirname 相对式",
     );
-    // ② 每个产物的落盘路径都在包根直下（不进 dist/）。这一条原本是对构建脚本源码做文本
+    // ② 每个产物的写到磁盘路径都在包根直下（不进 dist/）。这一条原本是对构建脚本源码做文本
     // 匹配，写法一改就失效；改成对 buildHost() 的返回值断言——要守的不变式没变，但不再
     // 依赖实现的写法长相。
     for (const file of artifacts.keys()) {
@@ -150,7 +150,7 @@ describe("dir-prep-organize host 构建", () => {
         `产物 ${path.basename(file)} 必须落在包根：进 dist/ 会让 AGENTS_DIR / templates.data.mjs 静默失联`,
       );
     }
-    // ③ 包根下确有 agents/ 目录，且两个产物都已落盘 —— 三者同时成立才等价于
+    // ③ 包根下确有 agents/ 目录，且两个产物都已写到磁盘 —— 三者同时成立才等价于
     //    「运行期 AGENTS_DIR === <pkg>/agents」且模板表可被 import。
     const landed = new Map(
       await Promise.all(
@@ -177,7 +177,7 @@ describe("单文件产物的输出守卫", () => {
     assert.throws(() => singleEntryChunk(output, "host.ts"), /2 项输出/u);
   });
 
-  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+  it("拒绝 asset：单文件产物没有写到磁盘 asset 的位置", () => {
     const output = [
       outputItem("chunk", "host.js", { isEntry: true, code: CHUNK_CODE }),
       outputItem("asset", "x.css"),
@@ -197,7 +197,7 @@ describe("单文件产物的输出守卫", () => {
   });
 });
 
-describe("读面基座的外部化面（dsh-typert-protocol）", () => {
+describe("读取方法基座的外部化（dsh-typert-protocol）", () => {
   it("remote 标记与服务基类保持裸说明符，不被复制进本包产物", async () => {
     const out = artifactText(await buildHost(), "host.js");
     assert.ok(

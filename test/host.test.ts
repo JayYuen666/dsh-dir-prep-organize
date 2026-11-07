@@ -45,11 +45,11 @@ import { HOST_MESSAGES } from "../src/host-messages.ts";
 import { schemaCoverageProblems } from "./schema-coverage.ts";
 import type { AllowUnbound } from "./schema-coverage.ts";
 
-// ── 字典注入包装：函数面与迁移前一致（只喂中文表），断言无需改动 ──────────────
+// ── 字典注入包装：函数签名与迁移前一致（只喂中文表），断言无需改动 ──────────────
 
 const { zh } = HOST_MESSAGES;
 
-// ── 夹具单源 ────────────────────────────────────────────────────────────────
+// ──夹具唯一来源 ────────────────────────────────────────────────────────────────
 // 本文件里重复 3 次以上的字面量集中在此。**刻意写死、不引被测模块的常量**：
 // 断言要钉的是「实现交出什么」，拿实现自己的常量去比实现自己就没人检查任何东西了。
 
@@ -73,12 +73,12 @@ const IMPORT_ROLES_ROOT = path.resolve("/roles");
 const IMPORT_SINGLE_MD = path.join(IMPORT_ROLES_ROOT, "a.md");
 /** 单文件导入的用例共用：stat 失败那一档的错因。 */
 const EACCES = "EACCES";
-/** 内存假 fs 的 stat 版本号（品牌串只是不透明 token，用例不解释，见 FsVersion 注释）。 */
+/** 内存假 fs 的 stat 版本号（`brand` 串只是不透明 token，用例不解释，见 FsVersion 注释）。 */
 const FAKE_VERSION = "fake";
 const MEM_VERSION = "mem";
 
 async function collectDirContext(
-  // contains 是 collectDirContext 的必读取面（软链逃逸由后端复判，见 host.ts 的 contains 复判段），
+  // contains 是 collectDirContext 一定要读的一位（软链逃逸由后端复判，见 host.ts 的 contains 复判段），
   // 这一层薄包装的签名要跟着官方 Pick 走，否则「测试注入的替身没有 contains」也能过。
   fs: Pick<FsService, "resolve" | "listDir" | "readText" | "contains">,
   cwd: string | undefined,
@@ -132,10 +132,10 @@ const inoVersion = (ino: number): FsVersion => brandString<FsVersion>(String(ino
 const fakeVersion = (raw: string): FsVersion => brandString<FsVersion>(raw);
 
 /** fs target 替身：dsh 的 targetKey/displayPath 在本包就是路径本身。
- *  `targetKey` 是官方品牌 `FsTargetKey`（installed @deepseek-ai/dsh-fs/lib/types/
+ *  `targetKey` 是带官方 `brand` 的 `FsTargetKey`（installed @deepseek-ai/dsh-fs/lib/types/
  *  types.d.ts，本包 host 侧已按官方 re-export），唯一的合法构造口是官方
  *  `brandString`（@deepseek-ai/dsh-brand/lib/types/index.d.ts，恒等函数）——替身也走它，
- *  不用 `as` 绕过（那正是本仓禁的类型体操）。品牌位直接索引官方成员：dsh-fs 根模块没有
+ *  不用 `as` 绕过（那正是本仓禁的类型体操）。`brand` 类型名直接从官方成员里取：dsh-fs 根模块没有
  *  re-export `FsTargetKey` 这个名字。
  *
  *  替身把路径当 targetKey，因此先按宿主平台归一化：生产代码用 `path.resolve` 造绝对路径，
@@ -197,7 +197,7 @@ function textOf(block: unknown): string {
 function containsIn(parent: FsTarget, child: FsTarget): boolean {
   // 与生产代码同构：用 path.relative 判包含（盘符不同的结果是绝对路径，兄弟目录以 `..`
   // 开头），不再拼 `${root}${path.sep}`——夹具的 key 归一化前可能是 `/root/…`，Windows 上
-  // `path.sep` 是 `\`，拼出来的前缀恒不命中（CI 实测：逃逸计数吃掉全部条目）。
+  // `path.sep` 是 `\`，拼出来的前缀恒不命中（CI 实测：逃逸计数把全部条目都算进去）。
   const relative = path.relative(parent.targetKey, child.targetKey);
   return !path.isAbsolute(relative) && relative.split(/[\\/]/u)[0] !== "..";
 }
@@ -269,7 +269,7 @@ describe("collectDirContext", () => {
     assert.ok(byName["a.ts"], "a.ts 存在");
     // 取条目走 `Array.prototype.find` 而不是 `Record` 下标：下标在 tsc
     // （noUncheckedIndexedAccess）里是 `T | undefined`，而 oxlint 的类型引擎不接这条
-    // ⇒ 显式守卫会撞 no-unnecessary-condition、可选链会撞「non-nullish」，两套类型面
+    // ⇒ 显式守卫会撞 no-unnecessary-condition、可选链会撞「non-nullish」，两套类型上
     // 必炸一头；find() 在两边都是 `T | undefined`，可选链两头都过且断言强度不变。
     const aTsEntry = result.entries.find((item) => item.name === "a.ts");
     assert.equal(aTsEntry?.snippet?.includes("export"), true, "a.ts snippet 含 export");
@@ -278,7 +278,7 @@ describe("collectDirContext", () => {
     assert.equal(byName["image.png"]!.snippet, undefined, "png 无摘要");
     assert.equal(byName["sub"]!.isDir, true, "sub 是目录");
     assert.equal(byName["sub"]!.snippet, undefined, "目录无摘要");
-    // 敏感面排除（实测 .credentials.yaml 摘要带出 API key）：
+    // 敏感文件排除（实测 .credentials.yaml 摘要带出 API key）：
     // yaml 不在 KEY_EXT；credentials 命中 SECRET_MARKERS 双保险。
     assert.equal(byName["notes.yaml"]!.snippet, undefined, "yaml 不取摘要");
     assert.equal(byName[".credentials.yaml"]!.snippet, undefined, "credentials 永不取摘要");
@@ -369,7 +369,7 @@ function fakeLlm(chunks: readonly StreamChunk[]): {
   };
 }
 
-/** 畸形块夹具：官方 `StreamChunk` 是判别联合，缺必填位的坏形状在类型面上已不可
+/** 畸形块夹具：官方 `StreamChunk` 是判别联合，缺必填位的坏形状在类型上已不可
  *  表示，而这几条测的正是"宿主真送来坏块时本包不得当成成功"（fail-closed），
  *  与类型合法性无关——故经 unknown 显式造坏形状，而不是把生产类型放宽回可选。 */
 const badChunk = (chunk: Record<string, unknown>): StreamChunk => chunk as unknown as StreamChunk;
@@ -438,11 +438,11 @@ describe("runOrganize", () => {
     assert.equal(message.role, "user");
     const [firstBlock] = message.content;
     const userText = textOf(firstBlock);
-    // 草稿仍是第一段；不可信的上下文以围栏块追加在它后面（信任序，见 buildOrganizeUser）
-    assert.ok(userText.startsWith("帮我看看这个项目"), "user 消息以草稿开头");
+    // 入参 `prompt` 仍是第一段；不可信的上下文以围栏块追加在它后面（信任序，见 buildOrganizeUser）
+    assert.ok(userText.startsWith("帮我看看这个项目"), "user 消息以 `prompt` 开头");
     assert.ok(userText.includes("<data>"), "其后是围栏包裹的数据块");
     // 0.1.7 的 request-only 契约：润色请求帧从不落持久消息位，故走 `RequestUserInput`
-    // （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts，两面都是
+    // （installed @deepseek-ai/dsh-llm/lib/types/types.d.ts，两处都是
     // `?: never`）。旧断言盯的"归属本插件的 source.kind"正是被这条政策移除的形状——
     // 宿主的归属策略是"request-only 输入不需要持久身份"。键必须**根本不存在**，
     // 而不是存在但为 undefined。
@@ -599,7 +599,7 @@ describe("buildOrganizeSystem", () => {
 // ── extractRecentTurns ────────────────────────────────────────────────────
 
 describe("extractRecentTurns", () => {
-  it("会话隔离：只折叠传入的 Session 实例自身消息，不串其它会话", async () => {
+  it("会话隔离：只取传入的 Session 实例自身的消息，不串其它会话", async () => {
     // 两个独立 Session 实例（模拟 sessions.get(id) 拿到的隔离对象）：
     // 每个 Session 自持 log/surface（dsh-session 源码），互不共享。
     const sessionA = { deriveMessages: () => msgs(4) };
@@ -885,7 +885,7 @@ function templateRowExemptions(): AllowUnbound[] {
     {
       field: "name",
       reason:
-        "行内列：TemplateRow 的名称输入框逐行编辑，落盘经整表 props.set('templates', …)，故没有单独的绑定名可声明；空名称由 sanitize 剔除",
+        "行内列：TemplateRow 的名称输入框逐行编辑，写到磁盘经整表 props.set('templates', …)，故没有单独的绑定名可声明；空名称由 sanitize 剔除",
     },
     {
       field: "description",
@@ -895,7 +895,7 @@ function templateRowExemptions(): AllowUnbound[] {
     {
       field: "text",
       reason:
-        "行内列：TemplateRow 的正文 textarea（点选即填入草稿），随整表写入，空正文整条被 sanitize 剔掉",
+        "行内列：TemplateRow 的正文 textarea（点选即经 insertText 填入输入框），随整表写入，空正文整条被 sanitize 剔掉",
     },
     {
       field: "group",
@@ -943,7 +943,7 @@ describe("0.1.7 隐式注册验收", () => {
   });
 
   it("templates 不给默认 ≠ 未设置读回 undefined：array 字段被 cast 成空表", () => {
-    // 这条是「模板列表在页面上整个空掉」那次故障的根因锁定：host 半的注释一度写着
+    // 这条是「模板列表在页面上整个空掉」那次故障的真正的原因锁定：host 半的注释一度写着
     // 「未设置 → 引用里是 undefined，内置列表由 client 兜」，但 schemastery 对 array 字段
     // 把缺失值 cast 成 `[]`，宿主 // describe() 的 projectForm 又只丢 undefined 位
     // （settings/src/schema.ts），于是「未设置」递到客户端就是一张空表。
@@ -970,7 +970,7 @@ describe("0.1.7 隐式注册验收", () => {
     );
   });
 
-  // 复制式字段覆盖门禁（test/schema-coverage.ts，同 ctx-observe/quality-gate 口径）：解析
+  // 复制式字段覆盖门禁（test/schema-coverage.ts，同 ctx-observe/quality-gate 做法）：解析
   // host.ts 的 Schema.object 字段名，断言卡片半逐个绑定；漏项必须显式列入 allowUnbound 并
   // 写理由，helper 同时反向校验被豁免项确实未绑定（豁免表当不了后门）。helper 只交回问题
   // 清单、不自己登记用例（vitest/require-hook 不收 hook 外的 setup），断言写在本用例体内。
@@ -1089,7 +1089,7 @@ describe("collectAgentTemplates", () => {
     const result = await collectAgentTemplates(realFs(), dir, undefined, { allowRoots: [dir] });
     assert.equal(result.error, undefined);
     // 这份目录里 `no-name.md` 解析不出 name，被整份跳过：truncated 的语义是「确实有
-    // 东西没进来」，所以它是 true。非 md 的 notes.txt 与隐藏目录不在候选面内，不参与。
+    // 东西没进来」，所以它是 true。非 md 的 notes.txt 与隐藏目录不在候选范围内，不参与。
     assert.equal(result.truncated, true);
     const names = result.entries.map((entry) => entry.name);
     assert.deepEqual(names, ["前端开发者", "小红书运营专家"], "按名排序且仅含有效角色");
@@ -1163,7 +1163,7 @@ function fsWithSize(entries: { name: string; size?: number }[]): FsService {
   // targetKey 的父子关系必须自洽：真实后端（fs-local）的 contains 判的是 realpath 之后的
   // 相对路径，子项 key 一定落在父项 key 之下。此前这里父给 "root"、子给 "huge.ts"，
   // 于是「替身」与后端的包含关系并不同构——collectDirContext 一旦补上 contains 复判，
-  // 这类替身就把所有条目当成「链接到根外」，跳过记账全部走错分支。
+  // 这类替身就把所有条目当成「链接到根外」，跳过记录全部走错分支。
   return {
     resolve: async () => targetOf("/root"),
     contains: (parent, child) => containsIn(parent, child),
@@ -1180,7 +1180,7 @@ function fsWithSize(entries: { name: string; size?: number }[]): FsService {
   };
 }
 
-describe("collectDirContext 跳过记账", () => {
+describe("collectDirContext 跳过记录", () => {
   it("超过摘要字节上限的文件整份跳过并计数（truncated=true）", async () => {
     const result = await collectDirContext(
       fsWithSize([{ name: "huge.ts", size: 300 * 1024 }]),
@@ -1232,7 +1232,7 @@ describe("collectDirContext 跳过记账", () => {
   });
 });
 
-// ── 审计修复：允许根绕过面（importPathError 的 footgun 矩阵）────────────────
+// ── 审计修复：允许根被绕过的路径（importPathError 的 footgun 逐条用例）────────────
 
 describe("importPathError 逃逸拦截", () => {
   it("相对路径带 .. → 拒绝（旧版被 path.resolve 归一后放行）", () => {
@@ -1324,7 +1324,7 @@ describe("runOrganize 角色上下文透传", () => {
   });
 });
 
-// ── drainStreamToText 终态矩阵 ──────────────────────────────────────────────
+// ── drainStreamToText 终态逐条用例 ──────────────────────────────────────────
 
 const run = async (chunks: readonly StreamChunk[]): Promise<string> =>
   drainStreamToText(streamOf(chunks));
@@ -1524,7 +1524,7 @@ describe("collectAgentTemplates 分类计数", () => {
 
   it("列不动的子目录只自己计 unreadable，同层条目照常导入", async () => {
     // 集成测试用 chmod 000 造同一条路，但那是 POSIX 专属（Windows 整族 skip）；
-    // 覆盖率阈值在矩阵每一格都生效，所以降级面要有一条与平台无关的判据。
+    // 覆盖率阈值在 CI matrix 的每一格都生效，所以降级那条要有与平台无关的判据。
     const fs = memFs(
       {
         "/roles/ok.md": roleDoc("好角色"),
@@ -1598,10 +1598,10 @@ describe("collectAgentTemplates 分类计数", () => {
 
   it("单文件正文里代码围栏未闭合 → 不穿成「整次导入失败」，按 unnamed 计数并报 truncated", async () => {
     // 围栏未闭合时 condenseRoleBody 会抛（CHANGELOG 0.1.6 那条修复）。提炼发生在
-    // readCandidate 的 try 之外，单文件分支原先没有自己的收口：一次坏正文直接冒泡到
+    // readCandidate 的 try 之外，单文件分支原先没有自己的统一处理：一次坏正文直接冒泡到
     // collectAgentTemplates 的 catch，用户看到的是一句「导入失败」，而被跳过的这一份、
     // 以及其余可导入的条目，全部不会出现。判据钉住三件事：不报整次失败、条目为空、
-    // 但 truncated 为真（读面据此知道「有一份没进来」，而不是看着 0 条以为库里是空的）。
+    // 但 truncated 为真（读取方法据此知道「有一份没进来」，而不是看着 0 条以为库里是空的）。
     const fenceOpen = "`".repeat(3);
     const doc = ["---", "name: 坏正文", "---", fenceOpen, "code", ""].join("\n");
     const fs = memFs({ "/roles/a/broken-fence.md": doc });
@@ -1611,7 +1611,7 @@ describe("collectAgentTemplates 分类计数", () => {
     assert.equal(result.error, undefined, "单文件坏正文不能让整次导入变成「导入失败」");
     assert.deepEqual(result.entries, []);
     assert.equal(result.skipped.unnamed, 1);
-    assert.equal(result.truncated, true, "有一份没进来必须让读面看得见");
+    assert.equal(result.truncated, true, "有一份没进来必须让读取方法看得见");
   });
 
   it("单文件 stat 抛错 → 按「拿不到大小」处理，整份跳过且不冒泡", async () => {
@@ -1632,7 +1632,7 @@ describe("collectAgentTemplates 分类计数", () => {
   it("单文件 readText 抛错 → 计 unreadable，不让整次导入变成「导入失败」", async () => {
     // 目录分支的 readCandidate 早就把读失败降级成 unreadable（host.ts），单文件分支
     // 原先没有：一次 EACCES 直接冒泡到 collectAgentTemplates 的 catch，于是同一次导入
-    // 里其它一切信息（连同「是哪个文件读不到」）全部丢失。两档口径必须一致。
+    // 里其它一切信息（连同「是哪个文件读不到」）全部丢失。两档做法必须一致。
     // 只让 readText 失败：stat 照常给 size，才能走到读失败那一档（stat 失败是上一条）。
     const fs = memFs({ "/roles/a.md": roleDoc("甲") });
     fs.readText = async () => {
@@ -1666,7 +1666,7 @@ describe("collectAgentTemplates 分类计数", () => {
   it("skipPolicy + 相对路径且无 cwd → 按空前缀解析后仍被真实对象这道门挡住（不抛）", async () => {
     // skipPolicy 只跳**字符串**那一层（importPathError）；后端 contains 那一层照旧生效。
     // 空前缀把相对路径落到 process.cwd() 下，那不是任何允许根，于是回一句越界而不是
-    // 放行——这正是「绝对路径默认拒绝」在真实对象面上的延伸。
+    // 放行——这正是「绝对路径默认拒绝」在真实对象上的延伸。
     const fs = memFs({ "roles/a.md": roleDoc("甲") });
     const result = await collectAgentTemplates(fs, "roles", undefined, { skipPolicy: true });
     assert.match(result.error ?? "", /越界/u, "真实目标不在允许根之内，必须拒");
@@ -1690,7 +1690,7 @@ describe("collectAgentTemplates 分类计数", () => {
     assert.match(result.error ?? "", /导入失败: raw-string-error/u);
   });
 
-  it("readText 以非 Error 失败 → unreadable 计数照常记账", async () => {
+  it("readText 以非 Error 失败 → unreadable 计数照常记录", async () => {
     const fs = memFs(
       { "/roles/a.md": roleDoc("甲") },
       { failsOnRead: { name: "a.md", reason: "string-reason" } },
@@ -1779,8 +1779,8 @@ describe("runOrganize 超时", () => {
     const settled = Promise.allSettled([pending]);
     await vi.advanceTimersByTimeAsync(121_000);
     // `.at(0)` 而不是 `[0]` 解构：oxlint 的类型引擎不接 tsc 的 noUncheckedIndexedAccess，
-    // 下标取到的元素在它眼里非空 ⇒ `outcome === undefined` 被判恒假；at() 的返回类型
-    // 本身就带 `| undefined`，两套类型面一致，守卫保留。
+    // 下标取到的元素在它眼里非空 ⇒ `outcome === undefined` 被判永远不成立；at() 的返回类型
+    // 本身就带 `| undefined`，两套类型上一致，守卫保留。
     const outcomes = await settled;
     const outcome = outcomes.at(0);
     if (outcome === undefined || outcome.status === "fulfilled") {
@@ -1860,7 +1860,7 @@ describe("en 字典注入（纯函数只吃入参字典，不读设置）", () =
     assert.doesNotMatch(outside, hanPattern);
   });
 
-  it("润色链路失败文案切英文（空草稿 / 缺模型 / 缺 finish / 非 stop 终态）", async () => {
+  it("润色链路失败文案切英文（空白 `prompt` / 缺模型 / 缺 finish / 非 stop 终态）", async () => {
     const llm = fakeLlm([]);
     await assert.rejects(
       () => runOrganizeWithDict(llm, { prompt: "   ", cwd: "/w" }, en),
@@ -1915,7 +1915,7 @@ describe("en 字典注入（纯函数只吃入参字典，不读设置）", () =
   });
 });
 
-// ── 部署值收口（clampInt / sanitizeLimits）───────────────────────────────
+// ── 部署值统一处理（clampInt / sanitizeLimits）───────────────────────────────
 describe("clampInt", () => {
   it("区间内取值原样返回", () => {
     assert.equal(clampInt(1, 1, 64, 8), 1);
@@ -1972,7 +1972,7 @@ describe("sanitizeLimits", () => {
     assert.equal(sanitizeLimits(base).organizeTimeoutMs, 120_000, "合法值不动");
   });
 
-  it("另两项原样透传：0 有确定且已记账的行为，属用户显式意图", () => {
+  it("另两项原样透传：0 有确定且已记录的行为，属用户显式意图", () => {
     const zeroed = sanitizeLimits({ ...base, maxSnippetBytes: 0 });
     assert.equal(zeroed.maxSnippetBytes, 0);
   });
@@ -1998,7 +1998,7 @@ describe("mapBounded 的 limit 自守", () => {
   });
 });
 
-// ── isKeyFile：功能面与防护面的大小写口径必须一致 ──────────────────────────
+// ── isKeyFile：功能与防护的大小写做法必须一致 ──────────────────────────
 describe("关键文件筛选的扩展名大小写", () => {
   it("大写扩展名照样取摘要（原先静默丢数据且不计数）", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-case-"));
@@ -2017,7 +2017,7 @@ describe("关键文件筛选的扩展名大小写", () => {
     assert.equal(result.skipped.tooLarge, 0);
   });
 
-  it("防护面仍然拦得住大写的凭据文件名", async () => {
+  it("防护仍然拦得住大写的凭据文件名", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-case-secret-"));
     await Promise.all([
       writeFile(path.join(dir, "app.env.json"), "SECRET_ENV", "utf8"),
@@ -2030,7 +2030,7 @@ describe("关键文件筛选的扩展名大小写", () => {
   });
 });
 
-describe("凭据文件名的匹配口径", () => {
+describe("凭据文件名的匹配做法", () => {
   it("分隔符边界的连字符/下划线变体命中（子串表会漏掉这一整类）", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dsh-dp-secret-"));
     const leaked = [
@@ -2115,7 +2115,7 @@ describe("符号链接越根（contains 复判）", () => {
 /** 尊重 signal 的假流：signal 一旦 abort，就在下一个 chunk 之前抛出。
  *  真实 llm.stream 正是这个契约——不观察 signal 的流测不出取消是否接线。 */
 async function* signalAwareStream(options: LlmStreamOptions): AsyncGenerator<StreamChunk> {
-  // 每次现读：直接写两次 `options.signal?.aborted === true` 会被控制流窄化成恒假，
+  // 每次现读：直接写两次 `options.signal?.aborted === true` 会被控制流窄化成永远不成立，
   // 反而看不出「中途取消」这一路到底走没走。
   const isAborted = (): boolean => options.signal?.aborted === true;
   if (isAborted()) {

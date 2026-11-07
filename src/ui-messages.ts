@@ -38,9 +38,9 @@ export interface UiMessages {
   readonly saving: string;
   /** 保存按钮（空闲态）；同时充当回执文本里的动作名。 */
   readonly save: string;
-  /** 撤销按钮（丢弃本地草稿）。 */
+  /** 撤销按钮（丢弃未保存的 `draft` 与 `rootsDraft`）。 */
   readonly revert: string;
-  /** 恢复默认按钮 title（说明影响面与两步确认）。 */
+  /** 恢复默认按钮 title（说明改动范围与两步确认）。 */
   readonly resetTitle: string;
   /** 恢复默认按钮（已进入确认态）。 */
   readonly resetConfirm: string;
@@ -114,7 +114,7 @@ export interface UiMessages {
   readonly skipUnreadable: string;
   /** 跳过计数：非角色文件。 */
   readonly skipUnnamed: string;
-  /** 跳过计数：真实目标在允许根之外（符号链接逃逸），被安全闸门拦下。 */
+  /** 跳过计数：真实目标在允许根之外（符号链接逃逸），被安全检查拦下。 */
   readonly skipEscaped: string;
   /** 跳过计数整句的外层括号。 */
   readonly skipSummary: string;
@@ -181,15 +181,15 @@ export interface UiMessages {
   readonly organizeRoleItem: string;
   /** 润色成功但输入框动作缺失时抛出的错误（会闪烁在按钮上）。 */
   readonly organizeWriteBackUnavailable: string;
-  /** 润色结果因草稿版本变化或会话切换而没有写回时的错误。 */
+  /** 润色结果因 `draftRev` 变化或会话切换而没有写回时的错误。 */
   readonly organizeWriteBackStale: string;
-  /** 「润色」按钮 title（输入框处于提交期，编辑面只读）。 */
+  /** 「润色」按钮 title（输入框处于提交期，输入区只读）。 */
   readonly organizeBusyTitle: string;
   /** 「模板」按钮 title（可写时）。 */
   readonly templatesIdleTitle: string;
   /** 「模板」按钮 title（输入框动作缺失）。 */
   readonly templatesBrokenTitle: string;
-  /** 「模板」按钮 title（输入框处于提交期，编辑面只读）。 */
+  /** 「模板」按钮 title（输入框处于提交期，输入区只读）。 */
   readonly templatesBusyTitle: string;
   /** 空分组名的归组名。 */
   readonly templatesGroupCommon: string;
@@ -225,7 +225,7 @@ const LOCALE_NS_KEY = "dir-prep-organize" as const;
 
 /**
  * 本源只以**类型**形态对外流通：`client-entry.ts` 的 `const NS: LocaleNs = "dir-prep-organize"` 把条目
- * id 钉在本源上（分叉即编译期红），而产物漂移针仍要按字面量形状从 bundle 里抓 `NS`，所以那里
+ * id 钉在本源上（分叉即编译期红），而产物漂移检查仍要按字面量形状从 bundle 里抓 `NS`，所以那里
  * 保留字面量、只加类型标注——值导出不必存在（用例侧同理：要断言运行时那串就写字面量）。
  */
 export type LocaleNs = typeof LOCALE_NS_KEY;
@@ -233,9 +233,9 @@ export type LocaleNs = typeof LOCALE_NS_KEY;
 /**
  * 卡片取文案的函数形状：官方 `TranslateNS<N> = Translate<LocaleKeysOf<N>>`（installed
  * `dsh-client-ui-slots/lib/types/index.d.ts`，而 `Translate<K> =
- * (key: K, params?: Record<string, unknown>) => string`，同文件）。函数面归官方，
+ * (key: K, params?: Record<string, unknown>) => string`，同文件）。函数类型归官方，
  * 键集就是上面 merge 的 `keyof UiMessages`（外加官方 `LocaleKeysOf` 一并放行的
- * `common` 命名空间键——那是宿主查不到键时的回落面，运行时行为见其 `lookup`）。
+ * `common` 命名空间键——那是宿主查不到键时的回落，运行时行为见其 `lookup`）。
  */
 export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 
@@ -290,7 +290,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     importHint:
       "导入说明：留空导入内置角色库全部（agents/）；填路径时只放行「会话 cwd」「内置角色库 agents/」与下方「导入允许目录」之内的路径——绝对路径默认拒绝，越界会直接报「导入路径越界」并回显解析后的路径。本卡没有会话上下文，故只能填内置库或已登记目录里的路径。目录扫描顶层 + 一层子目录 .md（跳过隐藏项），文件须含 name 的 frontmatter，正文将提炼为模板正文。",
     skipDeeper: "{count} 个更深层 .md 未扫描（导入只扫两层）",
-    // 「两层」「顶层 + 一层子目录」是 host.ts importFromDirectory 的扫描形状写给用户的那一面：
+    // 「两层」「顶层 + 一层子目录」是 host.ts importFromDirectory 的扫描形状写给用户的那句说明：
     // 改那边的扫描深度，这四个键（skipDeeper / importHint × zh / en）要同步改。
     skipTooLarge: "{count} 个文件超字节上限被跳过",
     skipUnreadable: "{count} 个文件读取失败",

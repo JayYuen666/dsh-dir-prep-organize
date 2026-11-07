@@ -10,7 +10,7 @@
 //   parseAgentFrontmatter agency-agents-zh 风格角色文件 → {name,description,emoji,body}
 //   condenseRoleBody      角色正文提炼：去代码围栏与行内反引号、不设字符上限（全量）
 //   groupLabelOf          仓库目录名 → 中文分组标签
-//   mergeImportedTemplates 导入并入草稿的 id 碰撞改写（不改输入）
+//   mergeImportedTemplates 导入条目并入现有 `draft` 的 id 碰撞改写（不改输入）
 
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
@@ -510,7 +510,7 @@ describe("mergeImportedTemplates", () => {
     );
   });
 
-  it("空 id 按 sanitize 的同一套序号补齐，草稿里不出现空 key", () => {
+  it("空 id 按 sanitize 的同一套序号补齐，合并结果里不出现空 key", () => {
     const existing = [fullEntry({ id: "a", name: "甲", text: "一" })];
     const incoming = [
       fullEntry({ id: "", name: "乙", text: "二" }),
@@ -560,9 +560,9 @@ describe("模板正文不设上限（用户拍板）", () => {
   });
 });
 
-// ── sanitizeAllowRoots（导入允许目录：设置卡草稿 → 落盘列表）────────────────
+// ── sanitizeAllowRoots（导入允许目录：`rootsDraft` → 写向宿主的列表）────────────
 
-/** 一条绝对路径夹具：本面只验「trim / 剔空 / 去重」的归一形状，路径语义无关。 */
+/** 一条绝对路径夹具：这里只验「trim / 剔空 / 去重」的归一形状，路径语义无关。 */
 const ALLOW_ROOT = "/Users/me/roles";
 
 describe("sanitizeAllowRoots", () => {
@@ -578,7 +578,7 @@ describe("sanitizeAllowRoots", () => {
     ]);
   });
 
-  it("保持登记顺序（用户看到的顺序 = 落盘的顺序）", () => {
+  it("保持登记顺序（用户看到的顺序 = 写到磁盘的顺序）", () => {
     assert.deepEqual(sanitizeAllowRoots(["/b", "/a"]), ["/b", "/a"]);
   });
 
@@ -609,7 +609,7 @@ describe("sanitizeAllowRoots", () => {
   it("登记多少条就收多少条（静默丢一条 = 用户看到保存成功却少授权一个目录）", () => {
     const many = Array.from({ length: 22 }, (_unused, i): string => `/roles/${String(i)}`);
     assert.deepEqual(sanitizeAllowRoots(many), many);
-    // 单条长度同样不设上限：长路径只是让 host 侧的回执变长，列举上限在那一侧收口。
+    // 单条长度同样不设上限：长路径只是让回执变长，列举条数上限由 host 侧统一处理。
     const long = `/${"x".repeat(600)}`;
     assert.deepEqual(sanitizeAllowRoots([long, "/ok"]), [long, "/ok"]);
   });

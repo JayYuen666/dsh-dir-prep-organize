@@ -5,7 +5,7 @@
 //      源码里的 `[dir-prep-organize]` 字面量与模板清单——源码日志被改写/删除时清单里的
 //      死模板会点名，新增 console.* 漏登记也会点名；顺带钉住清单本身的形状（冻结、
 //      非空、无重复、空白折叠后不变）。
-//   ② test/setup-logs.ts 的归一化与查询面（logged/loggedText/级别覆盖）此前没有任何
+//   ② test/setup-logs.ts 的归一化与查询函数（logged/loggedText/级别覆盖）此前没有任何
 //      用例消费，改坏不会有人发现。这里用「账本自测」的形态：本文件也在 setupFile 的
 //      管辖下，自产的日志必须自带模板片段，否则 afterEach 先红。
 import { readFile, readdir } from "node:fs/promises";
@@ -13,15 +13,15 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { LOG_TEMPLATES } from "./log-templates.ts";
-// 标签单源：前缀与账本共用同一枚常量，包改名时不会两处各写一份（见 #203）。
+// 标签唯一来源：前缀与账本共用同一枚常量，包改名时不会两处各写一份（见 #203）。
 import { PKG_PREFIX, logged, loggedText } from "./setup-logs.ts";
 
 const pkgDir = path.join(import.meta.dirname, "..");
 
-/** 模板清单钉住的前缀：源码扫描面就是它。 */
+/** 模板清单钉住的前缀：源码扫描范围就是它。 */
 const PREFIX = PKG_PREFIX;
 
-/** 扫描面：宿主半与 src **整棵子树**（机器生成的 .generated.ts 不产日志，不在面内）。 */
+/** 扫描范围：宿主半与 src **整棵子树**（机器生成的 .generated.ts 不产日志，不在扫描范围）。 */
 async function logSources(): Promise<{ rel: string; text: string }[]> {
   const srcDir = path.join(pkgDir, "src");
   const entries = await readdir(srcDir, { recursive: true, withFileTypes: true });
@@ -38,7 +38,7 @@ async function logSources(): Promise<{ rel: string; text: string }[]> {
   );
 }
 
-/** 空白折叠：账本按 util.format 折叠后的文本匹配，静态片段也要同一口径。 */
+/** 空白折叠：账本按 util.format 折叠后的文本匹配，静态片段也要同一做法。 */
 function fold(text: string): string {
   return text.split(/\s+/u).join(" ").trim();
 }
@@ -97,7 +97,7 @@ function logCallSites(rel: string, text: string): { sites: LogCallSite[]; nonLit
   return { sites, nonLiteral };
 }
 
-/** 全扫描面（host.ts + src 整棵子树）的调用点汇总。 */
+/** 全扫描范围（host.ts + src 整棵子树）的调用点汇总。 */
 async function allCallSites(): Promise<{ sites: LogCallSite[]; nonLiteral: string[] }> {
   const sites: LogCallSite[] = [];
   const nonLiteral: string[] = [];
@@ -152,11 +152,11 @@ describe("模板清单与源码日志字面量互为镜像", () => {
         `${site.rel} 的 console.${site.level} 没有对应模板片段：${site.staticText}（test/log-templates.ts 漏登记）`,
       ).toBe(true);
     }
-    expect(sites.length, "扫描面不该是空的：源码里一条日志都没有").toBeGreaterThan(0);
+    expect(sites.length, "扫描范围不该是空的：源码里一条日志都没有").toBeGreaterThan(0);
   });
 });
 
-describe("setup-logs 账本自身的归一化与查询面", () => {
+describe("setup-logs 账本自身的归一化与查询接口", () => {
   it("记录展开 %s 占位、剥 ANSI、折叠空白并去首尾，logged/loggedText 都能取到", () => {
     // util.format 只拿首参当格式串：占位符与其余实参都在这一条里（真实日志的形状）。
     console.error(

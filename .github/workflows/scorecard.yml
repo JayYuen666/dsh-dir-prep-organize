@@ -3,7 +3,7 @@
 # 它查的正是本仓这一层关心的东西——脚本注入、token 权限、依赖是否钉版、分支保护是否
 # 存在。结果同时进 code scanning 面板与 OpenSSF 公有 API（本仓是 public 仓）。
 #
-# 写权限面与两处写入一一对应：publish_results 由 OIDC 换身份上传，要 id-token: write；
+# 声明的写权限与两处写入一一对应：publish_results 由 OIDC 换身份上传，要 id-token: write；
 # SARIF 进 code scanning 面板，要 security-events: write。两者都不需要 contents 的写权限。
 name: scorecard
 on:
@@ -59,7 +59,7 @@ jobs:
       - name: Upload to code-scanning
         # 只有 Run analysis 真的写出了 SARIF 才上传：它若在写文件前失败（拉取超时、
         # scorecard 自身报错），always() 会让这一步以「文件不存在」再红一次，
-        # 盖住真正的根因。
+        # 盖住真正的真正的原因。
         if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:

@@ -30,7 +30,7 @@ const made: Fixture[] = [];
 async function fixtureOf(files: Record<string, string>): Promise<Fixture> {
   const root = await mkdtemp(path.join(tmpdir(), "sc-"));
   const pkgDir = path.join(root, "pkg");
-  // 先登记再落盘：下面的 writeFile / mkdir 抛错时 afterEach 仍能删掉这个 root。
+  // 先登记再写到磁盘：下面的 writeFile / mkdir 抛错时 afterEach 仍能删掉这个 root。
   const fixture: Fixture = {
     pkgDir,
     cleanup: async () => {
@@ -267,7 +267,7 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
       const problems = problemsOf(fixture);
       assert.ok(
         problems.some((problem) => problem.includes("alpha")),
-        `正则里的引号让注释段被当成代码，门禁假绿：${problems.join(" / ")}`,
+        `正则里的引号让注释段被当成代码，门禁误判通过：${problems.join(" / ")}`,
       );
     });
 
@@ -311,7 +311,7 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
       assert.deepEqual(problemsOf(fixture), []);
     });
 
-    it("扫描面读不动时点名路径，而不是静默缩小范围", async () => {
+    it("扫描范围读不动时点名路径，而不是静默缩小范围", async () => {
       const fixture = await fixtureOf({
         "package.json": JSON.stringify({ name: PKG_NAME }),
         "host.ts": SINGLE_LINE_SCHEMA,
@@ -319,8 +319,8 @@ describe("schemaCoverageProblems：门禁自身的失效方式", () => {
       });
       const problems = problemsOf(fixture);
       assert.ok(
-        problems.some((problem) => problem.includes("扫描面不完整")),
-        `扫描面缩小没有被点名：${problems.join(" / ")}`,
+        problems.some((problem) => problem.includes("扫描范围不完整")),
+        `扫描范围缩小没有被点名：${problems.join(" / ")}`,
       );
     });
   });

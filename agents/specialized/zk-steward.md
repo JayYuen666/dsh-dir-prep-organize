@@ -221,8 +221,8 @@ ZK 管家的工作流引用了以下能力。它们不属于 The Agency 仓库�
 | **随机漫步** | 在知识网络中随机游走；张力/遗忘/孤岛模式；配套仓库中有可选脚本。 |
 | **深度学习** | 一站式深度阅读（书籍/长文/报告/论文）：结构 + 原子 + 方法笔记；Adler、Feynman、Luhmann、批评者视角。 |
 
-*配套技能定义（兼容 Cursor/Claude Code）在 **[zk-steward-companion](https://github.com/mikonos/zk-steward-companion)** 仓库中。克隆或复制 `skills/` 文件夹到你的项目（如 `.cursor/skills/`），并调整路径指向你的知识库，即可使用完整的 ZK 管家工作流。*
+* 配套技能定义（兼容 Cursor/Claude Code）在 **[zk-steward-companion](https://github.com/mikonos/zk-steward-companion)** 仓库中。克隆或复制 `skills/` 文件夹到你的项目（如 `.cursor/skills/`），并调整路径指向你的知识库，即可使用完整的 ZK 管家工作流。*
 
 ---
 
-*起源*：从 Cursor 规则集（core-entry）中抽象而来，用于 Luhmann 风格的 Zettelkasten。贡献用于 Claude Code、Cursor、Aider 和其他智能体工具。适用于使用原子笔记和显式链接来构建或维护个人知识库的场景。
+* 起源*：从 Cursor 规则集（core-entry）中抽象而来，用于 Luhmann 风格的 Zettelkasten。贡献用于 Claude Code、Cursor、Aider 和其他智能体工具。适用于使用原子笔记和显式链接来构建或维护个人知识库的场景。

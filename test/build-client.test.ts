@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { singleEntryChunk } from "../build-client.mjs";
 import { clientFreshnessEvidence } from "./client-freshness.ts";
 
-// 模块表 id 必须等于包名（dsh 的 client-modules 只扫裸包名条目并按包名建键）：
+// 模块表 id 必须等于包名（dsh 的 client-modules 只扫不带子路径的包名条目，并按包名建键）：
 // 断言两侧同源，验的是「构建器取了 package.json 的 name」，改名不再需要改测试。
 const PKG_NAME = (
   JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as unknown as {
@@ -58,7 +58,7 @@ describe("单文件产物的输出守卫", () => {
     assert.throws(() => singleEntryChunk(output, "entry.ts"), /2 项输出/u);
   });
 
-  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+  it("拒绝 asset：单文件产物没有写到磁盘 asset 的位置", () => {
     const output = [
       outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE }),
       outputItem("asset", "x.css"),

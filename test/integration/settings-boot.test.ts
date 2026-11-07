@@ -2,7 +2,7 @@
 //
 // 为什么值得把真 Loader 请进来：此前所有设置面用例都在**手搓 describe() 返回值**上跑
 // （test/routes.test.ts 的 locale 那一族、test/client.test.ts 的 ConfigForm 桩），于是
-// 「宿主到底把哪些字段投影成可编辑面、写完怎么回流到 volatile 引用」从来没被跑过。
+// 「宿主到底把哪些字段投影成可编辑字段、写完怎么回流到 volatile 引用」从来没被跑过。
 // 这层用的是官方自己的装配法（deepseek-harness packages/settings/settings/tests/
 // configuration-fixture.ts）：真临时 profile + 真 cordis.patch.yml + 真 ConfigEditor +
 // 真 SettingsForms，条目 id 就是本包 cordis.patch.yml 里那枚 `dir-prep-organize`。
@@ -10,7 +10,7 @@
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
 //  · `SettingsForms` 硬注入 `configEditor` + `profileContext`：packages/settings/settings/src/index.ts；
 //    服务名 'settings' 与 `Context.settings` 合并。
-//  · 投影面：`describe()` 只收**有 volatile 字段**的条目（volatileForm 回 undefined 即整条跳过）
+//  · 投影结果：`describe()` 只收**有 volatile 字段**的条目（volatileForm 回 undefined 即整条跳过）
 //    descriptor 必填位 ns/autoGenerate/schema/value/revision/applies；
 //    `base`/`user` 只在 redactSecrets 请求下额外给，不带 options 时也有；
 //    revision 取 JSON.stringify([fiber.uid, schema.toJSON(), entry.options.config]) 的指纹，
@@ -18,7 +18,7 @@
 //  · volatile 选取规则：`volatileForm` 递归取"最近一个 volatile 祖先"（schema.ts），
 //    `plainSchema` 保留 meta.default 但删掉 volatile 标记——这正是本包不把整张
 //    内置精选表写进 .default 的理由（host.ts 的 configShape 上方那段注释在此处得到实证）。
-//  · 写入面：`update` 合并、`replace` 整段、`mutate` 逐路径；三者在持久化前
+//  · 写入路径：`update` 合并、`replace` 整段、`mutate` 逐路径；三者在持久化前
 //    先过 `cloneJsonShaped`（只放 JSON 形：Date/Map/BigInt/环都拒）与
 //    `isVolatilePath` 校验（非 volatile → `Config field "x" is not volatile`）；
 //    带 expectedRevision 且对不上 → `SettingsConflictError`（code SETTINGS_CONFLICT）。
@@ -49,7 +49,7 @@ import { DiskFileSystem } from "./real-fs.ts";
 /** 本包 cordis.patch.yml 里那枚条目 id：设置页与 describe() 都以此寻址。
  *
  *  这里**读**包内那份 patch 而不是抄一份字面量：抄一份时 patch 改了 id 而测试照样绿，
- *  而真实安装面（宿主按 patch 里的 id 装载条目）已经换名——设置卡与 describe() 的寻址
+ *  而真实安装形状（宿主按 patch 里的 id 装载条目）已经换名——设置卡与 describe() 的寻址
  *  是同一个 id，两份必须同源。patch 是 YAML，这里只取第一条 `id:` 行（本文件就一条 insert）。 */
 const patchYml = readFileSync(new URL("../../cordis.patch.yml", import.meta.url), "utf8");
 const ENTRY_ID = /^\s*-?\s*id:\s*(?<id>\S+)\s*$/mu.exec(patchYml)?.groups?.["id"];
@@ -63,7 +63,7 @@ const PATCH_YML = "cordis.patch.yml";
 const CORDIS_YML = "cordis.yml";
 /** 临时 profile 里那枚 bundle 的名字（铺盘、patch 行、startedBundles 三处共用同一枚）。 */
 const TEST_BUNDLE = "test-bundle";
-/** 本包 Remote 读面的最小投影（服务经真 ctx.get 取出）。 */
+/** 本包 Remote 读取方法的最小投影（服务经真 ctx.get 取出）。 */
 interface DirPrepRemoteShape {
   context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
 }
@@ -74,7 +74,7 @@ function remoteOf(ctx: { get: (name: string) => unknown }): DirPrepRemoteShape {
   return service;
 }
 
-/** 设置里登记的允许导入目录（行 config、写面、门禁三处指同一枚路径）。 */
+/** 设置里登记的允许导入目录（行 config、写入、门禁三处指同一枚路径）。 */
 const ALLOWED_DIR = "/opt/roles";
 
 /** 装载选项。 */
@@ -93,7 +93,7 @@ interface Booted {
   home: string;
   profile: ProfileContext;
   ctx: Awaited<ReturnType<typeof boot>>;
-  /** 本包 apply 第二参数（cordis 校验+填默认后的 Config 引用表）——volatile 现读的落点。 */
+  /** 本包 apply 第二参数（cordis 校验+填默认后的 Config 引用表）——volatile 现读的位置。 */
   config: HostConfig;
   /** 卸载并清临时目录（用例结束时必调，否则临时 profile 会攒下来）。 */
   cleanup: () => Promise<void>;
@@ -109,7 +109,7 @@ const LocaleEntry = {
 
 /** bootRealSettings 的装配段：拿已建好的临时根铺 profile 并装载。 */
 async function assembleProfile(made: string, options: BootOptions): Promise<Booted> {
-  // macOS 的 /var → /private/var 是软链：profile 的落点一律用 realpath 后的拼写，
+  // macOS 的 /var → /private/var 是软链：profile 的路径一律用 realpath 后的拼写，
   // 否则 cleanup 与断言会拿两种拼比互相比较。
   const home = await realpath(made);
   const dir = path.join(home, "profiles", "test");
@@ -231,7 +231,7 @@ async function bootRealSettings(options: BootOptions = {}): Promise<Booted> {
   try {
     return await assembleProfile(made, options);
   } catch (error) {
-    // 装配中途抛错时 profile 目录已经落盘，而失败的那台不会进 booted（登记发生在 start
+    // 装配中途抛错时 profile 目录已经写到磁盘，而失败的那台不会进 booted（登记发生在 start
     // 成功返回之后）；不在这里清掉，就是每失败一次攒一个临时 profile。
     await rm(made, { recursive: true, force: true }).catch(() => {
       /* 清理失败不该掩盖装配错误：原错误更有诊断价值 */
@@ -383,7 +383,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
     assert.deepEqual(
       sectionOf(damaged)["templates"],
       [{ id: "x", name: "y", description: "", group: "", emoji: "" }],
-      "缺必填位的条目照原样进读面：text 既不存在也不补默认",
+      "缺必填位的条目照原样进读取方法：text 既不存在也不补默认",
     );
     // cloneJsonShaped：Date 不是 JSON 形，持久化前就拒
     await assert.rejects(
@@ -432,7 +432,7 @@ describe("真 Loader + 真 dsh-settings 装载本包 Config", () => {
 
   it("跨命名空间 locale 读：宿主 locale 偏好经真 describe() 决定 host 回执语言", async () => {
     // 这一条把「本包只读 locale 那一位」的实现放到真件上跑：文案表来自真 SettingsForms.describe()
-    // 的投影结果，而不是手搓的 rows。读面是官方 Remote 服务，直接在真 ctx 上调用。
+    // 的投影结果，而不是手搓的 rows。读取方法是官方 Remote 服务，直接在真 ctx 上调用。
     const zh = await start({ withFs: true });
     const zhRemote = remoteOf(zh.ctx);
     const zhContext = await zhRemote.context({ sessionId: "none" });

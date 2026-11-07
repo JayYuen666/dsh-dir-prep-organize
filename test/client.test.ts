@@ -6,7 +6,7 @@
 //   · 组件走 apply(ctx) 装配出来的真实 slot 组件树挂载，按 DOM 断言；
 //     交互优先直调 React props（happy-dom 合成事件到不了 React 19 root 监听器，
 //     已在前一个包里实证），button.click() 在真实链路上可用；
-//   · 读面一律经 setDirPrepReader 注入测试替身（fetchReader 只是替身的一种实现），
+//   · 读取方法一律经 setDirPrepReader 注入测试替身（fetchReader 只是替身的一种实现），
 //     模型/设置服务都是假对象 —— 绝不打真实模型。
 //
 // 审计修复的锁死点：
@@ -46,7 +46,7 @@ import { DEFAULT_TEMPLATES } from "../src/templates.ts";
 import type { TemplateEntry } from "../src/templates.ts";
 import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
 
-/** 官方快照面（6 位全必选）。桩件与全部 fixture 都用它，不再是本包自抄的四位形状：
+/** 官方快照类型（6 位全必选）。测试替身与全部 fixture 都用它，不再是本包自抄的四位形状：
  *  官方面加一位（base/user/mode 这类）这里就编译失败，而不是等真宿主来告诉测试。 */
 type FormSnapshot = ConfigFormSnapshot<Record<string, unknown>>;
 
@@ -56,7 +56,7 @@ type FormSnapshot = ConfigFormSnapshot<Record<string, unknown>>;
  * 的那一态。
  * ⚠ 默认 `value` 必须是**真宿主在「用户从没动过模板」时交出的形状**，不是 `{}`：
  * host 半的 `templates` 不给默认，但 schemastery 对 array 字段把缺失值 cast 成 `[]`，
- * 宿主 describe() 的 projectForm 只丢 undefined 位，于是空表原样递到客户端。桩件写成
+ * 宿主 describe() 的 projectForm 只丢 undefined 位，于是空表原样递到客户端。测试替身写成
  * `{}` 会让「回落内置」这条路只在测试里成立、真页面是空的（实测踩过）。
  */
 function snap(over: Partial<FormSnapshot> = {}): FormSnapshot {
@@ -202,7 +202,7 @@ interface FetchRoute {
   jsonThrows?: boolean;
 }
 
-/** fetch 实收到的 init（只取断言用到的三面；经守卫投影而非 as 断言）。 */
+/** fetch 实收到的 init（只取断言用到的三项；经守卫投影而非 as 断言）。 */
 interface FetchInit {
   method?: string;
   headers?: Headers;
@@ -224,9 +224,9 @@ const ORGANIZE_URL = "/_dsh/dir-prep/organize";
 const IMPORT_URL = "/_dsh/dir-prep/import";
 const DEFAULTS_URL = "/_dsh/dir-prep/default-templates";
 
-// ── DOM 针脚 / 槽位名 / 夹具值单源（本文件里重复 3 次以上的字面量集中在此）───
+// ── DOM 属性值 / 槽位名 /夹具值的集中定义（本文件里重复 3 次以上的字面量集中在此）───
 // 值一律**在本文件写死**，不 import 生产模块的同名常量：断言要钉的是「实现交出什么」，
-// 拿实现自己的常量去比实现自己就没人检查任何东西了（同上方端点常量的口径）。
+// 拿实现自己的常量去比实现自己就没人检查任何东西了（同上方端点常量的做法）。
 
 /** 框架槽名（inject/register 两侧与断言里读注册表用的都是这两条）。 */
 const SLOT_INPUT_RIGHT = "conversation.input.right";
@@ -235,7 +235,7 @@ const SLOT_BUNDLE_CONFIG = "plugins.bundle.config";
 /** 本包条目 id：settings 命名空间 / dock 注册项 id / cordis.patch.yml 裸 id 同一位。 */
 const ENTRY_ID = "dir-prep-organize";
 
-/** 组件写进 DOM 的 data-field 针脚（byField/byFields/buttonByField/stateOf 的入参）。 */
+/** 组件写进 DOM 的 data-field 值（byField/byFields/buttonByField/stateOf 的入参）。 */
 const FIELD_ORGANIZE_BTN = "dpi-organize-btn";
 const FIELD_ORGANIZE_CARET = "dpi-organize-caret";
 const FIELD_ORGANIZE_MENU = "dpi-organize-menu";
@@ -259,7 +259,7 @@ const LIBRARY_DIR = "/Users/x/library";
 const AGENCY_ZH_DIR = "/Users/me/agency-agents-zh";
 const OTHER_ROLES_DIR = "/Users/other/roles";
 
-// 刻意手抄：test/ 不引运行时依赖，真源见 shared/lib/record.ts。
+// 刻意照抄：test/ 不引运行时依赖，唯一来源见 shared/lib/record.ts。
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -365,7 +365,7 @@ function stubBuiltinTemplates(
   });
 }
 
-/** 内置表端点的响应形状（桩件与断言共用，别让 release 收 unknown）。 */
+/** 内置表端点的响应形状（测试替身与断言共用，别让 release 收 unknown）。 */
 interface BuiltinBody {
   ok: boolean;
   templates?: unknown;
@@ -388,7 +388,7 @@ function stubBuiltinPending(): { release: (body?: BuiltinBody) => void } {
   };
 }
 
-/** 只数内置表端点被打了几个（轮询/复用面的观测量）。 */
+/** 只数内置表端点被打了几个（轮询/复用时的观测量）。 */
 function defaultsCallCount(): number {
   return fetchCalls.filter((call) => call.url.startsWith(DEFAULTS_URL)).length;
 }
@@ -409,7 +409,7 @@ async function flush(): Promise<void> {
 
 /** 表单假实现 = 官方 `ConfigForm<Record<string, unknown>>`（getSnapshot / subscribe /
  *  mutate / set / unset 五成员全必选）加测试侧的轨迹与绊线。`extends` 是**编译期**契约：
- *  官方面加一位或改一位签名，这里立刻编译失败（旧的自抄四成员面正缺 `mutate`）。 */
+ *  官方面加一位或改一位签名，这里立刻编译失败（旧的自抄版本正缺 `mutate`）。 */
 interface FakeScope extends ConfigForm<Record<string, unknown>> {
   /** 绊线：`ConfigForm` 面里没有 dispose，表单归 provider 长活。
    *  这里刻意留一个**必抛**的成员——client 侧一旦把 `scope.dispose()` 写回 disposer，
@@ -453,7 +453,7 @@ function makeScope(initial: FormSnapshot): FakeScope {
       throw new Error("configForms.get() 交回的是 provider 持有的共享表单，不得 dispose");
     },
     // 官方第五位（路径级原子批量写）：本包卡片的保存始终逐字段走 set/unset，故这里
-    // 只满足类型面，并在被调用时明确失败——静默返回 true 会让「走了批量写」这件事
+    // 只满足类型上，并在被调用时明确失败——静默返回 true 会让「走了批量写」这件事
     // 变成一次没人发现的假成功。
     mutate: (): Promise<boolean> => {
       throw new Error("本卡按字段写走 set/unset，不应触达官方 mutate（批量原子写）");
@@ -481,7 +481,7 @@ function makeScope(initial: FormSnapshot): FakeScope {
         return false;
       }
       // unset 之后宿主不是把键抹掉，而是按 schema 重新求值该 array 字段 → 空表
-      // （与上方 snap() 默认 value 同一真值口径，见 client-entry.ts 的 fromSettings 注释）。
+      // （与上方 snap() 默认 value 同一真值做法，见 client-entry.ts 的 fromSettings 注释）。
       commit({
         ...snapshot,
         revision: (snapshot.revision ?? 0) + 1,
@@ -531,7 +531,7 @@ interface MockCtx {
   /** apply 向 `configForms.get()` 要过哪些条目 id（0.1.7 里它就是 settings 命名空间）。 */
   formEntryIds: string[];
   /** 注册进官方 locale 的入参（命名空间 + 一次交齐的两语字典），供双语断言。
-   *  元素形状从生产侧的 register 签名派生，桩件与生产不会各自漂移。 */
+   *  元素形状从生产侧的 register 签名派生，测试替身与生产不会各自漂移。 */
   localeCalls: { ns: Parameters<LocaleSeat["register"]>[0]; dicts: LocaleDictArg }[];
   effect: (factory: () => (() => void) | undefined, label?: string) => void;
   slots: {
@@ -540,11 +540,11 @@ interface MockCtx {
   };
   configForms: { get: (entryId: string) => FakeScope };
   get: (name: string, strict?: boolean) => unknown;
-  /** 生产 `apply` 的那一位原样引用：桩件实现一改形状即编译期红。 */
+  /** 生产 `apply` 的那一位原样引用：测试替身实现一改形状即编译期红。 */
   locale: LocaleSeat;
 }
 
-/** 生产 ClientCtx（未导出，但可从 apply 的入参取到）——桩件的 locale 面跟着它走。 */
+/** 生产 ClientCtx（未导出，但可从 apply 的入参取到）——测试替身的 locale 面跟着它走。 */
 type ApplyCtx = Parameters<typeof clientApply>[0];
 /** 官方类型化 register 的字典参数（两语目录），同样从生产侧派生。 */
 type LocaleDictArg = Parameters<ApplyCtx["locale"]["register"]>[1];
@@ -756,7 +756,7 @@ function mountAll(
   const dockRegs = ctx.registers.filter((reg) => reg.name === SLOT_INPUT_RIGHT);
   assert.equal(dockRegs.length, 2, "润色 + 模板两个按钮");
   // dock 注册契约（官方 slots.md）：locale 声明（框架合成 t seat）+ inject hooks 间隔
-  // （裸 getSnapshot/subscribe 源 → useCard，组件不直呼 useSyncExternalStore），
+  // （只提供 getSnapshot/subscribe 的源 → useCard，组件不直呼 useSyncExternalStore），
   // 且与设置卡共享同一 store 实例。
   for (const reg of dockRegs) {
     assert.equal(reg.locale, ENTRY_ID, "dock 注册声明 locale 命名空间");
@@ -779,7 +779,7 @@ function mountAll(
     "dock inject 的 hooks.card 是 templatesStore",
   );
   // 上一条 assert.ok 已经把 dockInjected 收窄成非空（node 的 ok 是 asserts value），
-  // 这里再判一次 undefined 在类型面上恒真 ⇒ 只留真正的共享实例判据。
+  // 这里再判一次 undefined 在类型上永远成立 ⇒ 只留真正的共享实例判据。
   assert.ok(
     dockInjected.hooks.card === cardInjected.hooks.card,
     "dock 与设置卡共享同一 store 实例",
@@ -802,9 +802,9 @@ function mountAll(
 let root: Root | null = null;
 let container: HTMLDivElement;
 
-/** 草稿写入记录（kitProps 的 setDraft 落点；beforeEach 清空）。 */
+/** 写回输入框的文本记录（`inputActions.setDraft` 的调用参数；beforeEach 清空）。 */
 const writes: string[] = [];
-/** 插入记录（模板入口的 captureInsertion/insertText 落点；beforeEach 清空）。 */
+/** 插入记录（模板入口的 captureInsertion/insertText 的调用记录；beforeEach 清空）。 */
 const inserts: { text: string; span: InsertSpan }[] = [];
 
 async function unmount(): Promise<void> {
@@ -835,7 +835,7 @@ async function rerender(ui: React.ReactElement): Promise<void> {
 
 function text(): string {
   // container 是 div：DOM 契约里元素的 textContent 只可能是 string（空元素回 ""，
-  // null 只出现在 document / doctype 上），故 `?? ""` 是类型面与运行时都成立的冗余守卫。
+  // null 只出现在 document / doctype 上），故 `?? ""` 是类型上与运行时都成立的冗余守卫。
   return container.textContent;
 }
 
@@ -883,7 +883,7 @@ async function press(target: HTMLElement | null): Promise<void> {
 }
 
 /** React 19 挂在节点上的真实 props（绕过 happy-dom 合成事件层）。
- *  `__reactProps$…` 是 DOM 节点上的自有属性，Element 类型面没有索引签名，
+ *  `__reactProps$…` 是 DOM 节点上的自有属性，Element 类型上没有索引签名，
  *  故整体收窄一次（测试面专用；src 侧禁同类断言）。 */
 function reactPropsOf(node: Element): Record<string, unknown> {
   const holder = node as unknown as Record<string, unknown>;
@@ -894,10 +894,10 @@ function reactPropsOf(node: Element): Record<string, unknown> {
   return props;
 }
 
-/** 事件 handler 的统一调用面（事件对象按 unknown 传入，组件按各自形状取用）。 */
+/** 事件 handler 的统一调用方式（事件对象按 unknown 传入，组件按各自形状取用）。 */
 type DomHandler = (event?: unknown) => void;
 
-/** 取节点上某个 React 事件 prop：先 typeof 断言（形状不对立刻红），再收窄调用面。 */
+/** 取节点上某个 React 事件 prop：先 typeof 断言（形状不对立刻红），再收窄函数类型。 */
 function handlerOf(node: Element, name: string): DomHandler {
   const handler = reactPropsOf(node)[name];
   assert.equal(typeof handler, "function", `${name} 必须是函数`);
@@ -919,7 +919,7 @@ async function type(node: HTMLElement | null, value: string): Promise<void> {
   });
 }
 
-/** 直调 React onBlur（设置卡"失焦即上报草稿"路径）。 */
+/** 直调 React onBlur（设置卡上「失焦即写入 `draft`」那条路径）。 */
 async function blur(node: HTMLElement | null): Promise<void> {
   assert.ok(node, "输入框存在");
   await act(async () => {
@@ -1154,7 +1154,7 @@ describe("formatImportSkips（计数句子取自卡片字典）", () => {
     );
   });
 
-  it("五类计数都进句子（escaped = 符号链接被安全闸门拦下的那一项）", () => {
+  it("五类计数都进句子（escaped = 符号链接被安全检查拦下的那一项）", () => {
     const out = formatImportSkips(tZh, {
       tooLarge: 1,
       unreadable: 2,
@@ -1231,7 +1231,7 @@ describe("inject 声明", () => {
     const regs = ctx.registers.filter((reg) => reg.name === SLOT_BUNDLE_CONFIG);
     // `.at(0)` 而不是 `[0]`：下标在 oxlint 的类型引擎里非空（它不接 tsc 的
     // noUncheckedIndexedAccess），可选链会被判冗余；at() 的返回类型自带 `| undefined`，
-    // 两套类型面一致。提到一处局部量，四条断言读的都是同一个 key。
+    // 两套类型上一致。提到一处局部量，四条断言读的都是同一个 key。
     const bundleKey = regs.at(0)?.key;
     assert.equal(regs.length, 1, "只登记一张 bundle 设置卡");
     assert.equal(bundleKey, await profileBundleName(), "key = 宿主派发的 entryKey（bundle 包名）");
@@ -1295,7 +1295,7 @@ interface InputActionsFace {
   insertText: (text: string, span: InsertSpan) => boolean;
 }
 
-/** exactOptionalPropertyTypes 下"显式给 undefined"要写进字段类型里，才能模拟宿主中途摘面。 */
+/** exactOptionalPropertyTypes 下"显式给 undefined"要写进字段类型里，才能模拟宿主中途摘掉这些字段。 */
 type MutableActions = { [Key in keyof InputActionsFace]?: InputActionsFace[Key] | undefined };
 
 interface KitProps {
@@ -1308,13 +1308,13 @@ interface KitProps {
   sessionId?: string;
 }
 
-/** 输入面替身：默认空闲、草稿版本 0；用例只覆盖自己关心的那几位。 */
+/** 输入框状态替身：默认空闲、`draftRev` 为 0；用例只覆盖自己关心的那几位。 */
 function inputView(state: Partial<InputView> = {}): KitProps["useInput"] {
   return <TResult>(selector: (view: InputView) => TResult): TResult =>
     selector({ draft: "原始草稿", draftRev: 0, phase: "plain", ...state });
 }
 
-/** 一套自洽的输入面替身：captureInsertion 读的是同一份活版本号，供"在途改稿"用例驱动。 */
+/** 一套自洽的输入框状态替身：captureInsertion 读的是同一份活版本号，供"在途改稿"用例驱动。 */
 function liveActions(live: { rev: number }): InputActionsFace {
   return {
     setDraft: (value: string): void => {
@@ -1379,7 +1379,7 @@ async function expectStaleDiscarded(orgBody: unknown): Promise<void> {
   await flush();
 }
 
-/** 在途润色：`whilePending` 里把输入面换成新状态（草稿版本 / 阶段 / 会话）并重挂，
+/** 在途润色：`whilePending` 里把输入框状态换成新的（`draftRev` / `phase` / `sessionId`）并重挂，
  *  再让响应落地。每次重挂读到的都是"最新一帧"，不是发起时的闭包。 */
 async function expectWriteBackSkipped(
   initial: KitOverrides,
@@ -1740,8 +1740,8 @@ describe("OrganizeButton", () => {
   });
 
   it("宿主只给 setDraft 时润色仍写回（版本按最近一帧核对）", async () => {
-    // 三个受支持版本都带 captureInsertion；这里守的是"插入面缺席"的降级路：
-    // 仍按会话、阶段与最近一帧的草稿版本核对，不因为读不到活版本就整条拒绝。
+    // 三个受支持版本都带 captureInsertion；这里守的是"插入接口缺席"的降级路：
+    // 仍按会话、阶段与最近一帧的 `draftRev` 核对，不因为读不到活版本就整条拒绝。
     stubOrganizeOk();
     const { organize } = mountAll();
     const props: Record<string, unknown> = {
@@ -1849,7 +1849,7 @@ describe("OrganizeButton", () => {
       async ({ props, rerenderWith }) => {
         props["useInput"] = inputView({ phase: "sending" });
         await rerenderWith();
-        // 发送失败/取消退回编辑态：草稿版本没变，只靠"当前是不是 plain"判会漏掉这一段
+        // 发送失败/取消退回编辑态：`draftRev` 没变，只靠"当前是不是 plain"判会漏掉这一段
         props["useInput"] = inputView({ phase: "plain" });
         await rerenderWith();
       },
@@ -2049,7 +2049,7 @@ describe("TemplateButton", () => {
     assert.match(text(), /无模板：在设置页/u);
   });
 
-  it("宿主未注入 useInput + 从未设置过模板 → 按内置精选集渲染、按插入面落地", async () => {
+  it("宿主未注入 useInput + 从未设置过模板 → 按内置精选集渲染、按插入接口落地", async () => {
     stubBuiltinTemplates();
     const { template } = mountAll(snap({ revision: 0 }));
     writes.length = 0;
@@ -2064,11 +2064,11 @@ describe("TemplateButton", () => {
     assert.deepEqual(
       inserts.map((entry) => entry.text),
       [firstTpl.text],
-      "缺 useInput 不影响插入（插入面不读草稿文本）",
+      "缺 useInput 不影响插入（插入面不读 `draft` 文本）",
     );
   });
 
-  it("宿主 useInput 返回 undefined → 模板仍按插入面落地", async () => {
+  it("宿主 useInput 返回 undefined → 模板仍按插入接口落地", async () => {
     const { template } = mountAll();
     writes.length = 0;
     await mount(
@@ -2133,7 +2133,7 @@ describe("TemplateButton", () => {
     assert.deepEqual(inserts, []);
   });
 
-  it("展开后点选时插入面已失效 → 静默不炸，也不回落整稿覆盖", async () => {
+  it("展开后点选时插入接口已失效 → 静默不炸，也不回落整稿覆盖", async () => {
     const { template } = mountAll();
     const actions: MutableActions = {
       setDraft: (value: string): void => {
@@ -2235,8 +2235,8 @@ function injectOf(mounted: { cardInject: () => Record<string, unknown> }): CardI
   return injected;
 }
 
-/** 挂上设置卡（refresh = 外部快照变化后重挂，驱动草稿跟随）。
- *  translator 决定卡片语言；卡片正文直接渲染，不再有折叠头。 */
+/** 挂上设置卡（refresh = 外部快照变化后重挂，驱动 `draft` 跟随）。
+ *  translator 决定卡片语言；卡片正文直接渲染，不需要额外的展开步骤。 */
 async function openCard(
   initial?: FormSnapshot,
   translator: Translate = tZh,
@@ -2262,7 +2262,7 @@ function inputByClass(cls: string, index: number): HTMLElement | null {
   return nodes[index] ?? null;
 }
 
-/** 某类输入框的当前值（受控渲染，读 DOM 即读草稿）。 */
+/** 某类输入框的当前值（受控渲染，读 DOM 即读 `draft`）。 */
 function rowValue(cls: string, index: number): string {
   const node = inputByClass(cls, index);
   assert.ok(node, `${cls}[${String(index)}] 存在`);
@@ -2355,7 +2355,7 @@ describe("TemplatesCard 状态提示", () => {
   });
 
   it("首个快照受理前（value/revision 缺席）→ 未就绪 + 无值 + revision 0", async () => {
-    // 原用例喂的是「整个快照是 null」，官方快照面（6 位全必选）根本表示不出这种
+    // 原用例喂的是「整个快照是 null」，官方快照类型（6 位全必选）根本表示不出这种
     // 形状，src 里那条 `isRecord(snap) ? snap : {}` 也随类型回归官方而删除。这里改钉
     // 官方真会送来的那一态：provider 还没接受任何 section → status loading、
     // value/revision 均为 undefined。
@@ -2369,7 +2369,7 @@ describe("TemplatesCard 状态提示", () => {
 
   it("status 已 ready 而 revision 尚未有数 → 复读 ready=true + revision 0", async () => {
     // 官方 `revision: number | undefined`（"undefined before the first Host view"），
-    // `value: T | undefined` 同理：这两位是真的会缺，故 `?? 0` / `?? {}` 是契约内兜底。
+    // `value: T | undefined` 同理：这两位是真的会缺，故 `?? 0` / `?? {}` 是契约内后备。
     // 原先伪造的 `revision:"3"`、`value:"不是对象"` 在官方面上不可表示，已改回契约内形状。
     const mounted = mountAll(snap({ value: undefined, revision: undefined }));
     const readBack: unknown = injectOf(mounted).readBack();
@@ -2461,7 +2461,7 @@ describe("TemplatesCard 编辑与保存", () => {
     await press(saveButton());
     const sent = writeJson(ctx, 0);
     assert.ok(sent.includes('"emoji":"1234567890ab"'), `emoji 截到 12 字符后才写宿主：${sent}`);
-    assert.ok(sent.includes('"name":"带空格的长名字"'), "名称先 trim 再落盘");
+    assert.ok(sent.includes('"name":"带空格的长名字"'), "名称先 trim 再写到磁盘");
     assert.equal(errText(), "", "归一后的回执与宿主值一致");
   });
 
@@ -2509,7 +2509,7 @@ describe("TemplatesCard 编辑与保存", () => {
     await blur(inputByClass(CLS_EMOJI, 0));
     await type(inputByClass(".dpic-group", 0), "工程");
     await blur(inputByClass(".dpic-group", 0));
-    // .dpic-desc 只挂在设置行的说明输入框上；带 input 前缀把选择器钉到那个控件
+    // .dpic-desc 只挂在设置行的说明输入框上；带 input 前缀把选择器对齐到那个控件
     await type(inputByClass("input.dpic-desc", 0), "一句话");
     await blur(inputByClass("input.dpic-desc", 0));
     await press(saveButton());
@@ -2563,7 +2563,7 @@ describe("TemplatesCard 编辑与保存", () => {
     const { ctx } = await openCard();
     await press(buttonContaining("新增模板"));
     assert.equal(rowValue(CLS_NAME, 1), "新模板 2");
-    // 正文留空的新行会被 sanitize 剔除（占位提示只住在 placeholder），先填正文再存。
+    // 正文留空的新行会被 sanitize 剔除（占位提示只写在 `placeholder` 属性上），先填正文再存。
     await type(inputByClass(CLS_TEXT, 1), "正文乙");
     await blur(inputByClass(CLS_TEXT, 1));
     await press(saveButton());
@@ -2589,9 +2589,13 @@ describe("TemplatesCard 编辑与保存", () => {
   it("新增模板不填正文直接保存 → 空正文行被剔除，占位提示不会变成数据", async () => {
     const { ctx } = await openCard();
     await press(buttonContaining("新增模板"));
-    assert.equal(rowValue(CLS_TEXT, 1), "", "新行正文为空，提示语只住在 placeholder");
+    assert.equal(rowValue(CLS_TEXT, 1), "", "新行正文为空，提示语只写在 `placeholder` 属性上");
     await press(saveButton());
-    assert.deepEqual(ctx.scope.writes[0]?.value, [TPL], "空正文的新行不下发；落盘的只有原有条目");
+    assert.deepEqual(
+      ctx.scope.writes[0]?.value,
+      [TPL],
+      "空正文的新行不下发；写到磁盘的只有原有条目",
+    );
   });
 
   it("外部改动且本地无编辑 → 草稿跟随；有未保存编辑 → 保留本地", async () => {
@@ -2665,10 +2669,10 @@ describe("TemplatesCard 恢复默认", () => {
   });
 
   it("保存在途时「恢复默认」禁用（两者写同一份表单，不能并发）", async () => {
-    // reset 走 unset、保存走 set，落点是同一个字段。放开并发就是「最后写入者赢」：
+    // reset 走 unset、保存走 set，落到的是同一个字段。放开并发就是「最后写入者赢」：
     // 一次保存可能刚写进去就被 unset 抹掉（或反过来），而界面全程显示成功。
     stubBuiltinTemplates();
-    // 用 Promise<undefined> 而非 Promise<void>：闸门只在用例末尾 resolve 一次、解析值
+    // 用 Promise<undefined> 而非 Promise<void>：这个 gate 只在用例末尾 resolve 一次、解析值
     // 无人消费（typescript/no-invalid-void-type 只允许 void 作返回值或类型实参）。
     const gate = Promise.withResolvers<undefined>();
     const { ctx } = await openCard();
@@ -2697,7 +2701,7 @@ describe("TemplatesCard 恢复默认", () => {
 
   it("保存在途时正文也不可编辑：回写会整份覆盖在途期间的改动", async () => {
     // 卡底三个按钮禁用只挡住了按钮。一次往返里用户仍能改行、改允许目录、导入角色，
-    // 而保存用的是点击那一刻的草稿快照，回写会把这些改动整份盖掉且没有任何提示。
+    // 而保存用的是点击那一刻的 `draft` 快照，回写会把这些改动整份盖掉且没有任何提示。
     stubBuiltinTemplates();
     const gate = Promise.withResolvers<undefined>();
     const { ctx } = await openCard();
@@ -2766,7 +2770,7 @@ describe("内置表按需下发", () => {
     assert.equal(byFields(FIELD_TEMPLATE_ITEM).length, DEFAULT_TEMPLATES.length);
   });
 
-  it("传输层抛错也落失败面（不静默卡在占位行）", async () => {
+  it("传输层抛错也落失败（不静默卡在占位行）", async () => {
     stubBuiltinTemplates("network");
     const { organize } = mountAll(snap({ value: { templates: [] }, revision: 0 }));
     await mount(React.createElement(organize, kitProps()));
@@ -2807,7 +2811,7 @@ describe("内置表按需下发", () => {
     assert.equal(byFields(FIELD_TEMPLATE_ITEM).length, 1);
   });
 
-  it("读面缺席 → 载入报「远程读面不可用」而不是静默空表", async () => {
+  it("读取方法缺席 → 载入报「远程读取不可用」而不是静默空表", async () => {
     setDirPrepReader(undefined);
     const state = await loadBuiltinTemplates();
     assert.equal(state.phase, "error");
@@ -2819,7 +2823,7 @@ describe("内置表按需下发", () => {
   it("在飞期间并发调用只发一发", async () => {
     stubBuiltinTemplates();
     const [, second] = await Promise.all([loadBuiltinTemplates(), loadBuiltinTemplates()]);
-    assert.equal(defaultsCallCount(), 1, "第二次撞在飞闸门：复用同一条 promise");
+    assert.equal(defaultsCallCount(), 1, "第二次撞上的是在途的那次请求：复用了同一条 promise");
     assert.equal(second.phase, "ready");
   });
 
@@ -2834,7 +2838,7 @@ describe("内置表按需下发", () => {
     assert.equal(builtinTemplatesSnapshot().phase, "idle", "上一代的结果不许写进 store");
   });
 
-  it("载荷不是对象（老宿主/HTML 回执）→ 失败面带得出兜底文案", async () => {
+  it("载荷不是对象（老宿主/HTML 回执）→ 失败带得出兜底文案", async () => {
     stubFetch((url) =>
       url.startsWith(DEFAULTS_URL) ? { body: "<!doctype html>" } : { body: { ok: true } },
     );
@@ -3029,7 +3033,7 @@ describe("ImportPanel 角色导入", () => {
     await openCard();
     await clickViaProps(buttonWithText("导入角色"));
     assert.ok(buttonWithText("导入中…"), "导入请求在途");
-    // 在途窗口里用户新增一行：这一行不能被稍后落地的导入结果吃掉。
+    // 在途窗口里用户新增一行：这一行不能被稍后写回的导入结果覆盖。
     await press(buttonContaining("新增模板"));
     assert.equal(rowValue(CLS_NAME, 1), "新模板 2", "在途期间新增的行已进草稿");
     await act(async () => {
@@ -3070,7 +3074,7 @@ describe("ImportPanel 角色导入", () => {
 
 // ── 设置页「导入允许目录」（settings.importAllowRoots 的 UI 绑定 + 写入核验）───
 
-/** 输入框当前值（happy-dom 的 HTMLElement 类型面没有 value，沿用 rowValue 的探测法）。 */
+/** 输入框当前值（happy-dom 的 HTMLElement 类型上没有 value，沿用 rowValue 的探测法）。 */
 function valueOf(node: HTMLElement): string {
   const value = "value" in node ? node.value : "";
   return typeof value === "string" ? value : "";
@@ -3083,7 +3087,7 @@ function rootInputs(): HTMLElement[] {
   return [...box.querySelectorAll<HTMLElement>("input")];
 }
 
-/** 第 index 个已登记目录的输入框（越界即失败，不把 undefined 漏进调用面）。 */
+/** 第 index 个已登记目录的输入框（越界即失败，不把 undefined 传给调用处）。 */
 function rootInputAt(index: number): HTMLElement {
   const node = rootInputs()[index];
   assert.ok(node, `第 ${String(index)} 个允许目录输入框存在`);
@@ -3276,7 +3280,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
       if (!url.startsWith(ORGANIZE_URL)) {
         return { body: { ok: true, cwd: "/w", entries: [], provider: "p", model: "m" } };
       }
-      // 挂住不返回：客户端侧的 125s 闸门必须自己收口（网关不会替它超时）。
+      // 挂住不返回：客户端侧的 125s 超时必须自己生效（网关不会替它等到超时）。
       const gate = Promise.withResolvers<FetchRoute>();
       return gate.promise;
     });
@@ -3300,7 +3304,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     const ctx = makeCtx();
     clientApply(ctx as unknown as Parameters<typeof clientApply>[0]);
     assert.ok(document.querySelector("#dir-prep-organize-css"), "样式已注入");
-    // 绊线在位（桩件的 dispose 一被调用就抛）→ 下面那句"清理不 dispose 表单"是实测而非声称：
+    // 绊线在位（测试替身的 dispose 一被调用就抛）→ 下面那句"清理不 dispose 表单"是实测而非声称：
     // 0.1.7 的 `ConfigForm` 面里没有 dispose（installed config-form-types.d.ts 的 ConfigForm），
     // 把 scope.dispose() 写回 disposer 会当场炸在这里。
     assert.throws(() => {
@@ -3373,7 +3377,7 @@ describe("客户端 fetch 超时与卸载清理", () => {
     const injected: unknown = reg.inject();
     assert.ok(isCardInject(injected), "inject 形状：t + hooks.card + set/unset/readBack");
     assert.equal(injected.t, tZh, "t 来自 ctx.locale.bind（宿主绑到哪份字典由语言决定）");
-    // 0.1.7 的受理位直通：set/unset 回 Promise<boolean>（installed
+    // 0.1.7 的受理结果直通：set/unset 回 Promise<boolean>（installed
     // config-form-types.d.ts），宿主拒绝 → false 而不是 reject。
     assert.equal(await injected.set("templates", [TPL]), true, "受理成功回 true");
     assert.deepEqual(ctx.scope.writes[0]?.value, [TPL], "set 直通表单");
@@ -3396,7 +3400,7 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
   afterEach(domFixtureTeardown);
 
   /** 调用侧参数与模板占位符的集合比对（见 tCalls 处的说明）。挂在本文件最后一个
-   *  describe 的 afterAll 上：全部用例跑完时登记面才是完整的。 */
+   *  describe 的 afterAll 上：全部用例跑完时登记表才是完整的。 */
   afterAll(() => {
     assert.ok(tCalls.length > 0, "登记面不该是空的：t 一次都没被调用说明桩接错了");
     const table: Record<string, string> = { ...UI_MESSAGES.zh };
@@ -3431,7 +3435,7 @@ describe("设置卡双语（@deepseek-ai/dsh-client-locale 契约）", () => {
       [ENTRY_ID],
       "字典按本包命名空间注册进官方 locale，且只注册一次（官方类型化重载两语一次交齐）",
     );
-    // 首条记录先 assert 到位再取字段：`?.` 是类型面上的冗余守卫（数组元素的 at(0) 在
+    // 首条记录先 assert 到位再取字段：`?.` 是类型上的冗余守卫（数组元素的 at(0) 在
     // 这里被解析成非空元素类型），而且真缺席时它会退化成 undefined ≠ string 的软失败。
     const localeCall = ctx.localeCalls.at(0);
     assert.ok(localeCall, "字典注册记录在位（上一句已钉恰好一次）");

@@ -28,7 +28,7 @@ interface Rig {
 
 const rigs: Rig[] = [];
 
-/** 产物态装配：内存构建 → 独立临时目录落盘（与 dist 布局同构）→ 原生 import → 真宿主装配。 */
+/** 产物态装配：内存构建 → 独立临时目录写到磁盘（与 dist 布局同构）→ 原生 import → 真宿主装配。 */
 async function bootProduct(options: {
   script: readonly string[];
 }): Promise<{ host: HostStack; productDir: string }> {
@@ -91,7 +91,7 @@ async function boot(replies: readonly string[], files: Record<string, string>): 
   return rig;
 }
 
-/** Remote 读面的本包投影（与 roundtrip.test.ts 同一面）。 */
+/** Remote 读取方法的本包投影（与 roundtrip.test.ts 同一份形状）。 */
 function serviceOf(host: HostStack): {
   defaults: () => Promise<unknown>;
   context: (request: { sessionId: string }) => Promise<Record<string, unknown>>;
@@ -129,7 +129,7 @@ describe("构建产物态装载", () => {
     }
   });
 
-  it("rolldown 产物经原生 import 装进真宿主，defaults 读面可调", async () => {
+  it("rolldown 产物经原生 import 装进真宿主，defaults 读取方法可调", async () => {
     const { host } = await boot(["不被调用"], { "a.ts": "export const a = 1;\n" });
     const defaults = await serviceOf(host).defaults();
     assert.ok(defaults !== null && typeof defaults === "object");
@@ -142,7 +142,7 @@ describe("构建产物态装载", () => {
     });
     const service = serviceOf(host);
     const context = await service.context({ sessionId: "s1" });
-    assert.equal(context["cwd"], project, "产物态的 context 读面交回真会话 cwd");
+    assert.equal(context["cwd"], project, "产物态的 context 读取方法交回真会话 cwd");
     const { entries } = context;
     assert.ok(Array.isArray(entries), "目录表经真 fs 读出");
     const names = (entries as { name: string }[]).map((entry) => entry.name);
@@ -155,7 +155,7 @@ describe("构建产物态装载", () => {
     });
     assert.equal(organized["content"], "整理后的正文", "脚本模型回执原样递回");
 
-    // 模型可见面：cwd 在 system，摘要与草稿进 user 帧——两半字段名漂移任何一处都空串。
+    // 模型可见面：cwd 在 system，摘要与 `prompt` 进 user 帧——两半字段名漂移任何一处都空串。
     const [request] = host.adapter.requests;
     assert.ok(request !== undefined, "真 LlmRuntime 把请求交到了适配器");
     assert.ok((request.system ?? "").includes(project), "会话 cwd 进 system");
@@ -174,6 +174,6 @@ describe("构建产物态装载", () => {
       .join("");
     assert.ok(userText.includes("notes.md"), "目录表进模型");
     assert.ok(userText.includes(INDEX_SNIPPET), "关键文件正文进模型");
-    assert.ok(userText.includes("把上面那份笔记整理成评审要点"), "草稿原文进 user 帧");
+    assert.ok(userText.includes("把上面那份笔记整理成评审要点"), "`prompt` 原文进 user 帧");
   }, 60_000);
 });

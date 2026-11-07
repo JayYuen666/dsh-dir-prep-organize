@@ -1,24 +1,24 @@
-// test/integration/filesystem.test.ts —— 任务 #3：以**真实 FileSystem 抽象类**驱动本包读面。
+// test/integration/filesystem.test.ts —— 任务 #3：以**真实 FileSystem 抽象类**驱动本包读取方法。
 //
 // 与 test/routes.test.ts 的分工：那里用 `FsService` 形状的**手搓桩**跑回执分支（快、稳、可造
 // 罕见错误）；这里换成真磁盘 + 真抽象类子类（test/integration/real-fs.ts，语义逐条对齐宿主
-// fs-local，契约证据写在那份文件头），于是三类只在真件上才会露面的东西被纳入判据：
+// fs-local，契约证据写在那份文件头），于是三类只有真文件系统上才会暴露的问题被纳入判据：
 //   ① listDir 交来的 `size`/`type` 是不是真的（桩里 `size` 随手一给就"测得出绿"，而
 //      readSnippetBounded 整条取舍都挂在它上面）；
 //   ② 软链的 targetKey 身份（宿主 fsio.ts 的 realpath 派生）在 contains/去重上是否一致；
 //   ③ 真错误（FS_NOT_TEXT / FS_NOT_DIRECTORY / FS_TOO_LARGE）经本包降级后计到哪一格。
 //
 // 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
-//  · `FileSystem` 抽象面 13 位：packages/fs/fs/src/index.ts 的 resolve / processPath /
+//  · `FileSystem` 抽象接口的 13 位成员：packages/fs/fs/src/index.ts 的 resolve / processPath /
 //    fileUrl / contains / stat / lstat / readText / streamText / readBytes / readByteRange /
 //    listDir / writeText / editText；
 //    `declare module { interface Context { fs: FileSystem } }` 也在同一份声明里。
 //  · `FsDirEntry`：name/type('file'|'directory'|'other')/target/version?/size?
 //    packages/fs/fs/src/types.ts —— 注意联合里**没有 'symlink'**，故软链在 listDir
-//    里只能以"跟随后的真身"露面（断链落 'other'），本文件那两条软链用例判的就是这件事。
+//    里只能以"跟随后的真身"出现（断链落 'other'），本文件那两条软链用例判的就是这件事。
 //  · 错误码词汇表：packages/fs/fs/src/types.ts（FS_NOT_TEXT / FS_TOO_LARGE /
 //    FS_NOT_DIRECTORY / FS_NOT_FOUND / FS_NOT_REGULAR_FILE …）。
-//  · 本包消费面：`FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" |
+//  · 本包消费的部分：`FsService = Pick<FileSystem, "resolve" | "listDir" | "readText" |
 //    "contains" | "stat">`（host.ts），`collectDirContext` 的形参只取其中不带 `stat` 的几位。
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { strict as assert } from "node:assert";
@@ -39,7 +39,7 @@ const MESSAGES = HOST_MESSAGES.zh;
 const PKG_JSON = "package.json";
 const README_MD = "README.md";
 const README_BODY = "# 前端开发者 🎨\n\n第一行\n";
-/** 摘要面判的是 trim 之后的正文（host.ts 的 makeSnippet）。 */
+/** 摘要判的是 trim 之后的正文（host.ts 的 makeSnippet）。 */
 const README_SNIPPET = "# 前端开发者 🎨\n\n第一行";
 
 /** FsError 判别：错误码是宿主给消费方的**唯一**机读位（types.ts）。 */
@@ -104,7 +104,7 @@ afterEach(async () => {
 });
 /* oxlint-enable vitest/require-top-level-describe */
 
-/** 取当前台（断言"在用例里"而不是把 undefined 传进生产面）。 */
+/** 取当前台（断言"在用例里"而不是把 undefined 传进生产代码）。 */
 function tree(): Tree {
   const built = current;
   if (built === undefined) {
@@ -292,7 +292,7 @@ describe("collectDirContext 在真实磁盘上", () => {
 
   it("二进制关键文件读失败 → 计入 skipped.unreadable 且 truncated 反映事实", async () => {
     const { fs, root } = tree();
-    // 走字节面写入（不是字符串），让「真件按 UTF-8 解码后原样交付」这一步有出处
+    // 按字节写入（不是字符串），让「真件按 UTF-8 解码后原样交付」这一步有出处
     await disk(path.join(root, PKG_JSON), Buffer.from('{"a":1}', "utf8"));
     // 第二枚带 NUL：真件在这里抛 FS_NOT_TEXT（fsio.ts 的 readText），桩只能凭空造一个 catch
     await disk(path.join(root, "config.JSON"), new Uint8Array([0, 0, 0, 0]));
@@ -397,7 +397,7 @@ describe("collectAgentTemplates 在真实磁盘上", () => {
     assert.equal(
       fromRoot.entries.some((item) => item.name === "丙"),
       false,
-      "第三层绝不入条目（漏掉必须记账，旧版是整批静默消失）",
+      "第三层绝不入条目（漏掉必须记录，旧版是整批静默消失）",
     );
   });
 
@@ -454,7 +454,7 @@ describe("collectAgentTemplates 在真实磁盘上", () => {
     }
   });
 
-  it("单文件导入走同一套真读面，路径策略拒绝仍优先", async () => {
+  it("单文件导入走同一套真读取方法，路径策略拒绝仍优先", async () => {
     const { fs, root } = tree();
     await disk(path.join(root, "solo.md"), role("单文件"));
     const single = await collectAgentTemplates(fs, "solo.md", root, MESSAGES, { skipPolicy: true });
@@ -494,10 +494,10 @@ describe("collectAgentTemplates 在真实磁盘上", () => {
 // ── 符号链接逃逸的四条钉（写在本包修复之前，全部实测为红）──────────────────────
 //
 // 为什么单独立一段：`importPathError` 判的是**字符串段**，`readText` 读的是**真实对象**，
-// 两者之间只有后端的 `contains` 能收口（host.ts 的 escapesAllRoots 那段注释讲的就是这件事）。
+// 两者之间只有后端的 `contains` 能统一处理（host.ts 的 escapesAllRoots 那段注释讲的就是这件事）。
 // 手搓桩里 contains 是「parent.key 前缀 == child.key」的同义反复——桩永远配合被测代码，
 // 于是「单文件分支没走 contains」「按直接父目录而不是导入根判」两处缺口在单元测试里
-// 全绿。只有真磁盘 + 真 realpath 才让它们露面。
+// 全绿。只有真磁盘 + 真 realpath 才让它们暴露。
 describe("符号链接逃逸：允许根外的正文一律不得进模型", () => {
   const LEAK = "LEAKED-SECRET-BODY";
 
@@ -523,13 +523,13 @@ describe("符号链接逃逸：允许根外的正文一律不得进模型", () =
       (item) => item.name === path.basename(link) && (item.snippet ?? "").includes(LEAK),
     );
     assert.deepEqual(leaked, [], "collectDirContext 跟随软链：根外文件全文进了 system prompt");
-    assert.equal(result.skipped.escaped, 1, "被安全闸门拦下的项必须数得出来");
+    assert.equal(result.skipped.escaped, 1, "被安全检查拦下的项必须数得出来");
     assert.equal(result.truncated, true, "有排除项就要让 truncated 反映事实");
     // 正例：同一层里合法的 plain.md 必须照常进摘要——只断言 escaped=1 会让「整层都被
     // 拦掉」也绿，而那正是一次过度收紧会踩的形态（见 #142）。
     assert.ok(
       (result.entries.find((item) => item.name === "plain.md")?.snippet ?? "").includes("普通正文"),
-      "同层合法文件不能被逃逸闸门连带拦掉",
+      "同层合法文件不能被符号链接逃逸的检查连带拦掉",
     );
   });
 
@@ -590,7 +590,7 @@ describe("符号链接逃逸：允许根外的正文一律不得进模型", () =
 // 目录分支原先整批漏掉后端复判（单文件分支一直有），于是 cwd 里一条
 // `roles -> ~/.ssh` 这样的软链能把根外目录里的 .md 连同正文整批导进来。
 describe("导入根本身是越界软链：两条分支都必须过后端复判", () => {
-  /** 泄漏哨兵：出现即代表根外正文被读走（同上面那组的口径）。 */
+  /** 泄漏哨兵：出现即代表根外正文被读走（同上面那组的做法）。 */
   const LEAK = "LEAKED-SECRET-BODY";
 
   /** cwd 里放一条指到 root/outside 的**目录**软链，返回两边的路径。 */
@@ -692,7 +692,7 @@ async function unlockDir(dir: string): Promise<void> {
 
 // chmod 000 是 POSIX 语义：Windows 上 chmod 等价于只读，列不出来这件事根本造不出来；
 // root（含容器里默认 uid 0 的 CI）也绕过 000，此时目录照样可读、断言会以「unreadable 应为 1」
-// 的形式假红——所以两者都按平台/身份显式跳过，而不是在用例体内猜。
+// 的形式误报——所以两者都按平台/身份显式跳过，而不是在用例体内猜。
 // 整族按平台跳过（而不是在用例体内分支），这样「这两条在 Windows 上没跑」在报告里
 // 是显式的，而不是两条用例悄悄变绿。
 // 用官方的 describe.skipIf 而不是 `const posixOnly = cond ? describe.skip : describe`：
