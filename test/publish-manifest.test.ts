@@ -52,6 +52,7 @@ const SKIP_DIRS = new Set([
 
 /** package.json 里与入口有关的形状；其余字段本门禁不关心。 */
 interface Manifest {
+  readonly version?: string;
   readonly main?: string;
   readonly types?: string;
   readonly exports?: Record<string, unknown>;
@@ -635,6 +636,8 @@ const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {
     "dsh-app-boot 的必填 peer：同上，autoInstallPeers 为 false 时不会被自动装；settings-boot 用真 Loader 启动时缺它即 import 失败。",
   "@deepseek-ai/dsh-launch-environment":
     "dsh-app-boot 的必填 peer：同上；补上 home-paths 之后紧接着缺的就是它，app-boot 一被 import 就要。",
+  "@deepseek-ai/dsh-error":
+    "dsh-llm 的精确 peer（0.2.2-rc.2 新增）：本仓 autoInstallPeers 为 false，peer 不会被自动装，缺它即 dsh-llm 在 import 阶段报 Cannot find package '@deepseek-ai/dsh-error'。",
 };
 
 /**
@@ -814,5 +817,23 @@ describe("版本区间比较（门禁自带的两个纯函数）", () => {
     assert.equal(atLeast(V_ALPHA1, V_BETA), true);
     assert.equal(atLeast(V_BETA, V_ALPHA1), true);
     assert.equal(atLeast(V_ALPHA2, V_ALPHA1), true);
+  });
+});
+
+describe("版本与变更记录", () => {
+  it("变更记录顶部版本与 package.json 的 version 一致", async () => {
+    // 只抬 version 不写条目时，发出去的新版本没有变更记录，而其余门禁全绿。
+    const { manifest } = await readSurface();
+    if (manifest.version === undefined) {
+      throw new Error("package.json 没有 version");
+    }
+    const changelog = await readFile(path.join(pkgDir, "CHANGELOG.md"), "utf8");
+    const top = /^## (?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/mu.exec(changelog)?.groups?.[
+      "version"
+    ];
+    if (top === undefined) {
+      throw new Error("CHANGELOG.md 里没有任何版本标题");
+    }
+    expect(top, "CHANGELOG 顶部版本必须与 package.json 的 version 一致").toBe(manifest.version);
   });
 });

@@ -8,7 +8,7 @@
 //   ② 软链的 targetKey 身份（宿主 fsio.ts 的 realpath 派生）在 contains/去重上是否一致；
 //   ③ 真错误（FS_NOT_TEXT / FS_NOT_DIRECTORY / FS_TOO_LARGE）经本包降级后计到哪一格。
 //
-// 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
+// 契约证据（deepseek-harness @ dsh-v0.2.2-rc.2）：
 //  · `FileSystem` 抽象接口的 13 位成员：packages/fs/fs/src/index.ts 的 resolve / processPath /
 //    fileUrl / contains / stat / lstat / readText / streamText / readBytes / readByteRange /
 //    listDir / writeText / editText；

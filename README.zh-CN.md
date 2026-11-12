@@ -12,7 +12,7 @@
   <a href="https://github.com/JayYuen666/dsh-dir-prep-organize/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-dir-prep-organize/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.2--rc.1-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -31,20 +31,22 @@
 
 ## <img src="https://api.iconify.design/lucide/file-text.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 目录
 
-- [它做什么](#它做什么)
-- [安装](#安装)
-- [确认它真的在工作](#确认它真的在工作)
-- [它不提供什么](#它不提供什么)
-- [在 dsh 里启用](#在-dsh-里启用)
-- [润色调用](#润色调用)
-- [模板](#模板)
-- [设置项](#设置项)
-- [对外接口](#对外接口)
-- [数据与隐私](#数据与隐私)
-- [已知边界](#已知边界)
-- [常见问题](#常见问题)
-- [开发](#开发)
-- [许可](#许可)
+- [ 目录](#-目录)
+- [ 它做什么](#-它做什么)
+- [ 安装](#-安装)
+  - [ shared 的版本下限](#-shared-的版本下限)
+- [ 确认它真的在工作](#-确认它真的在工作)
+- [ 它不提供什么](#-它不提供什么)
+- [ 在 dsh 里启用](#-在-dsh-里启用)
+- [ 润色调用](#-润色调用)
+- [ 模板](#-模板)
+- [ 设置项](#-设置项)
+- [ 对外接口](#-对外接口)
+- [ 数据与隐私](#-数据与隐私)
+- [ 已知边界](#-已知边界)
+- [ 常见问题](#-常见问题)
+- [ 开发](#-开发)
+- [ 许可](#-许可)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它做什么
 
@@ -70,8 +72,8 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 卸载：`dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`。包在公共 npm 上，安装不需要凭据，也不需要配作用域源。
 
 - **要求 Node.js `>= 24.9`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
-- **要求宿主 `dsh` 在 `0.2.1-rc.5` 或 `0.2.2-alpha.3` 这条宿主线上。** 宿主真正读的是 `engines.dsh`（`^0.2.1-rc.5 || ^0.2.2-alpha.3`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2` 与 `0.2.1-rc.3` **被拒**，`0.2.1-rc.5` 与 `0.2.2` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
-- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-rc.1`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.1-rc.5 || ^0.2.2-alpha.3`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
+- **要求宿主 `dsh` 在 `0.2.2-rc.1` 这条宿主线上或更晚。** 宿主真正读的是 `engines.dsh`（`^0.2.2-rc.1`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2`、`0.2.1-rc.5` 与 `0.2.2-alpha.3` **被拒**，`0.2.2-rc.1`、`0.2.2-rc.2` 与 `0.2.2` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-rc.2`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.2-rc.1`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
 - **`dependencies` 里不放任何 `@deepseek-ai/*`，这是约定**（`test/publish-manifest.test.ts` 钉着）。消费方 profile 用 `nodeLinker: hoisted` 且 `autoInstallPeers: false` 安装，于是写在 `dependencies` 里的宿主包会被落成**真实目录**，与运行中的宿主已加载的那份并存。`@deepseek-ai/dsh-tools` 的工具运行期调度键是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例算：宿主从 profile 副本上读那个键拿到 `undefined`，于是**每一次原生工具调用都抛**——而本包的构建、类型检查、覆盖率检查在此之前全部照绿。
 - **`host.js` 按值导入的那两枚宿主包是必需 peer**：`@deepseek-ai/schemastery`（宿主 fork——只有它能把 `.volatile()` 字段解析成活引用）与 `@deepseek-ai/dsh-brand`。`build-host.mjs` 外部化 `dependencies` **与** `peerDependencies`，所以裸说明符留在产物里；只写 `devDependencies` 会让打包器把官方函数体内联进去。`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」。
 - **声明里点到的每一枚宿主包都落在 `peerDependencies`**，凡是只能从那里到达的都是 *optional*（`@deepseek-ai/cordis`、`cosmokit`，以及 `dsh-agent-default-model` / client-ui / `fs` / `llm` / `session` 那一族）。声明它们不是仪式：pnpm 严格布局下，`types/host.d.ts` 里一枚没有被任何 manifest 表点名的裸说明符在消费方侧解析不到，而本仓自己的类型检查照样绿。那条清单由测试从 `types/**/*.d.ts` 现量读，不从这段文字读，所以两边不会漂移。

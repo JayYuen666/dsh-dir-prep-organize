@@ -7,7 +7,7 @@
 // configuration-fixture.ts）：真临时 profile + 真 cordis.patch.yml + 真 ConfigEditor +
 // 真 SettingsForms，条目 id 就是本包 cordis.patch.yml 里那枚 `dir-prep-organize`。
 //
-// 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
+// 契约证据（deepseek-harness @ dsh-v0.2.2-rc.2）：
 //  · `SettingsForms` 硬注入 `configEditor` + `profileContext`：packages/settings/settings/src/index.ts；
 //    服务名 'settings' 与 `Context.settings` 合并。
 //  · 投影结果：`describe()` 只收**有 volatile 字段**的条目（volatileForm 回 undefined 即整条跳过）

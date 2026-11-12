@@ -4,6 +4,16 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
 不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
 
+## 0.1.11
+
+宿主开发基线抬到 `0.2.2-rc.2`，支持窗口收到 `^0.2.2-rc.1`；vendored 角色库与上游重新对齐。默认模板与行为不变。
+
+### Changed
+
+- **vendored 角色库刷新**：12 份角色文件从上游 `agency-agents-zh` 重新拷回（修正此前本地引入的行首多余空格），`gen:defaults` 重生成精选模板默认值；`vendored:check` 恢复 298/298 逐字节相同。精选模板条数（85）与 README 计数不变。
+- **宿主开发基线抬到 `0.2.2-rc.2`**：`devDependencies` 整组 `@deepseek-ai/dsh-*` 抬到 `0.2.2-rc.2`，并补上 rc.2 新增的 `@deepseek-ai/dsh-error`（`dsh-llm` 的精确 peer，`autoInstallPeers: false` 下须显式声明）。
+- **支持窗口收到 `^0.2.2-rc.1`**：`engines.dsh` 与 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.5 || ^0.2.2-alpha.3` 改为 `^0.2.2-rc.1`（单条 0.2.2 线）；`@deepseek-ai/schemastery` peer 由 `^3.18.5 || ^3.18.6-alpha.1` 收到 `^3.19.0`。devDependencies 仍精确钉版。
+
 ## 0.1.10
 
 修复 0.1.9 引入的 web 启动隐患：设置卡与 dock 条目的组件收回 `client.js` 内联，移除对 `@jayyuen66/dsh-plugin-shared/client` 的模块表外置与 `cordis.patch.yml` 里的 shared 供应行。对外工具与 Remote 方法名单不变，默认配置不变。

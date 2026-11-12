@@ -5,7 +5,7 @@
 // 假设对不对」在测试里恒为真。这里换成官方抽象类的子类（13 个抽象成员一个都不能少），
 // 行为按 harness `packages/fs/fs-local/src/{index,fsio}.ts` 复刻，真目录树说了算。
 //
-// 契约证据（deepseek-harness @ dsh-v0.2.1-alpha.2）：
+// 契约证据（deepseek-harness @ dsh-v0.2.2-rc.2）：
 //  · resolve：空串/纯空白抛 FS_NOT_FOUND（fsio.ts 的 resolve）；displayPath 保留含 `..` 的物理
 //    拼写，否则 path.resolve 归一（fsio.ts 的 displayPath）；targetKey = 文件的 realpath，
 //    跟随符号链接并取磁盘真实大小写（fsio.ts 的 targetKey）；缺席路径 realpath 最近存在祖先再拼回
