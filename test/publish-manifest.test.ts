@@ -638,6 +638,8 @@ const REFERENCE_EXEMPTION: Readonly<Record<string, string>> = {
     "dsh-app-boot 的必填 peer：同上；补上 home-paths 之后紧接着缺的就是它，app-boot 一被 import 就要。",
   "@deepseek-ai/dsh-error":
     "dsh-llm 的精确 peer（0.2.2-rc.2 新增）：本仓 autoInstallPeers 为 false，peer 不会被自动装，缺它即 dsh-llm 在 import 阶段报 Cannot find package '@deepseek-ai/dsh-error'。",
+  "@deepseek-ai/dsh-output-retention":
+    "shared 的 lib/text 顶层 import 的包（0.1.13 起 templates.ts 引用该模块）：本仓 autoInstallPeers 为 false，shared 的 optional peer 不会被自动装；构建期解析不到它时打包器把说明符当外置留在 client.js，宿主模块表给不出（CI 的 UNRESOLVED_IMPORT 即此）。本仓代码不直接按名引用，命中只在构建期。",
 };
 
 /**

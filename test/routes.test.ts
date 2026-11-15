@@ -1353,6 +1353,26 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     }
   });
 
+  it("同一作用域第二次装配让路：不重复注册、不抛错（market 热挂 + bundle 层双路径）", () => {
+    const env = harness();
+    applyTo(env);
+    const routesAfterFirst = env.routes.length;
+    const configureAfterFirst = env.configureCalls.length;
+    const disposersAfterFirst = env.disposers.length;
+    // 第一次 apply 经 reflect.provide 把单实例锁写进 serviceRegistry；第二次同一份 ctx
+    // 读得到它，claimInstance 判定「已有一份在册」→ 让路。
+    // 第二次直接调 apply（不经 applyTo）：后者自带「生产侧不注册路由」的断言与前一次
+    // 挂的适配器冲突，而本条要看的正是 apply 本身有没有第二次注册。
+    const warns = captureWarnings("warn", () => {
+      apply(ctxOf(env) as unknown as Parameters<typeof apply>[0], configOf(env.configValue));
+    });
+    assert.equal(warns.length, 1, "让路时大声说明一次");
+    assert.match(String(warns[0]), /本次装配让路/u, "文案要点明成因与去处");
+    assert.equal(env.routes.length, routesAfterFirst, "第二次不该再挂路由");
+    assert.equal(env.configureCalls.length, configureAfterFirst, "第二次不该再登记页面策略");
+    assert.equal(env.disposers.length, disposersAfterFirst, "第二次不该再挂效应");
+  });
+
   it("settings 缺席：页面策略效应仍交回可调用的占位 disposer", () => {
     const env = harness({ settings: undefined });
     const warns = captureWarnings("warn", () => {

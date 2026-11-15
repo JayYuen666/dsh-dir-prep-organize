@@ -16,13 +16,18 @@ import path from "node:path";
 
 const pkgDir = path.resolve(import.meta.dirname, "..");
 
-/** 拦截半产物体积预算（实测 75,557 B）。 */
+/** 拦截半产物体积预算（实测 82,099 B）。 */
 const HOST_BUDGET_BYTES = 87_000;
-/** 客户端半产物体积预算（实测 93,142 B：0.1.10 把卡片组件收回 `client.js` 内联，体积回到
+/** 客户端半产物体积预算（0.1.10 实测 93,142 B：把卡片组件收回 `client.js` 内联，体积回到
  *  0.1.5 定预算时的量级；`build-client` 不脱注释，导出项上的文档注释按字节计进产物，所以
  *  「加一条判据 + 写清它为什么」这一档改动就会走掉几百字节）。 */
-const CLIENT_BUDGET_BYTES = 94_500;
-/** 精选模板数据产物体积预算（实测 640,020 B）。 */
+// 0.1.13 起卡片样式改用 shared 的 `ensureCardUiCss()`（引用计数式共享 `<style>`），不再把
+// `CARD_UI_CSS` 整段拼进本仓自己的 style 标签：产物里同时留下 `style-tag.ts` 与它依赖的
+// 样式表（后者由 `ensureCardUiCss` 注入，不能被 tree-shaking 去掉），实测 94,865 B
+// （CI 严格布局口径；工作区软链下模块路径注释更短，本机 94,781 B），比已发布的 0.1.12
+// （93,396 B）多 1,469 B。预算按实量上沿重定为 97 KB。
+const CLIENT_BUDGET_BYTES = 97_000;
+/** 精选模板数据产物体积预算（实测 643,172 B）。 */
 const TEMPLATES_BUDGET_BYTES = 736_500;
 /** types/ 入口声明体积预算。
  *

@@ -8,4 +8,5 @@ export const LOG_TEMPLATES: readonly string[] = Object.freeze([
   "[dir-prep-organize] settings 服务不可用：设置卡页面策略未登记（宿主会按 Config 自动生成表单页）",
   "[dir-prep-organize] settings.describe() 失败，本轮文案回落中文默认：",
   "[dir-prep-organize] templates settings write failed:",
+  "[dir-prep-organize] 检测到本插件已在同一作用域内装载：本次装配让路，设置卡与工具由在册的那一份提供。",
 ]);

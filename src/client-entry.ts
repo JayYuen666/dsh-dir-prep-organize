@@ -16,10 +16,10 @@ import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import {
-  CARD_UI_CSS,
   CardForm,
   SaveBar,
   Section,
+  ensureCardUiCss,
   errorText,
   isRecord,
 } from "@jayyuen66/dsh-plugin-shared/client";
@@ -2161,12 +2161,14 @@ function apply(ctx: ClientCtx): void {
     "dir-prep-organize: remote reader",
   );
   ctx.effect(() => {
+    const disposeShared = ensureCardUiCss();
     const tag = document.createElement("style");
     tag.id = "dir-prep-organize-css";
-    tag.textContent = `${CARD_STYLES}\n${CARD_UI_CSS}`;
+    tag.textContent = CARD_STYLES;
     document.head.append(tag);
     return () => {
       tag.remove();
+      disposeShared();
     };
   }, "dir-prep-organize: styles");
 

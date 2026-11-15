@@ -1,6 +1,6 @@
 {
   "name": "@jayyuen66/dsh-dir-prep-organize",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "dsh 插件：对话输入框「润色」按钮（主键直接润色/▾ 以角色风格润色，结合当前目录 + session 模型润色草稿）+「模板」下拉（内置精选角色集生成自插件 agents/ 角色库，可按部门分组；设置卡可增删改/一键导入内置全部/导入本地角色 .md）",
   "keywords": [
     "cordis",
@@ -96,6 +96,7 @@
     "@deepseek-ai/dsh-home-paths": "0.2.2-rc.2",
     "@deepseek-ai/dsh-launch-environment": "0.2.2-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-output-retention": "0.2.2-rc.2",
     "@deepseek-ai/dsh-sandbox": "0.2.2-rc.2",
     "@deepseek-ai/dsh-scope": "0.2.2-rc.2",
     "@deepseek-ai/dsh-session": "0.2.2-rc.2",
@@ -125,18 +126,18 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5 || ^4.0.6-alpha.2",
     "@deepseek-ai/cosmokit": "^1.8.6 || ^1.8.7-alpha.2",
-    "@deepseek-ai/dsh": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-agent-default-model": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-brand": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-locale": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-fs": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-session": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-agent-default-model": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-brand": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-fs": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.2-rc.2",
     "@deepseek-ai/schemastery": "^3.19.0"
   },
   "peerDependenciesMeta": {
@@ -182,7 +183,7 @@
   },
   "icon": "icon.svg",
   "engines": {
-    "dsh": "^0.2.2-rc.1",
+    "dsh": "^0.2.2-rc.2",
     "node": ">=24.9.0"
   },
   "dsh": {

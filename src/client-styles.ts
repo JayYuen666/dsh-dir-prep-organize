@@ -41,7 +41,7 @@ export const CARD_STYLES = [
   ".dpi-grouph{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary,inherit);padding:6px 10px 2px;letter-spacing:.02em}",
   ".dpic-row{padding:10px 0;border-bottom:1px dashed var(--dsw-alias-border-l2,currentColor)}",
   // 控件外观由共享 .dsu-input / .dsu-btn 承担；这里只保留本行编辑器的尺寸与排布。
-  // 行头三项写成复合选择器：.dsu-input 的 width:100% 在注入顺序上晚于本表，单类选择器压不住它。
+  // 行头三项写成复合选择器：共享 .dsu-input 的 width:100% 与本表单类选择器同权重，靠复合选择器稳压它。
   ".dpic-name{flex:1;min-width:0}",
   ".dpic-rowhead .dpic-name{width:auto}",
   ".dpic-rowhead .dpic-emoji{width:44px;flex:none;text-align:center}",

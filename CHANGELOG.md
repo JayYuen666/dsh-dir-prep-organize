@@ -4,6 +4,28 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
 不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
 
+## 0.1.13
+
+market 热挂与 bundle 层双路径装载时第二份 `apply` 整份让路（此前第二遍会撞「同名服务已注册」把 fiber 打成 failed）；卡片样式改用 shared 的共享 `<style>`；shared 抬到 `^0.2.9`，输入框不再撑出容器、小节内补上纵向间距；宿主 peer 窗口抬到 `^0.2.2-rc.2`。默认模板与整理行为不变。
+
+### Added
+
+- **单实例锁**：`apply` 最前面用 shared 的 `claimInstance` 抢 `INSTANCE_LOCK_KEY = "@jayyuen66/dsh-dir-prep-organize/instance"`，抢不到就 `console.warn` 一行「本次装配让路，设置卡与工具由在册的那一份提供」并直接返回。成因是 dshmarket 运行期热装会在 `<profile>/.dsh-market/` 下造一棵它自己的 Include 子树（条目 id 形如 `mkt-<包>`），把同一份 `host.js` 再挂一次，而 profile 的 `dsh.profile.bundles` 那条行仍会被宿主按 patch 重新组装 ⇒ 同一进程里 `apply` 跑两遍，第二遍的 Typert Remote「构造即注册」撞「同名已注册」而抛。锁随在册那一份的 fiber 卸载自动释放。
+- **`get` 与 `reflect` 的取法有讲究**：`get` 走 `isServiceGetter` 守卫（本包的 apply 契约是「上下文只给一半也不炸」，缺 `get` 面时按能力缺席放行）；`reflect` **整个传对象本身**、不另包一层 `{ provide }` —— 包出来的箭头恒是函数，会让「这台上下文根本没有注册口」伪装成「有注册口但 provide 抛错」，让路判据误判而把插件整个关掉。
+- **回归测试 `test/routes.test.ts`** 新增「同一作用域第二次装配让路：不重复注册、不抛错」，判据落在 `warn` 恰好一次、`routes` / `configureCalls` / `disposers` 三者数量不变。
+
+### Changed
+
+- **`src/templates.ts` 的私有 `truncateCodePoints` 换成 shared 的 `lib/text` 里那一份**：按码点预算截断的语义不变（`String#slice` 数的是码元，会把 emoji 劈成半个），两处消费方（frontmatter 解析与 `sanitizeTemplateList`）现在共用同一份实现。`scripts/gen-defaults-lib.mjs` 仍带着同源镜像——它不能 import 运行期包。
+- **`@deepseek-ai/dsh-output-retention` 进 devDependencies（`0.2.2-rc.2`，与其余 dsh 开发钉同版）**：shared 的 `lib/text` 顶层 import 了它，而本仓 `autoInstallPeers: false` 不会替 shared 装那枚 optional peer；CI 的 `--frozen-lockfile` 严格布局下解析不到，打包器把说明符当外置留在 `client.js` 里，宿主模块表给不出它（`UNRESOLVED_IMPORT` → `missed the module table`）。它只进构建期，不进 `dependencies` / `peerDependencies`，消费方不新增运行期依赖；`test/publish-manifest.test.ts` 的免检表登记它「本仓不直接按名引用、构建期解析 shared 顶层 import」这一事实。
+- **卡片样式改用 shared 的 `ensureCardUiCss()`**：不再把 `CARD_UI_CSS` 整段拼进本仓自己的 `<style>` 标签，改为固定 id `dsh-card-ui-css` 的幂等注入 + 引用计数，本仓标签只留 `CARD_STYLES`。产物里因此同时留下 `style-tag.ts` 与它依赖的样式表（后者不能被 tree-shaking 去掉），实测 `client.js` 94,865 B（CI 严格布局口径；工作区软链布局下模块路径注释更短，本机读数为 94,781 B），比已发布的 0.1.12（93,396 B）多 1,469 B；`test/dist-size.test.ts` 的 `CLIENT_BUDGET_BYTES` 按实量上沿从 94,500 调到 97,000。
+- **运行时依赖 shared 抬到 `^0.2.9`**；**宿主 peer 窗口 `^0.2.2-rc.1` → `^0.2.2-rc.2`**（十二枚 `@deepseek-ai/dsh*` peer 与整组 `dsh*` devDependency 一起抬），两份 README 的徽章跟着改。
+
+### Fixed
+
+- **输入控件撑出容器**（shared 侧）：`.dsu-input` 是 `width:100%` + 左右各 12px padding + 1px 边框，默认 `content-box` 让每个输入框比容器宽 26px；`.dsu-form` 整棵子树现在统一 `border-box`。`src/client-styles.ts` 里那条「行头三项为什么写成复合选择器」的注释同步改口径——原来说「`.dsu-input` 的 `width:100%` 在注入顺序上晚于本表」，实际原因是**同权重**，靠复合选择器稳压它。
+- **小节内相邻元素间距为 0**（shared 侧）：`.dsu-form .dsu-section>*+*` 给 10px，`.dsu-sectionHint` 4px，`.dsu-field` 之间仍 0，`.dsu-savebar` 24px。
+
 ## 0.1.12
 
 设置卡的下拉候选与说明浮层不再漂到浏览器最左边；shared 抬到 `^0.2.8`（含运行时几何自检），CI 的 action 钉版升到最新。默认模板与行为不变。

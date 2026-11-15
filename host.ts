@@ -94,6 +94,14 @@ import { groupLabelOf, parseAgentFrontmatter, tryCondenseRoleBody } from "./src/
 import type { AgentFileInfo, TemplateEntry } from "./src/templates.ts";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+// 双路径装载的自保：dshmarket 运行期热装时会在 `<profile>/.dsh-market/` 下造一棵它自己的
+// Include 子树（条目 id 形如 `mkt-<包>`），把同一份 host.js 再挂一次；而 profile 的
+// `dsh.profile.bundles` 那条 bundle 行仍会被宿主按 patch 重新组装。于是同一个进程里
+// `apply` 跑两遍，第二次的注册面（这里是 Typert Remote 的「构造即注册」）撞「同名已注册」
+// 而抛，那条 fiber 落 failed —— 用户在插件页看到「启动失败」。抢这把锁把第二遍挡在
+// 注册面之外；锁随在册那一份的 fiber 卸载自动释放，所以后续装配仍能抢到。
+// 本模块已收进 shared，各插件仓不再各留一份副本；判据与取舍见它的头注释。
+import { claimInstance } from "@jayyuen66/dsh-plugin-shared/lib/instance-lock";
 
 /** 本包送进 `llm.stream({ messages })` 的润色请求帧是 **request-only 输入**：它从不落
  *  任何持久消息位（`runOrganize` 只回 `{ content }`，读取方法也不把帧身份回传给卡片），所以
@@ -2300,6 +2308,12 @@ export function installDirPrepRemote(ctx: Context, scope: RemoteScope): boolean 
   return true;
 }
 
+/**
+ * 单实例锁的服务名。取包名形态而**不带随机后缀**：名字必须每一份实例都算出同一个串才可能
+ * 互斥，随机后缀等于谁都能抢到。判据与边界见 shared 的 lib/instance-lock 头注释。
+ */
+const INSTANCE_LOCK_KEY = "@jayyuen66/dsh-dir-prep-organize/instance";
+
 /** settings 注册的占位清理（无额外拆卸动作，注册随插件生命周期存续）。 */
 function noopDisposer(): void {
   /* 占位：无需清理 */
@@ -2310,6 +2324,24 @@ function noopDisposer(): void {
  *  不再向 settings 注册任何东西；配置值由 cordis 校验并填过默认后按 volatile 引用交进来
  *  （第二参数 config），读当前值一律 `.get()`。 */
 export function apply(ctx: Context, config: Config): void {
+  // 抢单实例锁：抢不到说明同一作用域里已经有一份在册（market 热挂 + bundle 层双路径），
+  // 那一份已经把 Remote 面上齐了，本份再注册一遍不可能成功，只会把 fiber 打成 failed。
+  // 放在最前面：让路那一份不该读配置、不该建任何东西。`get` 要箭头包一层（成员的 `this`
+  // 不能丢），`reflect` 整个传对象本身 —— 再包一层 `{ provide }` 会让「这台上下文根本没有
+  // 注册口」伪装成「有注册口但 provide 抛错」，让路判据当场误判而把插件整个关掉。
+  // `get` 也过守卫：本包的 apply 契约是「上下文只给了一半也不炸」（settings/agents 缺席都走
+  // 降级），所以这里不能假设 ctx.get 一定在；没有 get 面就等于「这台上下文没有注册口」，
+  // claimInstance 会按能力缺席放行，功能照常装配。
+  const lockContext = {
+    get: (name: string): unknown => (isServiceGetter(ctx) ? ctx.get(name) : undefined),
+    reflect: ctx.reflect,
+  };
+  if (!claimInstance(lockContext, INSTANCE_LOCK_KEY)) {
+    console.warn(
+      "[dir-prep-organize] 检测到本插件已在同一作用域内装载：本次装配让路，设置卡与工具由在册的那一份提供。",
+    );
+    return;
+  }
   // ctx.get 经守卫取服务（替代 `ctx as unknown as { get }`：把 getter 抽成独立
   // 函数，避免 Context 交集让 `.get` 回落 any → no-unsafe-assignment）。
   const getService = (name: string): unknown => {

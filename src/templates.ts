@@ -23,6 +23,7 @@
  *  满足 dsh-settings cloneJsonShaped 的 JSON 白名单）。description/group/emoji
  *  为必填（空串表示未设置），保证下拉与设置卡无缺字段分支。 */
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { truncateCodePoints } from "@jayyuen66/dsh-plugin-shared/lib/text";
 import { AGENT_DIR_GROUP_LABELS as GENERATED_GROUP_LABELS } from "./group-labels.generated.ts";
 
 /** frontmatter 的闭合围栏与正文行分隔。 */
@@ -122,17 +123,6 @@ function readFrontmatterPair(line: string): { key: string; value: string } | und
     }
   }
   return result;
-}
-
-/** 按 Unicode 码点截断：`String#slice` 数的是 UTF-16 码元，会把一个 emoji（代理对）或
- *  组合字符劈成半个，落进模板后显示成空白方块。两个截断点（frontmatter 解析与 `sanitizeTemplateList`）
- *  共用这一份实现，scripts/gen-defaults-lib.mjs 有同源镜像。 */
-function truncateCodePoints(value: string, max: number): string {
-  // 按码点切：展开运算符会触发 no-misused-spread（它建议 Intl.Segmenter），
-  // 而这里要的正是「按码点切分」这个语义本身。
-  // oxlint-disable-next-line unicorn/prefer-spread
-  const points = Array.from(value);
-  return points.length > max ? points.slice(0, max).join("") : value;
 }
 
 /** 键 → 目标位：防重复（已有值不覆盖，取首个同名键）；emoji 截断至 EMOJI_MAX_LENGTH（按码点）。 */
