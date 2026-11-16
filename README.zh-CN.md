@@ -46,6 +46,7 @@
 - [ 已知边界](#-已知边界)
 - [ 常见问题](#-常见问题)
 - [ 开发](#-开发)
+- [ 反馈](#反馈)
 - [ 许可](#-许可)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它做什么
@@ -70,6 +71,8 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 ```
 
 卸载：`dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`。包在公共 npm 上，安装不需要凭据，也不需要配作用域源。
+
+- 组合包补丁会插入 `- id: dsh-plugin-shared`（`@jayyuen66/dsh-plugin-shared`）。**这个组件必须保持开启**：停用后设置卡会失去 shared 组件供应，下一次页面加载会报 `missed the module table`。
 
 - **要求 Node.js `>= 24.9`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
 - **要求宿主 `dsh` 在 `0.2.2-rc.2` 这条宿主线上或更晚。** 宿主真正读的是 `engines.dsh`（`^0.2.2-rc.2`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。对宿主真实代码实测：`0.2.0-rc.2`、`0.2.1-rc.5`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` **被拒**，`0.2.2-rc.2`、`0.2.2` 与 `0.2.3` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
@@ -106,12 +109,12 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 在 dsh 里启用
 
-- 安装即贡献组合包补丁层（`dsh.bundle.patch` → `./cordis.patch.yml`），插入 `- id: dir-prep-organize`，`name` 指向包名。
+- 安装即贡献组合包补丁层（`dsh.bundle.patch` → `./cordis.patch.yml`），插入两行：`- id: dsh-plugin-shared`（shared 客户端供应行，必须保持开启，见「安装」一节）与 `- id: dir-prep-organize`（`name` 指向包名）。
 - **客户端半**注册两个槽位外加设置卡：
   - `conversation.input.right`——润色按钮（id `dir-prep-organize`，order 99）与模板下拉（id `dir-prep-organize-templates`，order 100）。
   - `plugins.bundle.config`——设置卡，按 **bundle 包名** `@jayyuen66/dsh-dir-prep-organize` 作 key。宿主派发 `entryKey: pkg.name`（唯一来源是 profile `package.json` 里的 `dsh.profile.bundles`），所以写成裸条目 id 永远匹配不上，卡片哪都不渲染。
   - 设置命名空间与 `configForms.get()` 仍是**裸条目 id** `dir-prep-organize`——与那个槽位 key 刻意不是同一个标识。
-- 客户端半是 `dsh.client.platform = web` 且带 `immediately`。
+- 客户端半是 `dsh.client.platform = web` 且带 `immediately`；`dsh.client.external` 声明 `@jayyuen66/dsh-plugin-shared/client`，供宿主把这条供应行排进启动图。
 - 卡片的文案遵循官方 locale 插件的偏好；宿主半每次请求现读该偏好，所以切语言不必重启。
 - 插件页的标题、说明与详情文档来自 `locale/<语言>.json`（`meta.title`、`meta.description`、`meta.detail`）。`docs/DETAIL.md` 与 `docs/DETAIL.zh.md` 随包发布；没有声明 `meta.detail` 时宿主才回落到 README。
 
@@ -216,6 +219,12 @@ pnpm run gen:defaults # 从 agents/ 重新生成精选集（仅开发期）
 - 精选 slug 缺失或解析失败时生成器非零退出，所以角色不可能无声消失。
 - 其余测试按「桩看不见的那几类错」分层：宿主半、客户端半、Remote 契约（`test/dir-prep-remote.test.ts`）、两份构建产物（`test/build-host.test.ts`、`test/build-client.test.ts`），以及一层集成。
 - 覆盖率四项阈值都是 100%，所以新增分支必须有能走到它的用例。
+
+## 反馈
+
+欢迎提 issue 和 PR：[https://github.com/JayYuen666/dsh-dir-prep-organize/issues](https://github.com/JayYuen666/dsh-dir-prep-organize/issues)。
+
+插件启动失败时，请附上 dsh 宿主版本、profile 安装形态和浏览器控制台原文。`missed the module table` 这一行尤其有用：它能直接说明 shared 客户端供应行有没有被物化。
 
 ## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 许可
 

@@ -3,5 +3,9 @@
 # 内置精选集由 host 半从 templates.data.mjs 经 defaults 方法按需下发。
 # 架构与数据流见 README 与 host.ts / src/client-entry.ts。
 - insert:
+    # 固定 id：该供应行必须保持开启；停用后本包设置卡会失去 shared 客户端供应。
+    # 多个插件共用同一个 id，宿主会把开关标成“无法唯一定位”并禁用。
+    - id: dsh-plugin-shared
+      name: "@jayyuen66/dsh-plugin-shared"
     - id: dir-prep-organize
       name: "@jayyuen66/dsh-dir-prep-organize"

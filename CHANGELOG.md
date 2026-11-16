@@ -4,6 +4,10 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
 不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
 
+## 0.1.14
+
+将 `@jayyuen66/dsh-plugin-shared` 抬到 `^0.2.10`，设置卡吸底保存条的旧固定 id 冲突与底色随 shared 修复。组合包补丁显式插入固定 id 的 shared 供应行（`dsh-plugin-shared`），并在 `dsh.client.external` 声明 `@jayyuen66/dsh-plugin-shared/client`——该组件必须保持开启，停用后设置卡失去供应、页面报 `missed the module table`（两份 README 已加提醒）。client bundle 相应把 shared 卡片字节改为外置并开启压缩，产物体积约减半。整理模板与默认配置不变。
+
 ## 0.1.13
 
 market 热挂与 bundle 层双路径装载时第二份 `apply` 整份让路（此前第二遍会撞「同名服务已注册」把 fiber 打成 failed）；卡片样式改用 shared 的共享 `<style>`；shared 抬到 `^0.2.9`，输入框不再撑出容器、小节内补上纵向间距；宿主 peer 窗口抬到 `^0.2.2-rc.2`。默认模板与整理行为不变。

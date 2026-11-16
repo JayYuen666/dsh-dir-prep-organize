@@ -24,3 +24,9 @@
 ## 更完整的说明
 
 vendored 角色库、生成的默认模板表、导入扫描的层数规则都属于开发内容，写在随包 README（`README.md` / `README.zh-CN.md`）。
+
+## 反馈
+
+欢迎提 issue 和 PR：[https://github.com/JayYuen666/dsh-dir-prep-organize/issues](https://github.com/JayYuen666/dsh-dir-prep-organize/issues)。
+
+插件启动失败时，请附上 dsh 宿主版本、profile 安装形态和浏览器控制台原文。`missed the module table` 这一行尤其有用：它能直接说明 shared 客户端供应行有没有被物化。

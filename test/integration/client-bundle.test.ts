@@ -23,6 +23,7 @@ import { z } from "zod";
 import { describe, it } from "vitest";
 
 const pkgDir = path.join(import.meta.dirname, "..", "..");
+const SHARED_CLIENT = "@jayyuen66/dsh-plugin-shared/client";
 const PKG_NAME = (
   JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8")) as unknown as {
     name: string;
@@ -66,8 +67,8 @@ async function loadRegistration(): Promise<Registration> {
 }
 
 /**
- * 物化后的导出名单：宿主只提供平台模块表里那份按包名给出的映射，所以除 react / zod 之外索取到任何
- * 说明符都当场抛——那正是「页面上整块不出现」的第一现场，回 undefined 只会把症状拖成
+ * 物化后的导出名单：宿主只提供平台模块表里那份按包名给出的映射，所以除 react / zod 与 shared
+ * 供应行之外索取到任何说明符都当场抛——那正是「页面上整块不出现」的第一现场，回 undefined 只会把症状拖成
  * 更难查的空态。
  */
 async function materialize(): Promise<Record<string, unknown>> {
@@ -79,10 +80,10 @@ async function materialize(): Promise<Record<string, unknown>> {
     if (specifier === "zod") {
       return { z };
     }
-    // shared 的 `./client` 不再是可满足的请求：卡片组件已内联进产物（build-client.mjs 的
-    // 外置清单只留 react / zod）。工厂真发起这个 require 时按「未知说明符」抛出，把
-    // 外置回流挡在这里——宿主页面上的同款失败是启动期的 "missed the module table"
-    // （dsh-ocr-review 仓 issue #2）。
+    if (specifier === SHARED_CLIENT) {
+      // 本用例只物化入口导出，不调用 apply；shared 的组件/工具函数在模块装载时只做绑定。
+      return {};
+    }
     throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
   });
 }
@@ -107,7 +108,7 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof taken.factory, "function", "工厂形产物才有可物化的导出面");
   });
 
-  it("物化只需要 react / zod 这两枚平台依赖，并交出宿主会调的两位", async () => {
+  it("物化只需要 react / zod 与 shared 供应行，并交出宿主会调的两位", async () => {
     const bundle = await materialize();
     assert.deepEqual(
       bundle["inject"],
@@ -117,7 +118,7 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 
-  it("索取面恰好是平台模块两枚，其余依赖一律内联", async () => {
+  it("索取面恰好是平台模块两枚 + shared 供应行，其余依赖一律内联", async () => {
     const taken = await loadRegistration();
     const asked: string[] = [];
     taken.factory((specifier: string): unknown => {
@@ -128,15 +129,17 @@ describe("发布产物 client.js 的装载", () => {
       if (specifier === "zod") {
         return { z };
       }
+      if (specifier === SHARED_CLIENT) {
+        return {};
+      }
       throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
     });
-    // 平台模块由宿主 shell 提供；shared 的 `./client` 已内联（外置的供应方是另一份包的
-    // client 产物，传递依赖安装形状下宿主可能不排进启动图，见 dsh-ocr-review 仓 issue #2）。
+    // 平台模块由宿主 shell 提供；shared 的 `./client` 由 patch 的供应行装载成模块表条目。
     // 再出现别的裸说明符才是「宿主装载不到的一块砖」。
     assert.deepEqual(
       asked.toSorted(),
-      ["react", "zod"].toSorted(),
-      "产物的外部依赖面应当只有平台模块",
+      [SHARED_CLIENT, "react", "zod"].toSorted(),
+      "产物的外部依赖面应当只有平台模块与 shared 供应行",
     );
   });
 });

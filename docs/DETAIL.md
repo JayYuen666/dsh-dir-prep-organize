@@ -24,3 +24,9 @@ No external CLI, interpreter or credential of its own. It uses the host's model 
 ## Further detail
 
 The vendored role library, the generated default-template table and the import-scan depth rules are developer-facing and live in the package README (`README.md` / `README.zh-CN.md`).
+
+## Feedback
+
+Issues and pull requests are welcome: [https://github.com/JayYuen666/dsh-dir-prep-organize/issues](https://github.com/JayYuen666/dsh-dir-prep-organize/issues).
+
+If a plugin fails to boot, include the dsh host version, the profile install shape, and the browser console line. The `missed the module table` line is especially useful: it tells us whether the shared client row was materialized.

@@ -133,13 +133,18 @@ async function profileBundleName(): Promise<string> {
   return pkgName;
 }
 
+/** shared 供应行的固定 id：与八仓 cordis.patch.yml 的 `- id: dsh-plugin-shared` 同一位。 */
+const SHARED_SUPPLIER_ID = "dsh-plugin-shared";
+
 /** 本包 cordis.patch.yml 声明的裸条目 id（0.1.7 的 settings 命名空间）。 */
 async function patchEntryIds(): Promise<string[]> {
   const patch = await readFile(path.join(PKG_DIR, "cordis.patch.yml"), "utf8");
-  return Array.from(
+  const ids = Array.from(
     patch.matchAll(/^\s*(?:-\s+)?id:\s*(?<id>\S+)\s*$/gmu),
     (row) => row.groups?.["id"] ?? "",
   );
+  assert.ok(ids.includes(SHARED_SUPPLIER_ID), "shared 供应行必须使用固定 id");
+  return ids.filter((id) => id !== SHARED_SUPPLIER_ID);
 }
 
 // ── 卡片双语测试助手（样板包 ctx-observe/test/client-card.test.ts 同款）──────
@@ -1211,7 +1216,7 @@ describe("inject 声明", () => {
     const entryId = Array.from(
       patch.matchAll(/^\s*-\s+id:\s*(?<id>\S+)\s*$/gmu),
       (row) => row.groups?.["id"] ?? "",
-    ).find((id) => id !== "");
+    ).find((id) => id !== "" && id !== SHARED_SUPPLIER_ID);
     assert.ok(
       typeof entryId === "string" && entryId.length > 0,
       "cordis.patch.yml 声明了裸条目 id",

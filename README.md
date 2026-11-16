@@ -46,6 +46,7 @@
 - [ Known boundaries](#-known-boundaries)
 - [ FAQ](#-faq)
 - [ Development](#-development)
+- [ Feedback](#feedback)
 - [ License](#-license)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> What it does
@@ -70,6 +71,8 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 ```
 
 Remove with `dsh plugin --profile web remove @jayyuen66/dsh-dir-prep-organize`. The package is on the public npm registry, so installation needs no credentials and no scoped-registry line.
+
+- The bundle patch inserts `- id: dsh-plugin-shared` (`@jayyuen66/dsh-plugin-shared`). **Keep that component enabled**: disabling it removes the settings card's shared component supply, and the next page load fails with `missed the module table`.
 
 - **Requires Node.js `>= 24.9`.** This is an ESM-only package. Use the **named** exports (`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`); there is **no default export**, so `import pkg from …` fails with `does not provide an export named 'default'`. That Node floor is what makes `require()` of an ESM entry work at all, which is why `engines.node` is declared.
 - **Requires host `dsh` on the `0.2.2-rc.2` host line or later.** The requirement the host actually reads is `engines.dsh` (`^0.2.2-rc.2`), and it **decides alone**: `evaluatePluginCompatibility` returns on the `engines.dsh` branch before it ever looks at `peerDependencies`. Measured against the real host code: `0.2.0-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3` and `0.2.2-rc.1` are **refused**, `0.2.2-rc.2`, `0.2.2` and `0.2.3` pass, `0.3.0` is refused. A refused host needs the explicit risk grant `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`. The support window rolls: this package is verified against every released host version inside the window at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
@@ -106,12 +109,12 @@ Worth knowing before you look for them:
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Enabling it in dsh
 
-- Installing contributes the bundle patch layer (`dsh.bundle.patch` → `./cordis.patch.yml`), which inserts `- id: dir-prep-organize` with `name` set to the package name.
+- Installing contributes the bundle patch layer (`dsh.bundle.patch` → `./cordis.patch.yml`), which inserts two rows: `- id: dsh-plugin-shared` (the shared client supply row - keep it enabled, see Install) and `- id: dir-prep-organize` with `name` set to the package name.
 - The **client half** registers two slots plus the settings card:
   - `conversation.input.right` - the polish button (id `dir-prep-organize`, order 99) and the templates dropdown (id `dir-prep-organize-templates`, order 100).
   - `plugins.bundle.config` - the settings card, keyed by the **bundle package name** `@jayyuen66/dsh-dir-prep-organize`. The host dispatches `entryKey: pkg.name` (source of truth: `dsh.profile.bundles` in the profile's `package.json`), so a bare entry id never matches and the card would render nowhere.
   - The settings namespace and `configForms.get()` stay the **bare entry id** `dir-prep-organize` - deliberately not the same identifier as that slot key.
-- The client half is `dsh.client.platform = web` with `immediately`.
+- The client half is `dsh.client.platform = web` with `immediately`; `dsh.client.external` names `@jayyuen66/dsh-plugin-shared/client` so the host sorts the startup graph with that supply row in place.
 - The card follows the official locale plugin's preference for its own labels and copy; the host half reads the preference per request, so switching language needs no restart.
 - The plugin page reads its title, description and detail document from `locale/<lang>.json` (`meta.title`, `meta.description`, `meta.detail`). `docs/DETAIL.md` and `docs/DETAIL.zh.md` ship in the tarball; without `meta.detail` the host falls back to the README.
 
@@ -216,6 +219,12 @@ pnpm run gen:defaults # regenerate the curated set from agents/ (dev-time only)
 - The generator exits non-zero when a curated slug is missing or fails to parse, so a role can never disappear silently.
 - The rest of the suite splits the classes of defect a stub cannot see: the host half, the client half, the Remote contract (`test/dir-prep-remote.test.ts`), the two build artifacts (`test/build-host.test.ts`, `test/build-client.test.ts`), and an integration layer.
 - Coverage thresholds are 100% across four metrics, so a new branch needs a case that reaches it.
+
+## Feedback
+
+Issues and pull requests are welcome: [https://github.com/JayYuen666/dsh-dir-prep-organize/issues](https://github.com/JayYuen666/dsh-dir-prep-organize/issues).
+
+If a plugin fails to boot, include the dsh host version, the profile install shape, and the browser console line. The `missed the module table` line is especially useful: it tells us whether the shared client row was materialized.
 
 ## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> License
 
