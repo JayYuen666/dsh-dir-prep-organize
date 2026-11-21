@@ -1,4 +1,5 @@
-import { createElement, useEffect, useRef, useState } from "react";
+import { RiskConfirmation } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Fragment, createElement, useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { mergeImportedTemplates, sanitizeAllowRoots, sanitizeTemplateList } from "./templates.ts";
 import type { TemplateEntry } from "./templates.ts";
@@ -23,6 +24,7 @@ import {
   errorText,
   isRecord,
 } from "@jayyuen66/dsh-plugin-shared/client";
+import { raceTimeout } from "@jayyuen66/dsh-plugin-shared/lib/with-timeout";
 import { hasDraftFace, hasInsertFace, useWriteBack } from "./input-writeback.ts";
 import { DIR_PREP_NAMESPACE, createDirPrepReader } from "./remote.ts";
 import type { DirPrepReader } from "./remote.ts";
@@ -33,7 +35,6 @@ const BUNDLE_PKG = "@jayyuen66/dsh-dir-prep-organize";
 const ERROR_FLASH_MS = 4000;
 /** 除润色之外的调用的等待上限。润色那一发有自己的超时（来自设置卡的 organizeTimeoutMs）。 */
 const REMOTE_TIMEOUT_MS = 125_000;
-const RESET_CONFIRM_MS = 4000;
 const EMOJI_PLACEHOLDER = "😀";
 const ROOT_PATH_PLACEHOLDER = "/Users/me/roles";
 
@@ -298,18 +299,12 @@ class LocalizedOrganizeError extends Error {
     this.params = params;
   }
 }
-/** 客户端的超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收尾。 */
+/** 客户端的超时只影响等待：宿主侧的润色超时仍由它自己的 AbortController 收尾。
+ *  竞速骨架由 shared `./lib/with-timeout` 收编（与 scrapling 的 withTimeout 剥掉拒绝值
+ *  构造后逐字同）；拒绝值走 LocalizedOrganizeError——界面按当前语言渲染，不再把中文
+ *  硬编码漏进英文界面，文案属领域判断留在回调里。 */
 async function within<Value>(pending: Promise<Value>, timeoutMs: number): Promise<Value> {
-  const gate = Promise.withResolvers<never>();
-  const timer = setTimeout(() => {
-    // 走 LocalizedOrganizeError：界面按当前语言渲染，不再把中文硬编码漏进英文界面。
-    gate.reject(new LocalizedOrganizeError("organizeErrTimeout"));
-  }, timeoutMs);
-  try {
-    return await Promise.race([pending, gate.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return raceTimeout(pending, timeoutMs, () => new LocalizedOrganizeError("organizeErrTimeout"));
 }
 
 export async function loadBuiltinTemplates(): Promise<BuiltinState> {
@@ -1486,16 +1481,16 @@ function ImportPanel(props: {
     importBusy ? t("importing") : t("importRoles"),
   );
   const importMsgEl =
-    importMsg === "" ? null : createElement("div", { className: "dpic-hint" }, importMsg);
+    importMsg === "" ? null : createElement("div", { className: "dsu-hint" }, importMsg);
   const importErrorEl =
     importError === ""
       ? null
       : createElement(
           "div",
-          { className: "dpic-hint dpic-err" },
+          { className: "dsu-hint dsu-error" },
           `${t("importErrorPrefix")}${importError}`,
         );
-  const importHintEl = createElement("div", { className: "dpic-hint" }, t("importHint"));
+  const importHintEl = createElement("div", { className: "dsu-hint" }, t("importHint"));
   return createElement(
     "div",
     { className: "dpic-importrow" },
@@ -1594,10 +1589,10 @@ function AllowRootsPanel(props: {
   return createElement(
     "div",
     { className: "dpic-importrow", "data-field": "allow-roots" },
-    createElement("div", { className: "dpic-hint" }, t("rootsHeading")),
+    createElement("div", { className: "dsu-hint" }, t("rootsHeading")),
     rows,
     addRow,
-    createElement("div", { className: "dpic-hint" }, t("rootsHint")),
+    createElement("div", { className: "dsu-hint" }, t("rootsHint")),
   );
 }
 
@@ -1607,22 +1602,46 @@ interface CardFootLabels {
   saving: string;
   revert: string;
   reset: string;
-  resetConfirm: string;
   saveTitleDirty: string;
   saveTitleClean: string;
   resetTitle: string;
 }
 
 /** 工具条：新增角色与恢复默认（保存/撤销交给卡片底部统一的 SaveBar）。 */
+/** 「恢复默认」的二次确认弹窗：宿主 RiskConfirmation（rtk 同款）。
+ *  reset 走 unset、立刻写盘且不可撤（不是草稿级编辑），值得一次带勾选的确认。 */
+function ResetConfirmation(props: {
+  t: Translate;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}): ReactNode {
+  const { t, busy, onCancel, onConfirm } = props;
+  const [acknowledged, setAcknowledged] = useState(false);
+  return createElement(RiskConfirmation, {
+    open: true,
+    title: t("resetTitle"),
+    description: t("resetConfirmDescription"),
+    acknowledgeLabel: t("resetConfirmAcknowledge"),
+    cancelLabel: t("resetConfirmCancel"),
+    closeLabel: t("resetConfirmClose"),
+    confirmLabel: t("resetConfirmAction"),
+    acknowledged,
+    disabled: busy,
+    onAcknowledgedChange: setAcknowledged,
+    onCancel,
+    onConfirm,
+  });
+}
+
 function CardToolbar(props: {
   foot: CardFootLabels;
   editable: boolean;
   busy: boolean;
-  confirmReset: boolean;
   onAdd: () => void;
   onReset: () => void;
 }): ReactNode {
-  const { foot, editable, busy, confirmReset } = props;
+  const { foot, editable, busy } = props;
   return createElement(
     "div",
     { className: "dpic-toolbar" },
@@ -1636,16 +1655,28 @@ function CardToolbar(props: {
       {
         type: "button",
         className: "dsu-btn dsu-btnDanger",
-        // busy门禁与保存/撤销用同一种做法：两者写的是同一份表单（reset 走 unset、保存走
-        // set），不挡住就能并发，于是 unset 与 set 落到同一字段上，最后写入者赢——
-        // 而「恢复默认」是两步确认里的一步，用户极易在保存途中才想起来要点它。
+        // busy 门禁与保存/撤销用同一种做法：两者写的是同一份表单（reset 走 unset、保存走
+        // set），不挡住就能并发，于是 unset 与 set 落到同一字段上，最后写入者赢。
         disabled: !editable || busy,
         title: foot.resetTitle,
         onClick: props.onReset,
       },
-      confirmReset ? foot.resetConfirm : foot.reset,
+      foot.reset,
     ),
   );
+}
+
+/** 角色库小节的 Section 入参：计数徽章是动态真量（模板条数），不是手写字段数——
+ *  这条节管的是一份列表。抽成函数是因为嵌套调用层数的上限挡住了内联写法。 */
+function rolesSectionProps(
+  t: Translate,
+  count: number,
+): { title: string; hint: string; count: string } {
+  return {
+    title: t("rolesSection"),
+    hint: t("rolesHint"),
+    count: t("rolesCount", { count: String(count) }),
+  };
 }
 
 function cardFootLabels(t: Translate): CardFootLabels {
@@ -1655,7 +1686,6 @@ function cardFootLabels(t: Translate): CardFootLabels {
     saving: t("saving"),
     revert: t("revert"),
     reset: t("resetDefault"),
-    resetConfirm: t("resetConfirm", { seconds: RESET_CONFIRM_MS / 1000 }),
     saveTitleDirty: t("saveTitleDirty"),
     saveTitleClean: t("saveTitleClean"),
     resetTitle: t("resetTitle"),
@@ -1760,7 +1790,6 @@ interface PersistActionsArgs {
   readonly dirty: boolean;
   readonly rootsDirty: boolean;
   readonly anythingDirty: boolean;
-  readonly confirmReset: boolean;
   readonly templates: readonly TemplateEntry[];
   readonly allowRoots: readonly string[];
   readonly draft: readonly TemplateEntry[];
@@ -1773,7 +1802,6 @@ interface PersistActionsArgs {
   readonly setRootsDraft: Setter<readonly string[]>;
   readonly setBusy: Setter<boolean>;
   readonly setSaveError: Setter<string>;
-  readonly setConfirmReset: Setter<boolean>;
 }
 
 interface PersistActions {
@@ -1789,7 +1817,6 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
     dirty,
     rootsDirty,
     anythingDirty,
-    confirmReset,
     templates,
     allowRoots,
     draft,
@@ -1802,7 +1829,6 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
     setRootsDraft,
     setBusy,
     setSaveError,
-    setConfirmReset,
   } = args;
   function reportError(err: unknown): void {
     console.error("[dir-prep-organize] templates settings write failed:", err);
@@ -1841,11 +1867,6 @@ function createPersistActions(args: PersistActionsArgs): PersistActions {
     setSaveError("");
   }
   function onReset(): void {
-    if (!confirmReset) {
-      setConfirmReset(true);
-      return;
-    }
-    setConfirmReset(false);
     // 撤销与保存写的是同一份表单（reset 走 unset、保存走 set），而 CardFootBar 的 busy 门禁
     // 就是为了不让这两条路并发：不置 busy 时，用户在 reset 的一次往返途中仍能点保存，
     // 于是 unset 与 set 落到同一字段上，最后写入者赢。这里与 onSave 用同一对 setBusy。
@@ -1884,8 +1905,8 @@ interface CardBodyView {
   readonly editable: boolean;
   readonly anythingDirty: boolean;
   readonly busy: boolean;
-  readonly confirmReset: boolean;
   readonly saveError: string;
+  readonly onRequestReset: () => void;
   readonly draftActions: DraftActions;
   readonly persistActions: PersistActions;
 }
@@ -1901,13 +1922,13 @@ function createCardBody(view: CardBodyView): ReactNode {
     editable,
     anythingDirty,
     busy,
-    confirmReset,
     saveError,
+    onRequestReset,
   } = view;
   const { onCommit, onDelete, onAdd, onImported, onRootChange, onRootDelete, onRootAdd } =
     view.draftActions;
-  const { onSave, onDiscard, onReset } = view.persistActions;
-  const footHint = createElement("p", { className: "dpic-hint" }, t("footHint"));
+  const { onSave, onDiscard } = view.persistActions;
+  const footHint = createElement("p", { className: "dsu-hint" }, t("footHint"));
   const saveBar = createElement(SaveBar, {
     dirty: anythingDirty,
     busy,
@@ -1924,20 +1945,21 @@ function createCardBody(view: CardBodyView): ReactNode {
     },
     onDiscard,
   });
-  return createElement(
+  const body = createElement(
     CardForm,
     null,
-    statusHint === "" ? null : createElement("p", { className: "dpic-hint" }, statusHint),
+    statusHint === "" ? null : createElement("p", { className: "dsu-hint" }, statusHint),
     createElement(
       Section,
-      { title: t("rolesSection"), hint: t("rolesHint") },
+      // 计数徽章是动态真量（模板条数），不是手写字段数——这条节管的是一份列表。
+      // 计数先算成局部量：嵌套调用层数的上限挡住了内联写法。
+      rolesSectionProps(t, draft.length),
       createElement(CardToolbar, {
         foot,
         editable,
         busy,
-        confirmReset,
         onAdd,
-        onReset,
+        onReset: onRequestReset,
       }),
       draft.map((tpl, idx) =>
         createElement(TemplateRow, {
@@ -1967,11 +1989,12 @@ function createCardBody(view: CardBodyView): ReactNode {
     ),
     saveBar,
   );
+  return body;
 }
 
 function TemplatesCard(props: TemplatesCardProps): ReactNode {
   const { t } = props;
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [busy, setBusy] = useState(false);
   const foot = cardFootLabels(t);
@@ -1995,20 +2018,6 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
     }
   }, [templates, draftFor]);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    if (confirmReset) {
-      timer = setTimeout(() => {
-        setConfirmReset(false);
-      }, RESET_CONFIRM_MS);
-    }
-    return () => {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    };
-  }, [confirmReset]);
-
   const [rootsDraft, setRootsDraft] = useState<readonly string[]>(snap.allowRoots);
   const [rootsFor, setRootsFor] = useState<readonly string[]>(snap.allowRoots);
   useEffect(() => {
@@ -2031,7 +2040,6 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
     dirty,
     rootsDirty,
     anythingDirty,
-    confirmReset,
     templates,
     allowRoots: snap.allowRoots,
     draft,
@@ -2044,10 +2052,9 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
     setRootsDraft,
     setBusy,
     setSaveError,
-    setConfirmReset,
   });
 
-  return createCardBody({
+  const cardBody = createCardBody({
     t,
     statusHint,
     draft,
@@ -2056,11 +2063,31 @@ function TemplatesCard(props: TemplatesCardProps): ReactNode {
     editable,
     anythingDirty,
     busy,
-    confirmReset,
     saveError,
+    onRequestReset: (): void => {
+      setResetOpen(true);
+    },
     draftActions,
     persistActions,
   });
+  return createElement(
+    Fragment,
+    null,
+    cardBody,
+    resetOpen
+      ? createElement(ResetConfirmation, {
+          t,
+          busy,
+          onCancel: (): void => {
+            setResetOpen(false);
+          },
+          onConfirm: () => {
+            setResetOpen(false);
+            persistActions.onReset();
+          },
+        })
+      : null,
+  );
 }
 
 // ── 插件 apply ─────────────────────────────────────────────────────────────

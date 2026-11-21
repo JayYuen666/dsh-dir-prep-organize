@@ -2300,7 +2300,7 @@ function writeEntry(ctx: MockCtx, index: number): { field: string; value: string
 }
 
 function errText(): string {
-  const node = container.querySelector<HTMLElement>(".dpic-err, .dsu-statusError");
+  const node = container.querySelector<HTMLElement>(".dsu-error, .dsu-statusError");
   return textOf(node);
 }
 
@@ -2629,36 +2629,37 @@ describe("TemplatesCard 编辑与保存", () => {
     assert.equal(rowValue(CLS_NAME, 0), "我的编辑", "有未保存编辑时不被外部值覆盖");
   });
 });
+/** 恢复默认的弹窗驱动：点按钮开弹窗 → 勾选 → 确认（sonarjs 重复字面量门禁收成常量）。 */
+const ACK_BTN_FIELD = '[data-field="risk-acknowledge"]';
+const CONFIRM_BTN_FIELD = '[data-field="risk-confirm"]';
+
+async function confirmResetModal(): Promise<void> {
+  await press(container.querySelector(ACK_BTN_FIELD));
+  await press(container.querySelector(CONFIRM_BTN_FIELD));
+}
+
 describe("TemplatesCard 恢复默认", () => {
   beforeEach(domFixtureSetup);
 
   afterEach(domFixtureTeardown);
 
-  it("两步确认：第一次只进确认态，4 秒不点自动撤销", async () => {
-    await openCard();
-    vi.useFakeTimers();
+  it("弹窗确认：点按钮先开宿主确认弹窗，取消不执行", async () => {
+    const { ctx } = await openCard();
     const resetBtn = buttonContaining("恢复默认");
     assert.ok(resetBtn, "恢复默认按钮存在");
-    await act(async () => {
-      resetBtn.click();
-    });
-    assert.match(text(), /确认恢复默认？再点一次/u);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4100);
-    });
-    assert.equal(
-      buttonContaining("确认恢复默认"),
-      null,
-      "确认态已自动撤销（按钮文案回到「恢复默认」）",
-    );
-    vi.useRealTimers();
+    await press(resetBtn);
+    assert.ok(container.querySelector('[data-testid="risk-confirmation"]'), "弹窗已开");
+    assert.match(text(), /恢复默认？/u);
+    await press(container.querySelector('[data-field="risk-cancel"]'));
+    assert.equal(container.querySelector('[data-testid="risk-confirmation"]'), null, "取消关弹窗");
+    assert.deepEqual(ctx.scope.unsets, [], "取消不下发 unset");
   });
 
   it("第二次点击 → unset 下发并核验宿主值", async () => {
     stubBuiltinTemplates();
     const { ctx } = await openCard();
     await press(buttonContaining("恢复默认"));
-    await press(buttonContaining("确认恢复默认"));
+    await confirmResetModal();
     assert.deepEqual(ctx.scope.unsets, ["templates"], "unset 了 templates 键");
     assert.equal(errText(), "", "宿主回落到内置默认 → 核验一致");
   });
@@ -2668,7 +2669,7 @@ describe("TemplatesCard 恢复默认", () => {
     const { ctx } = await openCard();
     ctx.scope.acceptWrites = false;
     await press(buttonContaining("恢复默认"));
-    await press(buttonContaining("确认恢复默认"));
+    await confirmResetModal();
     assert.match(errText(), /恢复默认未生效：宿主拒绝了本次写入/u);
   });
 
@@ -2888,7 +2889,7 @@ describe("内置表按需下发", () => {
     stubBuiltinTemplates("fail");
     const { ctx } = await openCard();
     await press(buttonContaining("恢复默认"));
-    await press(buttonContaining("确认恢复默认"));
+    await confirmResetModal();
     assert.deepEqual(ctx.scope.unsets, [], "拉不到表就 unset 等于把用户的模板清空了");
     assert.match(errText(), /内置表暂不可用/u, "报的是 host 原文，且没被吞成通用文案");
   });

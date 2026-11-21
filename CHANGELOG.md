@@ -4,6 +4,10 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
 不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
 
+## 0.1.15
+
+宿主基线抬到 `0.2.2-rc.5`：devDependencies 全族精确钉 rc.5，`engines.dsh` 与 dsh 家族 peer 同一条窗口；dependabot 配置注释与集成台架的契约证据行（deepseek-harness @ dsh-v0.2.2-rc.5）同步。Typert 远端方法的程序化标记收编 shared `./lib/remote-marker`（与 session-rescue / ocr-review 的副本逐字同构）；`test/build-host.test.ts` 的 shared 子路径外置清单补 `lib/instance-lock` 与 `lib/remote-marker`。`src/remote.ts` 的 `RemoteHost` / `isMounter` 与 `src/client-entry.ts` 的 `within` 竞速骨架收编 shared（`./lib/typert-client` / `./lib/with-timeout`）。shared 经 catalog 抬到 `^0.2.12`——收编的三个子路径随 shared 0.2.12 发布，`pnpm-lock.yaml` 经 `pnpm install --lockfile-only` 重解到 registry 现量。
+
 ## 0.1.14
 
 将 `@jayyuen66/dsh-plugin-shared` 抬到 `^0.2.10`，设置卡吸底保存条的旧固定 id 冲突与底色随 shared 修复。组合包补丁显式插入固定 id 的 shared 供应行（`dsh-plugin-shared`），并在 `dsh.client.external` 声明 `@jayyuen66/dsh-plugin-shared/client`——该组件必须保持开启，停用后设置卡失去供应、页面报 `missed the module table`（两份 README 已加提醒）。client bundle 相应把 shared 卡片字节改为外置并开启压缩，产物体积约减半。整理模板与默认配置不变。

@@ -8,6 +8,8 @@ import type {
   TypertCodec,
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/client";
+import { isRemoteMounter } from "@jayyuen66/dsh-plugin-shared/lib/typert-client";
+import type { RemoteHost, RemoteMounter } from "@jayyuen66/dsh-plugin-shared/lib/typert-client";
 import { z } from "zod";
 
 /** Typert Remote 命名空间（client 半只用这一枚）。
@@ -167,16 +169,8 @@ export interface DirPrepReader {
   importTemplates: (args: { path: string; sessionId: string }) => Promise<unknown>;
 }
 
-interface RemoteHost {
-  get?: (name: string, strict?: boolean) => unknown;
-}
-
-interface RemoteMounter {
-  $mount: (contribution: {
-    package: string;
-    descriptors: readonly InvocationDescriptor[];
-  }) => Promise<unknown>;
-}
+// RemoteHost / isMounter（shared 的 isRemoteMounter，此前本仓改名自抄）由 shared
+// `./lib/typert-client` 收编——七份逐字副本的正主（导入见文件头）。
 
 interface DirPrepNamespace {
   defaults: () => Promise<RemoteResult<unknown>>;
@@ -185,9 +179,6 @@ interface DirPrepNamespace {
   organize: (request: DirPrepOrganizeArgs) => Promise<RemoteResult<unknown>>;
   importTemplates: (request: { path: string; sessionId: string }) => Promise<RemoteResult<unknown>>;
 }
-
-const isMounter = (value: unknown): value is RemoteMounter =>
-  isRecord(value) && typeof value["$mount"] === "function";
 
 const isNamespace = (value: unknown): value is DirPrepNamespace =>
   isRecord(value) &&
@@ -280,5 +271,5 @@ export function createDirPrepReader(ctx: RemoteHost): DirPrepReader | undefined 
   } catch {
     remote = undefined;
   }
-  return isMounter(remote) ? buildReader(ctx, remote) : undefined;
+  return isRemoteMounter(remote) ? buildReader(ctx, remote) : undefined;
 }

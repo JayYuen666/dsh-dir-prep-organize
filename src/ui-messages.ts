@@ -23,6 +23,8 @@ import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 export interface UiMessages {
   /** 角色库小节标题与说明（这份列表同时喂「模板」下拉与「润色」▾）。 */
   readonly rolesSection: string;
+  /// 角色库小节的条数徽章（{count} 为当前模板条数）。
+  readonly rolesCount: string;
   readonly rolesHint: string;
   /** 设置源可写位为 false 时的状态条。 */
   readonly statusReadOnly: string;
@@ -42,10 +44,14 @@ export interface UiMessages {
   readonly revert: string;
   /** 恢复默认按钮 title（说明改动范围与两步确认）。 */
   readonly resetTitle: string;
-  /** 恢复默认按钮（已进入确认态）。 */
-  readonly resetConfirm: string;
   /** 恢复默认按钮（空闲态）；同时充当回执文本里的动作名。 */
   readonly resetDefault: string;
+  /** 确认弹窗正文（危险操作统一走宿主 RiskConfirmation，rtk 同款）。 */
+  readonly resetConfirmDescription: string;
+  readonly resetConfirmAcknowledge: string;
+  readonly resetConfirmCancel: string;
+  readonly resetConfirmClose: string;
+  readonly resetConfirmAction: string;
   /** 卡底的保存语义说明。 */
   readonly footHint: string;
   /** 保存失败前缀（后接错误摘要）。 */
@@ -242,6 +248,7 @@ export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
     rolesSection: "角色库",
+    rolesCount: "{count} 条",
     rolesHint:
       "输入框「模板」下拉与「润色」▾ 角色菜单共用这一份列表，空表即回落到内置精选角色集（生成自插件 agents/ 角色库）。留空点「导入角色」可一键导入内置全部；填路径则按「会话 cwd + 内置角色库 + 下方导入允许目录」放行。编辑后点「保存」生效，重启不丢。",
     statusReadOnly: "设置源不可写：编辑已禁用；下拉仍按当前列表生效。",
@@ -252,10 +259,14 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "保存中…",
     save: "保存",
     revert: "撤销",
-    resetTitle:
-      "丢弃模板列表的全部自定义，回到内置默认（不影响已登记的导入允许目录；两步确认，点击即生效）",
-    resetConfirm: "确认恢复默认？再点一次（{seconds} 秒内）",
+    resetTitle: "恢复默认？",
     resetDefault: "恢复默认",
+    resetConfirmDescription:
+      "将丢弃模板列表的全部自定义并写回内置默认：立即写盘、不可撤销（撤销按钮只回滚未保存的草稿）。已登记的导入允许目录不受影响。",
+    resetConfirmAcknowledge: "我知道这会立即写盘且不可撤销",
+    resetConfirmCancel: "取消",
+    resetConfirmClose: "关闭",
+    resetConfirmAction: "确认恢复默认",
     footHint:
       "说明：编辑/新增/删除先在本地暂存，点「保存」一次写入（模板与导入允许目录同理）；清空名称或正文的条目保存时会被剔除（删除请用行内「删除」）；恢复默认只回滚模板列表。",
     saveFailed: "保存失败：",
@@ -343,6 +354,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   },
   en: {
     rolesSection: "Role library",
+    rolesCount: "{count} items",
     rolesHint:
       'The input-box "Template" dropdown and the "Polish" ▾ role menu share this one list; an empty list falls back to the built-in curated role set (generated from this plugin\'s agents/ role library). Leave the path empty and press "Import roles" to import the whole built-in library; an explicit path is allowed within "session cwd + built-in role library + the import allowed directories below". Press "Save" after editing — it survives restarts.',
     statusReadOnly:
@@ -356,10 +368,14 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "Saving…",
     save: "Save",
     revert: "Revert",
-    resetTitle:
-      "Discard every customization of the template list and go back to the built-in defaults (registered import directories are untouched; two-step confirm, takes effect on the next click)",
-    resetConfirm: "Restore defaults? Click once more (within {seconds}s)",
+    resetTitle: "Restore defaults?",
     resetDefault: "Restore defaults",
+    resetConfirmDescription:
+      "Discards every customization of the template list and writes the built-in defaults back: immediate, irreversible (Revert only rolls back unsaved drafts). Registered import directories are untouched.",
+    resetConfirmAcknowledge: "I understand this writes immediately and cannot be undone",
+    resetConfirmCancel: "Cancel",
+    resetConfirmClose: "Close",
+    resetConfirmAction: "Restore defaults",
     footHint:
       'Note: edits, additions and deletions are staged locally first and written in one go when you press "Save" (same for templates and import directories); entries whose name or body is empty are dropped on save (use the inline "Delete" instead); "Restore defaults" only rolls back the template list.',
     saveFailed: "Save failed: ",

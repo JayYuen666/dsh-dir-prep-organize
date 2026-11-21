@@ -76,7 +76,13 @@ describe("dir-prep-organize host 构建", () => {
     // 子路径：external 判据必须按「包名段」匹配，字符串项精确匹配不到 `/lib/record` 这种子路径。
     // 本条由"只查包名前缀"升级为逐个列名——前缀断言会被任意一条 shared 子路径满足，
     // 看不见 lib/record 哪天被内联（该批评见 zvec-grep 的 test/build-host.test.ts 注释）。
-    for (const subpath of ["lib/locale", "lib/record", "lib/errors"]) {
+    for (const subpath of [
+      "lib/locale",
+      "lib/record",
+      "lib/errors",
+      "lib/instance-lock",
+      "lib/remote-marker",
+    ]) {
       assert.ok(
         text.includes(`from "@jayyuen66/dsh-plugin-shared/${subpath}"`),
         `shared/${subpath} 必须留在产物里（内联 = shared 单例被复制）`,

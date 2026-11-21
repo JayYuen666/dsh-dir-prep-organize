@@ -80,7 +80,7 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import type { SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
+import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 字典本身在 src/host-messages.ts（纯数据），本文件只负责取表与注入。
 import {
@@ -102,6 +102,7 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 // 注册面之外；锁随在册那一份的 fiber 卸载自动释放，所以后续装配仍能抢到。
 // 本模块已收进 shared，各插件仓不再各留一份副本；判据与取舍见它的头注释。
 import { claimInstance } from "@jayyuen66/dsh-plugin-shared/lib/instance-lock";
+import { markRemote } from "@jayyuen66/dsh-plugin-shared/lib/remote-marker";
 
 /** 本包送进 `llm.stream({ messages })` 的润色请求帧是 **request-only 输入**：它从不落
  *  任何持久消息位（`runOrganize` 只回 `{ content }`，读取方法也不把帧身份回传给卡片），所以
@@ -2274,22 +2275,6 @@ export class DirPrepRemoteService extends TypertRemoteService {
     const result = await importPayload(this.scope, request);
     return result.status === 200 ? result.body : { ...result.body, status: result.status };
   }
-}
-
-/** 标准装饰器的程序化调用：标记落到真正的原型上，源码不引装饰器语法。 */
-function markRemote(prototype: DirPrepRemoteService, methodName: string): void {
-  const context = {
-    kind: "method",
-    name: methodName,
-    static: false,
-    private: false,
-    addInitializer: (initializer: (this: unknown) => void): void => {
-      Reflect.apply(initializer, Object.create(prototype), []);
-    },
-  };
-  // oxlint-disable-next-line eslint/new-cap -- `Remote(…)` 是装饰器工厂，不是大写开头的构造调用
-  const decorate = Remote(methodName);
-  Reflect.apply(decorate, undefined, [Reflect.get(prototype, methodName), context]);
 }
 
 markRemote(DirPrepRemoteService.prototype, "defaults");

@@ -16,7 +16,7 @@ export const CARD_STYLES = [
   ".dpi-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,currentColor);background:var(--dsw-alias-bg-layer-2,transparent)}",
   ".dpi-btn:disabled{opacity:.55;cursor:not-allowed}",
   '.dpi-btn:disabled[data-state="loading"]{cursor:progress}',
-  ".dpi-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,currentColor);outline-offset:1px}",
+  ".dpi-btn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,currentColor);outline-offset:1px}",
   ".dpi-btn svg{width:14px;height:14px;flex:none}",
   ".dpi-btn-err{border-color:var(--dsw-alias-state-error-primary,currentColor);color:var(--dsw-alias-state-error-secondary,currentColor)}",
   // 与 .dpi-btn:hover:not(:disabled) 同优先级（:not 计入），靠后序把错误态边框压回来，
@@ -55,6 +55,4 @@ export const CARD_STYLES = [
   ".dpic-rowhead{display:flex;gap:8px;align-items:center}",
   ".dpic-idx{font-size:12px;color:var(--dsw-alias-label-tertiary,inherit);flex:none;min-width:26px}",
   ".dpic-importrow{padding:12px 0;border-bottom:1px dashed var(--dsw-alias-border-l2,currentColor)}",
-  ".dpic-hint{font-size:12px;color:var(--dsw-alias-label-tertiary,inherit);line-height:1.5;padding-top:6px}",
-  ".dpic-err{color:var(--dsw-alias-state-error-primary,currentColor)}",
 ].join("\n");

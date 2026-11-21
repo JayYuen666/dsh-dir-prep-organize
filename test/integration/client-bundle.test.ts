@@ -24,6 +24,10 @@ import { describe, it } from "vitest";
 
 const pkgDir = path.join(import.meta.dirname, "..", "..");
 const SHARED_CLIENT = "@jayyuen66/dsh-plugin-shared/client";
+// 宿主确认弹窗原子（平台模块）；react-dom 两位在桩里只需要存在性。
+const HOST_PRIMITIVES = "@deepseek-ai/dsh-client-ui-primitives";
+const REACT_DOM = "react-dom";
+const REACT_DOM_CLIENT = "react-dom/client";
 const PKG_NAME = (
   JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8")) as unknown as {
     name: string;
@@ -80,6 +84,12 @@ async function materialize(): Promise<Record<string, unknown>> {
     if (specifier === "zod") {
       return { z };
     }
+    if (specifier === REACT_DOM || specifier === REACT_DOM_CLIENT) {
+      return {};
+    }
+    if (specifier === HOST_PRIMITIVES) {
+      return { RiskConfirmation: () => null };
+    }
     if (specifier === SHARED_CLIENT) {
       // 本用例只物化入口导出，不调用 apply；shared 的组件/工具函数在模块装载时只做绑定。
       return {};
@@ -118,7 +128,7 @@ describe("发布产物 client.js 的装载", () => {
     assert.equal(typeof bundle["apply"], "function", "宿主装载后要调的就是这一位");
   });
 
-  it("索取面恰好是平台模块两枚 + shared 供应行，其余依赖一律内联", async () => {
+  it("索取面恰好是平台模块三枚 + shared 供应行，其余依赖一律内联", async () => {
     const taken = await loadRegistration();
     const asked: string[] = [];
     taken.factory((specifier: string): unknown => {
@@ -129,16 +139,23 @@ describe("发布产物 client.js 的装载", () => {
       if (specifier === "zod") {
         return { z };
       }
+      if (specifier === REACT_DOM || specifier === REACT_DOM_CLIENT) {
+        return {};
+      }
+      if (specifier === HOST_PRIMITIVES) {
+        return { RiskConfirmation: () => null };
+      }
       if (specifier === SHARED_CLIENT) {
         return {};
       }
       throw new Error(`宿主的模块表面给不出这份说明符：${specifier}`);
     });
-    // 平台模块由宿主 shell 提供；shared 的 `./client` 由 patch 的供应行装载成模块表条目。
-    // 再出现别的裸说明符才是「宿主装载不到的一块砖」。
+    // 平台模块由宿主 shell 提供（react 家族、zod、client-ui primitives）；shared 的
+    // `./client` 由 patch 的供应行装载成模块表条目。再出现别的裸说明符才是
+    // 「宿主装载不到的一块砖」。
     assert.deepEqual(
       asked.toSorted(),
-      [SHARED_CLIENT, "react", "zod"].toSorted(),
+      [HOST_PRIMITIVES, SHARED_CLIENT, "react", "zod"].toSorted(),
       "产物的外部依赖面应当只有平台模块与 shared 供应行",
     );
   });

@@ -30,7 +30,14 @@ const root = import.meta.dirname;
 // 历史教训：只作为传递依赖安装、宿主没把 shared 排进启动图时，页面启动会落进
 // "missed the module table"（dsh-ocr-review 仓 issue #2，宿主 0.2.2-rc.1 dsh desktop）。
 // 本仓现在显式启用供应行，并接受「shared 必须作为 client row 被宿主装载」这一前提。
-const CLIENT_EXTERNALS = [...REACT_RUNTIME_MODULES, "zod", "@jayyuen66/dsh-plugin-shared/client"];
+// 宿主的确认弹窗原子（RiskConfirmation）：平台模块，冻结模块表里已有；内联会出现
+// 第二份 identity。危险操作统一走宿主 RiskConfirmation 弹窗。
+const CLIENT_EXTERNALS = [
+  ...REACT_RUNTIME_MODULES,
+  "zod",
+  "@deepseek-ai/dsh-client-ui-primitives",
+  "@jayyuen66/dsh-plugin-shared/client",
+];
 
 /** 生成 client.js 的完整文本（含 ModuleLoader 外壳）。 */
 export async function buildClient() {
