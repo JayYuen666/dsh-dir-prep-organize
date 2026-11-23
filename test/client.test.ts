@@ -34,6 +34,7 @@ import {
   subscribeBuiltinTemplates,
   inject as clientInject,
 } from "../src/client-entry.ts";
+import { runOrganizeMenuSelection, runTemplateMenuSelection } from "../src/menu-dispatch.ts";
 import type { DirPrepReader } from "../src/remote.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { Translate, UiMessages } from "../src/ui-messages.ts";
@@ -234,6 +235,7 @@ const DEFAULTS_URL = "/_dsh/dir-prep/default-templates";
 
 /** 框架槽名（inject/register 两侧与断言里读注册表用的都是这两条）。 */
 const SLOT_INPUT_RIGHT = "conversation.input.right";
+const SLOT_INPUT_PLACEHOLDER = "conversation.input.placeholder";
 const SLOT_BUNDLE_CONFIG = "plugins.bundle.config";
 
 /** 本包条目 id：settings 命名空间 / dock 注册项 id / cordis.patch.yml 裸 id 同一位。 */
@@ -524,6 +526,7 @@ interface SlotReg {
   label?: string | (() => string);
   locale?: string;
   inject?: () => Record<string, unknown>;
+  select?: (owner: Record<string, unknown>) => unknown;
   component: unknown;
 }
 
@@ -752,6 +755,7 @@ function mountAll(
   const ctx = makeCtx(snapshot, translator);
   clientApply(ctx as unknown as Parameters<typeof clientApply>[0]);
   ctx.slotFactories.get(SLOT_INPUT_RIGHT)?.();
+  ctx.slotFactories.get(SLOT_INPUT_PLACEHOLDER)?.();
   ctx.slotFactories.get(SLOT_BUNDLE_CONFIG)?.();
   const configFactory = ctx.slotFactories.get(SLOT_BUNDLE_CONFIG);
   assert.ok(configFactory, "config 槽已注入");
@@ -759,6 +763,20 @@ function mountAll(
   assert.ok(settingsReg?.inject);
   const dockRegs = ctx.registers.filter((reg) => reg.name === SLOT_INPUT_RIGHT);
   assert.equal(dockRegs.length, 2, "润色 + 模板两个按钮");
+  const placeholderReg = ctx.registers.find((reg) => reg.name === SLOT_INPUT_PLACEHOLDER);
+  assert.ok(placeholderReg, "输入框占位提示已注册");
+  assert.equal(placeholderReg.select?.({ sessionId: "s1" }), true, "占位选择器恒接管");
+  const placeholderInjected = placeholderReg.inject?.() as { t: Translate } | undefined;
+  assert.ok(placeholderInjected, "占位注册带 t");
+  const placeholderView = placeholderReg.component as (props: {
+    matched: boolean;
+    t: Translate;
+  }) => string;
+  assert.equal(
+    placeholderView({ matched: true, t: placeholderInjected.t }),
+    translator("inputPlaceholder"),
+    "占位文案走字典",
+  );
   // dock 注册契约（官方 slots.md）：locale 声明（框架合成 t seat）+ inject hooks 间隔
   // （只提供 getSnapshot/subscribe 的源 → useCard，组件不直呼 useSyncExternalStore），
   // 且与设置卡共享同一 store 实例。
@@ -1829,7 +1847,7 @@ describe("OrganizeButton", () => {
   it("在途失败响应被卸载作废（错误支同样不 setState）", async () => {
     await expectStaleDiscarded({ ok: false, error: "卸载后才到" });
     assert.deepEqual(writes, [], "失败支：卸载后不写回");
-    assert.equal(byField(FIELD_ORGANIZE_BTN), null, "组件已卸载，无残留失败态");
+    assert.ok(byField(FIELD_ORGANIZE_BTN) === null, "组件已卸载，无残留失败态");
   });
 
   it("润色期间草稿被编辑 → 不覆盖新草稿，并报「未写回」", async () => {
@@ -1928,14 +1946,14 @@ describe("OrganizeButton", () => {
     await press(buttonByField(FIELD_ORGANIZE_CARET));
     await act(async () => {
       container
-        .querySelector<HTMLElement>("span")
+        .querySelector<HTMLElement>(`[data-field="${FIELD_ORGANIZE_MENU}"]`)
         ?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
     assert.ok(byField(FIELD_ORGANIZE_MENU), "点自己的包裹节点不关闭");
     await act(async () => {
       document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
-    assert.equal(byField(FIELD_ORGANIZE_MENU), null, "点外部关闭");
+    assert.ok(byField(FIELD_ORGANIZE_MENU) === null, "点外部关闭");
     await press(buttonByField(FIELD_ORGANIZE_CARET));
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
@@ -1944,7 +1962,23 @@ describe("OrganizeButton", () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
-    assert.equal(byField(FIELD_ORGANIZE_MENU), null, "Esc 关闭");
+    assert.ok(byField(FIELD_ORGANIZE_MENU) === null, "Esc 关闭");
+  });
+
+  it("组织菜单的重试项会走组件的重试回调并关闭菜单", async () => {
+    resetBuiltinTemplates();
+    stubBuiltinTemplates("fail");
+    const { organize } = mountAll(snap({ value: { templates: [] }, revision: 0 }));
+    await mount(React.createElement(organize, kitProps()));
+    await press(buttonByField(FIELD_ORGANIZE_CARET));
+    const menu = byField(FIELD_ORGANIZE_MENU);
+    assert.ok(menu, "组织菜单在位");
+    const retry = [...menu.querySelectorAll("button")].find((button) =>
+      button.textContent.includes("重试"),
+    );
+    assert.ok(retry, "重试按钮在位");
+    await press(retry);
+    assert.equal(byField(FIELD_ORGANIZE_MENU), null, "点重试后菜单关闭");
   });
 
   it("写不回时菜单项一并停用，并在 title 上说明原因", async () => {
@@ -2121,7 +2155,7 @@ describe("TemplateButton", () => {
     assert.equal(btn.disabled, true);
     assert.match(btn.title, /无法插入/u);
     await press(btn);
-    assert.equal(byField(FIELD_TEMPLATE_MENU), null, "禁用时点了也不展开");
+    assert.ok(byField(FIELD_TEMPLATE_MENU) === null, "禁用时点了也不展开");
   });
 
   it("提交态下模板入口禁用并说明忙碌原因", async () => {
@@ -2133,7 +2167,7 @@ describe("TemplateButton", () => {
     assert.equal(btn.disabled, true, "提交中不插入");
     assert.match(btn.title, /输入框正在提交/u);
     await press(btn);
-    assert.equal(byField(FIELD_TEMPLATE_MENU), null);
+    assert.ok(byField(FIELD_TEMPLATE_MENU) === null);
     assert.deepEqual(inserts, []);
   });
 
@@ -2161,7 +2195,7 @@ describe("TemplateButton", () => {
     actions.insertText = undefined;
     const [item] = byFields(FIELD_TEMPLATE_ITEM);
     await press(item ?? null);
-    assert.equal(byField(FIELD_TEMPLATE_MENU), null, "选完即关菜单");
+    assert.ok(byField(FIELD_TEMPLATE_MENU) === null, "选完即关菜单");
     assert.deepEqual(writes, [], "不回落 setDraft（那会丢掉引用块）");
     assert.deepEqual(inserts, []);
   });
@@ -2179,7 +2213,7 @@ describe("TemplateButton", () => {
     await press(buttonContaining("模板"));
     await press(byFields(FIELD_TEMPLATE_ITEM)[0] ?? null);
     assert.deepEqual(writes, [], "宿主说不可写就不整稿覆盖");
-    assert.equal(byField(FIELD_TEMPLATE_MENU), null, "菜单照常关闭");
+    assert.ok(byField(FIELD_TEMPLATE_MENU) === null, "菜单照常关闭");
   });
 
   it("外部点击关闭模板菜单", async () => {
@@ -2189,7 +2223,7 @@ describe("TemplateButton", () => {
     await act(async () => {
       document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
-    assert.equal(byField(FIELD_TEMPLATE_MENU), null);
+    assert.ok(byField(FIELD_TEMPLATE_MENU) === null);
   });
 });
 
@@ -2344,6 +2378,15 @@ describe("TemplatesCard 状态提示", () => {
     assert.equal(saveButton()?.disabled, true);
     await clickViaProps(saveButton());
     assert.equal(ctx.scope.writes.length, 0, "只读宿主下绝不写入");
+  });
+
+  it("角色库 0 条 → 块级空态回答「为什么空、下一步做什么」", async () => {
+    stubBuiltinTemplates("ok", []);
+    await openCard(snap({ value: { templates: [], importAllowRoots: [] }, revision: 0 }));
+    await flush();
+    assert.match(text(), /角色库还是空的/u);
+    assert.match(text(), /导入角色/u);
+    assert.ok(container.querySelector(".dsu-empty"), "块级空态用 shared EmptyState");
   });
 
   it("就绪可写 + 未 dirty → 无提示行、保存/撤销禁用", async () => {
@@ -2651,7 +2694,7 @@ describe("TemplatesCard 恢复默认", () => {
     assert.ok(container.querySelector('[data-testid="risk-confirmation"]'), "弹窗已开");
     assert.match(text(), /恢复默认？/u);
     await press(container.querySelector('[data-field="risk-cancel"]'));
-    assert.equal(container.querySelector('[data-testid="risk-confirmation"]'), null, "取消关弹窗");
+    assert.ok(container.querySelector('[data-testid="risk-confirmation"]') === null, "取消关弹窗");
     assert.deepEqual(ctx.scope.unsets, [], "取消不下发 unset");
   });
 
@@ -2773,6 +2816,119 @@ describe("内置表按需下发", () => {
     stubBuiltinTemplates("ok");
     await press(retry);
     assert.equal(byFields(FIELD_TEMPLATE_ITEM).length, DEFAULT_TEMPLATES.length);
+  });
+
+  it("菜单 id 分派：重试保持打开、未知 id 关闭但不炸", async () => {
+    stubBuiltinTemplates("ok");
+    const before = defaultsCallCount();
+    assert.equal(
+      runTemplateMenuSelection(
+        "builtin-retry",
+        [],
+        () => {
+          throw new Error("重试不应选模板");
+        },
+        () => {
+          void loadBuiltinTemplates();
+        },
+      ),
+      false,
+      "重试不关菜单",
+    );
+    await flush();
+    assert.equal(defaultsCallCount(), before + 1, "重试真的再发一发");
+    let unknownPicked = false;
+    assert.equal(
+      runTemplateMenuSelection(
+        "templates-empty",
+        [],
+        () => {
+          unknownPicked = true;
+        },
+        () => {
+          /* 未知 id 不应触发重试 */
+        },
+      ),
+      true,
+      "未知 id 关闭菜单",
+    );
+    assert.equal(unknownPicked, false, "未知 id 不选模板");
+    let picked = "";
+    assert.equal(
+      runTemplateMenuSelection(
+        "tpl:t1",
+        [{ id: "t1", text: "稿子" } as never],
+        (value) => {
+          picked = value;
+        },
+        () => {
+          /* 正常模板项不触发重试 */
+        },
+      ),
+      true,
+    );
+    assert.equal(picked, "稿子");
+    let organized = "";
+    resetBuiltinTemplates();
+    stubBuiltinTemplates("ok");
+    const beforeOrganizeRetry = defaultsCallCount();
+    runOrganizeMenuSelection(
+      "builtin-retry",
+      [],
+      async () => {
+        organized = "重试不应选模板";
+      },
+      () => {
+        void loadBuiltinTemplates();
+      },
+    );
+    await flush();
+    assert.equal(defaultsCallCount(), beforeOrganizeRetry + 1, "组织菜单重试也真的再发");
+    runOrganizeMenuSelection(
+      "tpl:t1",
+      [{ id: "t1", text: "稿子" } as never],
+      async (value) => {
+        organized = value ?? "";
+      },
+      () => {
+        /* 不该走到重试；走到会由 organized 断言抓住 */
+      },
+    );
+    assert.equal(organized, "稿子");
+    runOrganizeMenuSelection(
+      "empty",
+      [],
+      async () => {
+        organized = "未知 id 不应整理";
+      },
+      () => {
+        /* 未知 id 也不应重试 */
+      },
+    );
+    assert.equal(organized, "稿子", "未知 id 不触发整理");
+    assert.equal(
+      runTemplateMenuSelection(
+        "tpl:missing",
+        [],
+        () => {
+          throw new Error("缺号模板不应选中");
+        },
+        () => {
+          /* 不重试 */
+        },
+      ),
+      true,
+    );
+    runOrganizeMenuSelection(
+      "tpl:missing",
+      [],
+      async () => {
+        throw new Error("缺号模板不应整理");
+      },
+      () => {
+        /* 不重试 */
+      },
+    );
   });
 
   it("传输层抛错也落失败（不静默卡在占位行）", async () => {

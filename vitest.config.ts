@@ -43,14 +43,22 @@ const base = definePackageConfig({
 // 宿主确认弹窗原子换测试桩：真组件挂在宿主浮层体系上（clsx / useModalLayer），Node 环境
 // 解析不到。卡片测试只交互「勾选 / 取消 / 确认」三位，桩按同形 props 复刻（见 test/primitives-stub.ts）。
 // 工厂只读 coverageInclude 与 test 两个键，alias 必须用 defineConfig 在外层合并（rtk 同款教训）。
+const baseAlias = base.resolve?.alias;
+const inheritedAlias: Record<string, string> = {};
+if (baseAlias !== undefined && !Array.isArray(baseAlias)) {
+  Object.assign(inheritedAlias, baseAlias);
+}
+
 export default defineConfig({
   ...base,
   resolve: {
-    alias: [
-      {
-        find: "@deepseek-ai/dsh-client-ui-primitives",
-        replacement: path.resolve(import.meta.dirname, "test/primitives-stub.ts"),
-      },
-    ],
+    ...base.resolve,
+    alias: {
+      ...inheritedAlias,
+      "@deepseek-ai/dsh-client-ui-primitives": path.resolve(
+        import.meta.dirname,
+        "test/primitives-stub.ts",
+      ),
+    },
   },
 });

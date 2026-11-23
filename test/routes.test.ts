@@ -1217,8 +1217,8 @@ describe("apply 装配（服务形状守卫 + 注册/注销）", () => {
     applyTo(env);
     assert.deepEqual(
       env.injected,
-      [["settings"], []],
-      "页面策略经 inject(['settings'])，读取方法经空的注入子上下文注册",
+      [["settings"]],
+      "页面策略经 inject(['settings'])；读取方法直接在本插件上下文注册",
     );
     assert.equal(env.configureCalls.length, 1, "configure 恰好一次（重复登记会被宿主抛）");
     assert.deepEqual(env.configureCalls.at(0)?.presentation, { auto: false });

@@ -4,6 +4,10 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。最新版本在最上。这里的偏离是刻意的：版本标题
 不写发布日期，各版发布时间以 npm registry 为准（`npm view <包名> time` 取得到）。
 
+## 0.1.16
+
+宿主基线切到 `dsh 0.2.3-alpha.2`（Node `^24.22.3 || >=26.13.1`），shared 经 catalog 抬到 `^0.2.13`。设置卡随 shared v3 视觉层更新；客户端注册空输入框 placeholder；宿主侧改用会话的活动工作目录（live cwd 优先、非法活值回落），并移除 `@deepseek-ai/dsh-working-directory` 依赖。角色库、默认配置与路由不变。
+
 ## 0.1.15
 
 宿主基线抬到 `0.2.2-rc.5`：devDependencies 全族精确钉 rc.5，`engines.dsh` 与 dsh 家族 peer 同一条窗口；dependabot 配置注释与集成台架的契约证据行（deepseek-harness @ dsh-v0.2.2-rc.5）同步。Typert 远端方法的程序化标记收编 shared `./lib/remote-marker`（与 session-rescue / ocr-review 的副本逐字同构）；`test/build-host.test.ts` 的 shared 子路径外置清单补 `lib/instance-lock` 与 `lib/remote-marker`。`src/remote.ts` 的 `RemoteHost` / `isMounter` 与 `src/client-entry.ts` 的 `within` 竞速骨架收编 shared（`./lib/typert-client` / `./lib/with-timeout`）。shared 经 catalog 抬到 `^0.2.12`——收编的三个子路径随 shared 0.2.12 发布，`pnpm-lock.yaml` 经 `pnpm install --lockfile-only` 重解到 registry 现量。

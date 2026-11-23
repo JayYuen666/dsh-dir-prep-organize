@@ -1,6 +1,6 @@
 // test/integration/host-stack.ts —— 真实宿主服务的装配夹具（任务 #2/#6 共用）。
 //
-// 装的全是真件（发布在 npm 上的同一份 0.2.2-rc.5，版本与本包 peer 面逐条对齐）：
+// 装的全是真件（发布在 npm 上的同一份 0.2.3-alpha.2，版本与本包 peer 面逐条对齐）：
 //   SessionStore      @deepseek-ai/dsh-session             真会话仓库（cwd 校验、header 冻结）
 //   LlmRuntime        @deepseek-ai/dsh-llm                 真适配器注册表 + 真 stream 流水线
 //   AgentDefaultModel @deepseek-ai/dsh-agent-default-model 真默认模型读取方法（volatile 引用）
@@ -14,7 +14,7 @@
 // `profileContext`（packages/settings/settings/src/index.ts），属于 Loader 启动层，
 // 由 test/integration/settings-boot.test.ts 用真 profile + 真 Loader 专管，不在这里重测。
 //
-// 契约证据（deepseek-harness @ dsh-v0.2.2-rc.5）：
+// 契约证据（deepseek-harness @ dsh-v0.2.3-alpha.2）：
 //  · `SessionStore`：服务名 'sessions'（packages/core/session/src/index.ts）、
 //    `get(id)` 缺席回 undefined、`create(id,{meta:{cwd}})` 只收**绝对** cwd
 //    header 冻结后 `cwd` 是只读位（types.ts）。

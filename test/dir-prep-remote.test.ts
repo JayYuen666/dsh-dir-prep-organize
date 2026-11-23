@@ -477,6 +477,7 @@ describe("设置卡读取方法（官方 Typert Remote）", () => {
     const organized = await service.organize(null as never);
     assert.equal(organized["ok"], false, "空 body 交回润色失败，而不是抛穿");
 
+    let working: unknown = {};
     const payloads = createRemotePayloads(
       {
         fs: () =>
@@ -488,10 +489,15 @@ describe("设置卡读取方法（官方 Typert Remote）", () => {
             stat: async () => ({ version: "v", type: "file" }),
           }) as never,
         sessions: () => ({ get: () => ({ header: { cwd: "/tmp" } }) }),
+        workingDirectory: () => working as never,
       },
       () => HOST_MESSAGES.zh,
     );
     const collected = await payloads.context("s1");
     assert.equal(collected["ok"], true, "缺省 limits 走 DEFAULT_LIMITS");
+    assert.equal(collected["cwd"], "/tmp", "服务没有 get：回落 header.cwd");
+    working = { get: () => "/live" };
+    const live = await payloads.context("s1");
+    assert.equal(live["cwd"], "/live", "活目录压过创建期快照");
   });
 });

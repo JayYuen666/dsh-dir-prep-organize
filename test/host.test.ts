@@ -27,6 +27,8 @@ import {
   importAllowRootsOf,
   clampInt,
   sanitizeLimits,
+  isWorkingDirectory,
+  workingDirectoryOf,
 } from "../host.ts";
 import type { FsInfo, FsVersion } from "@deepseek-ai/dsh-fs";
 import type {
@@ -1916,6 +1918,18 @@ describe("en 字典注入（纯函数只吃入参字典，不读设置）", () =
 });
 
 // ── 部署值统一处理（clampInt / sanitizeLimits）───────────────────────────────
+describe("isWorkingDirectory 形状守卫", () => {
+  it("只收带 get 方法的记录", () => {
+    assert.equal(isWorkingDirectory({ get: () => "/tmp" }), true);
+    assert.equal(isWorkingDirectory({}), false);
+    assert.equal(isWorkingDirectory(null), false);
+    assert.equal(isWorkingDirectory("service"), false);
+    const service = { get: () => "/tmp" };
+    assert.equal(workingDirectoryOf(service), service);
+    assert.equal(workingDirectoryOf({}), undefined);
+  });
+});
+
 describe("clampInt", () => {
   it("区间内取值原样返回", () => {
     assert.equal(clampInt(1, 1, 64, 8), 1);

@@ -11,8 +11,8 @@
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-dir-prep-organize"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-dir-prep-organize?style=flat-square" alt="npm downloads (18 months)" /></a>
   <a href="https://github.com/JayYuen666/dsh-dir-prep-organize/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-dir-prep-organize/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.2--rc.5-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/node-%5E24.22.3%7C%7C%3E%3D26.13.1-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.3--alpha.2-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -54,7 +54,7 @@
 - 在 web 输入框右侧加**两个控件**：一个可拆分的「润色」按钮（主键 + ▾），一个「模板」下拉。
   - 主键直接润色；▾ 键提供「以某个角色的风格润色」。
   - 下拉按条目的 `group` 字段分组，`group` 为空的条目落在「通用」里。
-- **润色**会把草稿、会话 cwd 的顶层（文件名、大小、关键文本文件的全文）以及会话里**真实的** user/assistant 轮次交给当前会话选定的模型（取不到时回落宿主默认模型），然后用重写结果替换草稿。只有会话、草稿版本与输入阶段都没变时才写回。
+- **润色**会把草稿、会话活动工作目录的顶层（活值 `workingDirectory` 优先，缺席才回落 `header.cwd`——下文每条路径都按这一条推导；文件名、大小、关键文本文件的全文）以及会话里**真实的** user/assistant 轮次交给当前会话选定的模型（取不到时回落宿主默认模型），然后用重写结果替换草稿。只有会话、草稿版本与输入阶段都没变时才写回。
   - 失败时草稿**绝不**被改动：按钮进入错误态若干秒，原因写在其 tooltip 里。
 - **模板**经输入框的插入接口写到光标处：引用块与附件保持原样；插入凭据过期时宿主拒绝插入，而不是重建整份草稿。输入框处于提交期时两个控件禁用。
 - 内置集是 **85 条精选角色模板**，由 `scripts/gen-defaults.mjs` 从本包的 `agents/` 角色库生成——那是从上游项目移入的几百份角色 `.md`，分布在二十多个部门目录下。对用户有意义的是那 85 条；角色库的份数不在这里钉死，因为上游一刷新它就变。
@@ -74,9 +74,9 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 
 - 组合包补丁会插入 `- id: dsh-plugin-shared`（`@jayyuen66/dsh-plugin-shared`）。**这个组件必须保持开启**：停用后设置卡会失去 shared 组件供应，下一次页面加载会报 `missed the module table`。
 
-- **要求 Node.js `>= 24.9`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
-- **要求宿主 `dsh` 在 `0.2.2-rc.5` 这条宿主线上或更晚。** 宿主真正读的是 `engines.dsh`（`^0.2.2-rc.5`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。按宿主装载门的判定谓词（`app-boot` 的 `satisfies`，带 `includePrerelease: true`）逐版本推得：`0.2.0-rc.2`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1` 与 `0.2.2-rc.2` 到 `0.2.2-rc.4` **被拒**，`0.2.2-rc.5`、`0.2.2` 与 `0.2.3` 通过，`0.3.0` 被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
-- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.2-rc.5`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.2-rc.5`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
+- **要求 Node.js `^24.22.3 || >=26.13.1`。** 本包是纯 ESM。用**具名**导出（`import { apply } from "@jayyuen66/dsh-dir-prep-organize"`）；**没有 default 导出**，所以 `import pkg from …` 会报 `does not provide an export named 'default'`。正是这个 Node 下限让 ESM 入口的 `require()` 形式可用，所以声明了 `engines.node`。
+- **要求宿主 `dsh` 在 `0.2.3-alpha.2` 这条宿主线上或更晚。** 宿主真正读的是 `engines.dsh`（`^0.2.3-alpha.2`），而且它**单独决定**：`evaluatePluginCompatibility` 在 `engines.dsh` 那一支就返回了，根本走不到读 `peerDependencies` 的那段。按宿主装载门的判定谓词（`app-boot` 的 `satisfies`，带 `includePrerelease: true`）：`0.2.3-alpha.2`、其后低于 `0.3.0` 的正式版与 `0.2.3` 元组内的预发布通过；`0.2.2` 及更早、更高元组的预发布（如 `0.2.4-rc.1`）与 `0.3.0` 及以后都被拒。被拒的宿主需要走显式担责的授权 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <exact> --accept-risk`。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **`@deepseek-ai/dsh-*` 的开发依赖钉在 `0.2.3-alpha.2`**——本包编译与测试所对着的那条宿主线。`engines.dsh` 与 optional peer 范围承载单独判读的支持窗口（`^0.2.3-alpha.2`）；钉版是关于「它是对着哪个宿主版本**编译**的」的事实，不是那个窗口的复述。把两者混为一谈，正是发布门禁分开检查它们的原因。
 - **`dependencies` 里不放任何 `@deepseek-ai/*`，这是约定**（`test/publish-manifest.test.ts` 钉着）。消费方 profile 用 `nodeLinker: hoisted` 且 `autoInstallPeers: false` 安装，于是写在 `dependencies` 里的宿主包会被落成**真实目录**，与运行中的宿主已加载的那份并存。`@deepseek-ai/dsh-tools` 的工具运行期调度键是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例算：宿主从 profile 副本上读那个键拿到 `undefined`，于是**每一次原生工具调用都抛**——而本包的构建、类型检查、覆盖率检查在此之前全部照绿。
 - **`host.js` 按值导入的那两枚宿主包是必需 peer**：`@deepseek-ai/schemastery`（宿主 fork——只有它能把 `.volatile()` 字段解析成活引用）与 `@deepseek-ai/dsh-brand`。`build-host.mjs` 外部化 `dependencies` **与** `peerDependencies`，所以裸说明符留在产物里；只写 `devDependencies` 会让打包器把官方函数体内联进去。`test/build-host.test.ts` 同时钉「说明符在」与「函数体不在」。
 - **声明里点到的每一枚宿主包都落在 `peerDependencies`**，凡是只能从那里到达的都是 *optional*（`@deepseek-ai/cordis`、`cosmokit`，以及 `dsh-agent-default-model` / client-ui / `fs` / `llm` / `session` 那一族）。声明它们不是仪式：pnpm 严格布局下，`types/host.d.ts` 里一枚没有被任何 manifest 表点名的裸说明符在消费方侧解析不到，而本仓自己的类型检查照样绿。那条清单由测试从 `types/**/*.d.ts` 现量读，不从这段文字读，所以两边不会漂移。
@@ -150,7 +150,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 | 字段 | 类型 | 默认值 | 卡上有控件 | 说明 |
 |---|---|---|---|---|
 | `templates` | `{id,name,description,text,group,emoji}[]` | 未设置 | **有** | 用户自己的模板。未设置时回落到 85 条内置 |
-| `importAllowRoots` | `string[]` | `[]` | **有** | 导入端点的额外允许根，逐个目录登记；非字符串与纯空白项丢弃，**相对路径与 `~` 同样丢弃**（host 按它自己的进程 cwd 解析它们，等于登记一条界面上看不出指向哪里的根），末尾分隔符归一后再去重——`/a` 与 `/a/` 是同一棵树，不该在卡上摆两行。一个都没登记时只允许会话 cwd 与内置角色库 |
+| `importAllowRoots` | `string[]` | `[]` | **有** | 导入端点的额外允许根，逐个目录登记；非字符串与纯空白项丢弃，**相对路径与 `~` 同样丢弃**（host 按它自己的进程 cwd 解析它们，等于登记一条界面上看不出指向哪里的根），末尾分隔符归一后再去重——`/a` 与 `/a/` 是同一棵树，不该在卡上摆两行。一个都没登记时只允许会话活动工作目录与内置角色库 |
 | `organizeTimeoutMs` | natural，volatile | `120000` | **无** | LLM 中止时限（毫秒）。取值先取整再夹到 `[1, 2147483647]`；非有限数回落到 `120000`。`0` 能过 schema，夹完是 1 ms，所以它确实表示"立刻超时"。超过 2^31-1 时 Node 的 `setTimeout` 会打 `TimeoutOverflowWarning` 并静默用 **1 ms**，于是"调大超时"变成"立刻失败"。卡上没有控件，改它只能经 `settings.yaml` 或该行的 `config:` |
 | `maxSnippetBytes` | natural，非 volatile | `262144` | **无** | 关键文件摘要的单文件上限；超过、或大小未知的文件整份跳过并计入 `skipped.tooLarge`。导入候选用同一个上限。非 volatile 意味着不进表单快照，所以也没有卡上的行——纯部署值 |
 | `readConcurrency` | natural，非 volatile | `8` | **无** | 摘要与目录导入的有界读并发。夹在 `[1, 64]`：`0` 或负数会让那套有界 map 自我递归直到宿主被 OOM killer 杀掉，而过大的值直接废掉这个字段存在的意义（fd 上限） |
@@ -179,12 +179,12 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 |---|---|
 | 网络 | 没有自己的出站请求：数据那一栏走宿主网关的 RPC 通道。不读任何环境变量 |
 | 写到磁盘 | 唯一写盘的是宿主设置文件里的 `templates` 与 `importAllowRoots` |
-| 一次润色发出去什么 | 完整草稿、会话 cwd 路径、顶层目录条目**连同关键文本文件的全文**、真实的 user/assistant 轮次（框架注入的消息与工具结果被滤掉），以及可选的角色正文 |
+| 一次润色发出去什么 | 完整草稿、会话活动工作目录路径、顶层目录条目**连同关键文本文件的全文**、真实的 user/assistant 轮次（框架注入的消息与工具结果被滤掉），以及可选的角色正文 |
 | 哪些文件会取摘要 | 只有 20 种代码/文档扩展名（ts/tsx/js/jsx/mjs/cjs/py/rs/go/java/rb/json/toml/md/sql/graphql/proto/css/scss/less）。`yaml` / `env` **不在**白名单里 |
 | 敏感文件名 | 名字在**分隔符边界**上命中 `credentials` / `secret(s)` / `id_rsa` / `pem` / `p12` / `pfx` / `keystore` / `env` / `key(s)` / `token(s)` / `auth` / `passwd` / `password` / `account(s)` 的文件，永不取摘要。边界是刻意的：朴素子串匹配会误杀 `monkey.js` 与 `AUTHORS.md`，而漏匹配会把凭据全文发给第三方模型 |
 | 上限与并发 | 单个文件超过 `maxSnippetBytes`、或大小未知，整份跳过——绝不半份摘要。收集到的摘要共享 2 MiB 总量预算；用完之后其余整份跳过并计入 `skipped.tooLarge`。读按 `readConcurrency` 跑 |
 | 计数器 | 过大 / 读不出 / 更深层 / 非角色这几类计入 `skipped`，在 UI 里显示，并由 `truncated` 如实反映 |
-| 导入端点 | **只读**：不调模型、不写盘。绝对路径默认拒绝；只有会话 cwd、本包的 `agents/` 与 `importAllowRoots` 之内通过。`.` / `..` / 隐藏段（如 `.ssh`）一律拒绝，越界路径回 403 并回显解析后的路径 |
+| 导入端点 | **只读**：不调模型、不写盘。绝对路径默认拒绝；只有会话活动工作目录、本包的 `agents/` 与 `importAllowRoots` 之内通过。`.` / `..` / 隐藏段（如 `.ssh`）一律拒绝，越界路径回 403 并回显解析后的路径 |
 
 ## <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 已知边界
 
@@ -201,7 +201,7 @@ dsh plugin --profile web add @jayyuen66/dsh-dir-prep-organize
 
 | 症状 | 怎么回事 |
 |---|---|
-| 按了「润色」什么都没变 | 失败从不碰草稿；按钮进入错误态若干秒，原因在 tooltip 里。常见成因：没有会话 cwd（`sessionId` 缺失或会话未知）、没有模型选择、finish reason 不是 `stop`、撞上 `organizeTimeoutMs` 时限，或请求途中草稿/模型选择变了（结果被丢弃） |
+| 按了「润色」什么都没变 | 失败从不碰草稿；按钮进入错误态若干秒，原因在 tooltip 里。常见成因：没有可用的活动工作目录（`sessionId` 缺失、会话未知，且活值与 `header.cwd` 都取不到）、没有模型选择、finish reason 不是 `stop`、撞上 `organizeTimeoutMs` 时限，或请求途中草稿/模型选择变了（结果被丢弃） |
 | 模型报上下文溢出 | 这是设计如此：输入刻意不截断，模型报错就是反馈。载荷超过端点 body 上限则得到 413 |
 | 导入本地角色被拒 | 绝对路径默认拒绝，而卡片没有会话上下文。路径必须在内置 `agents/` 或某个已登记目录之内，且不含 `.` / `..` / 隐藏段 |
 | 导入的条目比预期少 | 看四个 `skipped` 计数器：`deeper`（第三层，只计数）、`tooLarge`（超过 `maxSnippetBytes`）、`unnamed`（前 200 行 frontmatter 里没有名字）、`unreadable`（读失败） |

@@ -48,7 +48,7 @@ jobs:
         #    （见 host.ts 里 isWithinRoot 与 pathSegments 的说明），盘符大小写由 win32
         #    语义统一处理；本机 darwin 只能用桩值模拟真实 win32 的 path.sep / os.homedir()。
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [24.9]
+        node: [24.22.3]
     runs-on: ${{ matrix.os }}
     # 官方对单 job 的上限是 6 小时，那是「系统允许」不是「应该允许」。不设这一行，
     # 一个卡住的 install 或测试会烧满 6 小时 runner 分钟才被杀，而期间没有任何信号。
@@ -109,9 +109,9 @@ jobs:
       # 可以直接把报告下下来看，而不必重跑一次。
       # 带 always()：check 红了的时候覆盖率报告才是排查起点，而默认的 if 会在上一步失败后
       # 整步跳过——最该有产物的那一次恰好没有。
-      # 只收 ubuntu 的 node 24 那一格：其余格各传一份只会得到同样的报告。
+      # 只收 ubuntu 的 node 24.22.3 那一格：其余格各传一份只会得到同样的报告。
       - name: 上传覆盖率报告
-        if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 24.9
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.node == '24.22.3'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
@@ -167,7 +167,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.9
+          node-version: 24.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # 只用 pnpm pack：`npm pack` 不解析 `catalog:`，会把未解析的协议原样写进 tarball 的

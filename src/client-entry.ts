@@ -1,4 +1,10 @@
-import { RiskConfirmation } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Menu, RiskConfirmation } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { MenuEntry } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  BUILTIN_RETRY_ID,
+  runOrganizeMenuSelection,
+  runTemplateMenuSelection,
+} from "./menu-dispatch.ts";
 import { Fragment, createElement, useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { mergeImportedTemplates, sanitizeAllowRoots, sanitizeTemplateList } from "./templates.ts";
@@ -18,6 +24,7 @@ import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import {
   CardForm,
+  EmptyState,
   SaveBar,
   Section,
   ensureCardUiCss,
@@ -38,10 +45,11 @@ const REMOTE_TIMEOUT_MS = 125_000;
 const EMOJI_PLACEHOLDER = "😀";
 const ROOT_PATH_PLACEHOLDER = "/Users/me/roles";
 
-const CLASS_ITEM_EMPTY = "dpi-item-empty";
 const CLASS_ROW_HEAD = "dpic-rowhead";
 const CLASS_IMPORT_PATH = "dpic-importpath";
 const SLOT_INPUT_RIGHT = "conversation.input.right";
+/** 空输入框里的非交互提示；chain 槽，首个 `select` 非空者接管。 */
+const SLOT_INPUT_PLACEHOLDER = "conversation.input.placeholder";
 
 // ── 读取方法载荷类型（与 host.ts契约一致）────────────────────────────────────
 
@@ -365,33 +373,31 @@ export function resetBuiltinTemplates(): void {
   setBuiltinState(builtinInitial);
 }
 
-function builtinStatusRow(snap: TemplatesSnapshot, t: Translate): ReactNode | undefined {
-  const attrs = { className: CLASS_ITEM_EMPTY, "data-field": "dpi-builtin-state" };
-  const retryButton = createElement(
-    "button",
-    {
-      type: "button",
-      className: "dsu-btn",
-      "data-field": "dpi-builtin-retry",
-      onClick: () => {
-        void loadBuiltinTemplates();
-      },
-    },
-    t("builtinRetry"),
-  );
-  let row: ReactNode | undefined;
-  if (!snap.fromSettings && snap.builtinPhase !== "ready") {
-    row =
-      snap.builtinPhase === "error"
-        ? createElement(
-            "div",
-            attrs,
-            t("builtinFailed", { message: snap.builtinError }),
-            retryButton,
-          )
-        : createElement("div", attrs, t("builtinLoading"));
+function builtinMenuEntries(snap: TemplatesSnapshot, t: Translate): MenuEntry[] {
+  if (snap.fromSettings || snap.builtinPhase === "ready") {
+    return [];
   }
-  return row;
+  if (snap.builtinPhase === "error") {
+    return [
+      {
+        id: "builtin-state",
+        label: createElement(
+          "span",
+          { "data-field": "dpi-builtin-state" },
+          t("builtinFailed", { message: snap.builtinError }),
+        ),
+        disabled: true,
+      },
+      { id: BUILTIN_RETRY_ID, label: t("builtinRetry") },
+    ];
+  }
+  return [
+    {
+      id: "builtin-state",
+      label: createElement("span", { "data-field": "dpi-builtin-state" }, t("builtinLoading")),
+      disabled: true,
+    },
+  ];
 }
 
 function assertOrganizeReady(
@@ -679,8 +685,13 @@ function TidyIcon(): ReactNode {
   return createElement(
     "svg",
     { width: 14, height: 14, viewBox: "0 0 14 14", "aria-hidden": true },
-    createElement("path", svgPathProps("M2 4l5 4 5-4", true)),
-    createElement("path", svgPathProps("M2 8.5l5 4 5-4", true)),
+    // 画板 F：主钮前缀是「✦」，不是折叠箭头——折叠箭头会与 caret 的职责混在一起。
+    createElement("path", {
+      // oxlint-disable-next-line eslint/id-length -- SVG path 的 DOM 属性名固定是 `d`
+      d: "M7 1.6l1.45 3.95L12.4 7 8.45 8.45 7 12.4 5.55 8.45 1.6 7l3.95-1.45Z",
+      fill: "currentColor",
+      stroke: "none",
+    }),
   );
 }
 
@@ -711,43 +722,12 @@ function TemplateIcon(): ReactNode {
 function CaretIcon(): ReactNode {
   return createElement(
     "svg",
-    { width: 14, height: 14, viewBox: "0 0 14 14", "aria-hidden": true },
-    createElement("path", svgPathProps("M2.5 5.5L7 9.5l4.5-4", true)),
+    { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": true },
+    createElement("path", svgPathProps("M3 6l5 5 5-5", true)),
   );
 }
 
 // ── 容器（槽 occupant，收 standard kit props）─────────────────────────────
-
-function useMenuDismiss(
-  open: boolean,
-  wrapRef: RefObject<HTMLSpanElement | null>,
-  close: () => void,
-): void {
-  useEffect(() => {
-    function onDown(event: MouseEvent): void {
-      if (
-        wrapRef.current !== null &&
-        event.target instanceof Node &&
-        !wrapRef.current.contains(event.target)
-      ) {
-        close();
-      }
-    }
-    function onKey(event: KeyboardEvent): void {
-      if (event.key === "Escape") {
-        close();
-      }
-    }
-    if (open) {
-      document.addEventListener("mousedown", onDown);
-      document.addEventListener("keydown", onKey);
-    }
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [close, open, wrapRef]);
-}
 
 type Setter<Value> = Dispatch<SetStateAction<Value>>;
 
@@ -839,9 +819,10 @@ interface OrganizeUIView {
   label: string;
   state: string;
   errClass: string;
+  roleGroupLabel: string;
   directItemLabel: string;
   noTemplatesLabel: string;
-  builtinRow: ReactNode | undefined;
+  builtinEntries: readonly MenuEntry[];
   loading: boolean;
   menuOpen: boolean;
   /** 宿主是否给了「把润色结果写回输入框」的手段（inputActions.setDraft）。 */
@@ -879,11 +860,15 @@ function createOrganizeMainButton(ui: OrganizeUIView): ReactNode {
   );
 }
 
-function createOrganizeCaret(ui: OrganizeUIView): ReactNode {
+function createOrganizeCaret(
+  ui: OrganizeUIView,
+  triggerRef: RefObject<HTMLButtonElement | null>,
+): ReactNode {
   const { t, errClass, menuOpen, loading, onToggleMenu } = ui;
   return createElement(
     "button",
     {
+      ref: triggerRef,
       type: "button",
       className: `dpi-btn dpi-caret${errClass}`,
       "aria-label": t("organizeCaretAria"),
@@ -899,61 +884,50 @@ function createOrganizeCaret(ui: OrganizeUIView): ReactNode {
   );
 }
 
-function createOrganizeRoleMenu(ui: OrganizeUIView): ReactNode {
+function createOrganizeMenuItems(ui: OrganizeUIView): MenuEntry[] {
   const {
     t,
     templates,
-    onRun,
+    roleGroupLabel,
     directItemLabel,
     noTemplatesLabel,
-    builtinRow,
+    builtinEntries,
     loading,
     canWrite,
     errTitle,
   } = ui;
   // 菜单项与主按钮同一道门：写不回时一次真实 LLM 往返换来的结果无处落地，只能等到 writeDraft 才抛错。
-  // 主按钮与 caret 早就按 loading 挡住了，菜单项漏了同一条判据——从 caret 展开后照样能点。
   const blocked = loading || !canWrite;
   const blockedTitle = canWrite ? undefined : errTitle;
-  return createElement(
-    "div",
-    { className: "dpi-menu", role: "menu", "data-field": "dpi-organize-menu" },
-    createElement(
-      "button",
-      {
-        type: "button",
-        className: "dpi-item",
-        role: "menuitem",
-        "data-field": "dpi-organize-role-direct",
-        disabled: blocked,
-        ...(blockedTitle === undefined ? {} : { title: blockedTitle }),
-        onClick: () => {
-          void onRun();
-        },
-      },
-      directItemLabel,
-    ),
-    templates.length === 0
-      ? (builtinRow ?? createElement("div", { className: CLASS_ITEM_EMPTY }, noTemplatesLabel))
-      : templates.map((tpl) =>
-          createElement(
-            "button",
-            {
-              key: tpl.id,
-              type: "button",
-              className: "dpi-item",
-              role: "menuitem",
-              "data-field": "dpi-organize-role-item",
-              disabled: blocked,
-              title: blockedTitle ?? (tpl.description === "" ? tpl.text : tpl.description),
-              onClick: () => {
-                void onRun(tpl.text);
-              },
-            },
-            `${tpl.emoji === "" ? "" : `${tpl.emoji} `}${t("organizeRoleItem", { name: tpl.name })}`,
-          ),
-        ),
-  );
+  const items: MenuEntry[] = [
+    { type: "label", id: "roles", text: roleGroupLabel },
+    {
+      id: "direct",
+      label: createElement(
+        "span",
+        blockedTitle === undefined ? null : { title: blockedTitle },
+        directItemLabel,
+      ),
+      disabled: blocked,
+    },
+  ];
+  if (templates.length === 0) {
+    items.push(...builtinEntries, { id: "empty", label: noTemplatesLabel, disabled: true });
+    return items;
+  }
+  for (const tpl of templates) {
+    const label = `${tpl.emoji === "" ? "" : `${tpl.emoji} `}${t("organizeRoleItem", { name: tpl.name })}`;
+    items.push({
+      id: `tpl:${tpl.id}`,
+      label: createElement(
+        "span",
+        { title: blockedTitle ?? (tpl.description === "" ? tpl.text : tpl.description) },
+        label,
+      ),
+      disabled: blocked,
+    });
+  }
+  return items;
 }
 
 interface OrganizeBadge {
@@ -981,7 +955,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
     const seq = useRef(0);
     const inFlight = useRef(false);
     const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const wrapRef = useRef<HTMLSpanElement | null>(null);
+    const caretRef = useRef<HTMLButtonElement | null>(null);
 
     const draft: string =
       props.useInput === undefined
@@ -992,15 +966,10 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
     const phase: InputState["phase"] =
       props.useInput === undefined ? "plain" : props.useInput((state) => state.phase);
     const snap = props.useCard((state) => state);
-    const { templates } = snap;
     const writeBack = useWriteBack(
       { sessionId: props.sessionId ?? "", actions: props.inputActions, draftRev, phase },
       { unavailable: props.t(NO_WRITE_BACK_TITLE_KEY), stale: props.t("organizeWriteBackStale") },
     );
-
-    useMenuDismiss(menuOpen, wrapRef, () => {
-      setMenuOpen(false);
-    });
 
     useEffect(
       () => () => {
@@ -1046,8 +1015,7 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
 
     const badge = organizeBadge(failed, loading, props.t);
     const replaceable = hasDraftFace(props.inputActions);
-    // 处于提交期（adjudicating/claimed/submitting/sending）时输入区是只读的，此刻发起的润色即使
-    // 返回也无处可写；把不可写推回发起之前，省下一次真实的 LLM 往返。
+    // 提交期输入区只读，发起的润色无处可写：在发请求前就挡住，省一次真实 LLM 往返。
     // sessionId 缺席不是禁用理由：宿主侧 context/model 的 sessionId 都是可空位
     // （host.ts 的 cwdOf/liveModelOf 对 null 走缺省分支），无会话时照样能润色。
     const canWrite = replaceable && phase === "plain";
@@ -1067,38 +1035,89 @@ function createOrganizeButton(): (props: KitProps) => ReactNode {
       label: badge.label,
       state: badge.state,
       errClass: failed === undefined ? "" : " dpi-btn-err",
+      roleGroupLabel: props.t("organizeRoleGroup"),
       directItemLabel: props.t("organizeDirectItem"),
       noTemplatesLabel: props.t("organizeNoTemplates"),
-      builtinRow: builtinStatusRow(snap, props.t),
+      builtinEntries: builtinMenuEntries(snap, props.t),
       loading,
       menuOpen,
       canWrite,
-      templates,
+      templates: snap.templates,
       onRun: handleOrganize,
       onToggleMenu: openMenu,
     };
+    const menuItems = createOrganizeMenuItems(ui);
+    const caret = createOrganizeCaret(ui, caretRef);
+    const menu = createElement(Menu, {
+      open: menuOpen,
+      anchor: caret,
+      items: menuItems,
+      side: "top",
+      portal: true,
+      anchorRef: caretRef,
+      className: "dpi-caretWrap",
+      listClassName: "dpi-polish-menu dpi-organize-menu",
+      returnFocus: () => caretRef.current,
+      onClose: () => {
+        setMenuOpen(false);
+      },
+      onSelect: (id: string) => {
+        setMenuOpen(false);
+        runOrganizeMenuSelection(id, snap.templates, handleOrganize, () => {
+          void loadBuiltinTemplates();
+        });
+      },
+    });
     return createElement(
       "span",
-      { className: "dpi-wrap dpi-split", ref: wrapRef },
+      { className: "dpi-wrap dpi-split" },
       createOrganizeMainButton(ui),
-      createOrganizeCaret(ui),
-      menuOpen ? createOrganizeRoleMenu(ui) : null,
+      menu,
     );
   };
+}
+
+/** 模板菜单的条目树：内置失败/重试占位、分组标签与每条模板项。 */
+function buildTemplateMenuItems(snap: TemplatesSnapshot, t: Translate): MenuEntry[] {
+  const { templates } = snap;
+  // 分组用 Map 而不是对象字面量：分组标签来自用户可填的 template.group，`__proto__`
+  // 之类作为对象键会落进原型而不是成为一个分组（Map 无此问题）。
+  const grouped = groupTemplatesBy(templates, t);
+  const items: MenuEntry[] = [];
+  if (templates.length === 0) {
+    const builtinEntries = builtinMenuEntries(snap, t);
+    items.push(...builtinEntries);
+    // 占位/失败/重试态都还没到「用户真的删光了列表」，不给空态句；只有内置表已就绪
+    // 或用户从设置页拿了自己的表时，空表才算真空。
+    if (builtinEntries.length === 0) {
+      items.push({ id: "templates-empty", label: t("templatesEmptyHint"), disabled: true });
+    }
+    return items;
+  }
+  for (const slot of grouped) {
+    items.push({ type: "label", id: `group:${slot.group}`, text: slot.group });
+    for (const tpl of slot.items) {
+      items.push({
+        id: `tpl:${tpl.id}`,
+        label: createElement(
+          "span",
+          { title: tpl.description === "" ? tpl.text : tpl.description },
+          templateItemLabel(tpl),
+        ),
+      });
+    }
+  }
+  return items;
 }
 
 function createTemplateButton(): (props: KitProps) => ReactNode {
   return function TemplateButton(props: KitProps): ReactNode {
     const [open, setOpen] = useState(false);
-    const wrapRef = useRef<HTMLSpanElement | null>(null);
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
     const phase: InputState["phase"] =
       props.useInput === undefined ? "plain" : props.useInput((state) => state.phase);
     const snap = props.useCard((state) => state);
     const { templates } = snap;
-
-    useMenuDismiss(open, wrapRef, () => {
-      setOpen(false);
-    });
 
     function pick(text: string): void {
       setOpen(false);
@@ -1120,75 +1139,54 @@ function createTemplateButton(): (props: KitProps) => ReactNode {
       title = props.t("templatesBusyTitle");
     }
 
-    // 分组用 Map 而不是对象字面量：分组标签来自用户可填的 template.group，`__proto__`
-    // 之类作为对象键会落进原型而不是成为一个分组（Map 无此问题）。
-    const grouped = groupTemplatesBy(templates, props.t);
-    const emptyHintLabel = props.t("templatesEmptyHint");
-    const builtinRow = builtinStatusRow(snap, props.t);
+    const items = buildTemplateMenuItems(snap, props.t);
 
-    return createElement(
-      "span",
-      { className: "dpi-wrap", ref: wrapRef },
-      createElement(
-        "button",
-        {
-          type: "button",
-          className: "dpi-btn",
-          "aria-label": props.t("templatesAria"),
-          "aria-haspopup": "menu",
-          "aria-expanded": open,
-          title,
-          "data-field": "dpi-template-btn",
-          "data-state": open ? "open" : "idle",
-          disabled: !canWrite,
-          onClick: () => {
-            if (!snap.fromSettings) {
-              void loadBuiltinTemplates();
-            }
-            setOpen((prev) => !prev);
-          },
+    const trigger = createElement(
+      "button",
+      {
+        ref: triggerRef,
+        type: "button",
+        className: "dpi-btn",
+        "aria-label": props.t("templatesAria"),
+        "aria-haspopup": "menu",
+        "aria-expanded": open,
+        title,
+        "data-field": "dpi-template-btn",
+        "data-state": open ? "open" : "idle",
+        disabled: !canWrite,
+        onClick: () => {
+          if (!snap.fromSettings) {
+            void loadBuiltinTemplates();
+          }
+          setOpen((prev) => !prev);
         },
-        createElement(TemplateIcon),
-        props.t("dockTemplatesEntry"),
-      ),
-      open
-        ? createElement(
-            "div",
-            { className: "dpi-menu", role: "menu", "data-field": "dpi-template-menu" },
-            templates.length === 0
-              ? (builtinRow ??
-                  createElement("div", { className: CLASS_ITEM_EMPTY }, emptyHintLabel))
-              : grouped.map((slot) =>
-                  createElement(
-                    "div",
-                    { key: slot.group, className: "dpi-group" },
-                    createElement(
-                      "div",
-                      { className: "dpi-grouph", role: "presentation" },
-                      slot.group,
-                    ),
-                    slot.items.map((tpl) =>
-                      createElement(
-                        "button",
-                        {
-                          key: tpl.id,
-                          type: "button",
-                          className: "dpi-item",
-                          role: "menuitem",
-                          "data-field": "dpi-template-item",
-                          title: tpl.description === "" ? tpl.text : tpl.description,
-                          onClick: () => {
-                            pick(tpl.text);
-                          },
-                        },
-                        templateItemLabel(tpl),
-                      ),
-                    ),
-                  ),
-                ),
-          )
-        : null,
+      },
+      createElement(TemplateIcon),
+      props.t("dockTemplatesEntry"),
     );
+    return createElement(Menu, {
+      open,
+      anchor: trigger,
+      items,
+      side: "top",
+      portal: true,
+      anchorRef: triggerRef,
+      listClassName: "dpi-polish-menu dpi-template-menu",
+      returnFocus: () => triggerRef.current,
+      onClose: () => {
+        setOpen(false);
+      },
+      onSelect: (id: string) => {
+        // 重试不关菜单：加载完由 store 换代就地列出，用户不必再点开一次。
+        if (
+          runTemplateMenuSelection(id, templates, pick, () => {
+            void loadBuiltinTemplates();
+          })
+        ) {
+          setOpen(false);
+        }
+      },
+    });
   };
 }
 
@@ -1929,6 +1927,12 @@ function createCardBody(view: CardBodyView): ReactNode {
     view.draftActions;
   const { onSave, onDiscard } = view.persistActions;
   const footHint = createElement("p", { className: "dsu-hint" }, t("footHint"));
+  // 0 条角色库的块级空态先算成局部量：嵌在 createElement 参数里会超过嵌套调用上限。
+  const rolesEmpty = createElement(
+    EmptyState,
+    { title: t("rolesEmptyTitle"), plain: true },
+    t("rolesEmptyNote"),
+  );
   const saveBar = createElement(SaveBar, {
     dirty: anythingDirty,
     busy,
@@ -1961,17 +1965,19 @@ function createCardBody(view: CardBodyView): ReactNode {
         onAdd,
         onReset: onRequestReset,
       }),
-      draft.map((tpl, idx) =>
-        createElement(TemplateRow, {
-          key: tpl.id,
-          t,
-          index: idx,
-          template: tpl,
-          disabled: !editable || busy,
-          onCommit,
-          onDelete,
-        }),
-      ),
+      draft.length === 0
+        ? rolesEmpty
+        : draft.map((tpl, idx) =>
+            createElement(TemplateRow, {
+              key: tpl.id,
+              t,
+              index: idx,
+              template: tpl,
+              disabled: !editable || busy,
+              onCommit,
+              onDelete,
+            }),
+          ),
       createElement(ImportPanel, {
         t,
         editable: editable && !busy,
@@ -2147,6 +2153,26 @@ function injectDock(ctx: ClientCtx, store: TemplatesStore, t: Translate): void {
   });
 }
 
+/** 注入输入框占位提示。
+ *
+ * chain 槽的 `select` 必须只依赖 owner：这里永远返回 `true` 表示本插件接管，
+ * 文案在组件里用注册项 `inject` 给的 `t` 现取，切语言时宿主重渲染即可。
+ * 占位内容不承载交互，只把「润色 / 目录整理」这两件事在空输入框里点出来。 */
+function injectInputPlaceholder(ctx: ClientCtx, t: Translate): void {
+  ctx.slots.inject(SLOT_INPUT_PLACEHOLDER, () => {
+    const unregister = ctx.slots.register(
+      {
+        name: SLOT_INPUT_PLACEHOLDER,
+        select: () => true,
+        inject: () => ({ t }),
+      },
+      (props: { readonly matched: boolean; readonly t: Translate }): string =>
+        props.t("inputPlaceholder"),
+    );
+    return unregister;
+  });
+}
+
 /** 注入设置页的「角色库」卡（插件自带卡片，宿主不再生成自动表单页）。
  *  这张卡管的就是「模板」下拉与「润色」▾ 共用的那一份列表。
  *
@@ -2208,6 +2234,7 @@ function apply(ctx: ClientCtx): void {
   );
   const t = ctx.locale.bind(NS);
   injectDock(ctx, store, t);
+  injectInputPlaceholder(ctx, t);
   injectCard(ctx, store, t, scope);
 }
 

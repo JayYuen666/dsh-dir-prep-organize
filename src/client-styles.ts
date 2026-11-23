@@ -12,8 +12,9 @@
 // 「继承色 / 透明」而不是丢掉整条声明。
 // 规则按「按钮 / 菜单 / 设置卡 / 行内输入」分组书写，顺序即层叠顺序。
 export const CARD_STYLES = [
-  ".dpi-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2,currentColor);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:12px;line-height:1;border-radius:8px;padding:6px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background .16s,border-color .16s,color .16s}",
-  ".dpi-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,currentColor);background:var(--dsw-alias-bg-layer-2,transparent)}",
+  // 画板 F 的 split 按钮：32 高、13px、6px 圆角；主钮与 caret 共享一条外框，宽度由内容决定。
+  ".dpi-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2,currentColor);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:13px;line-height:1;height:32px;border-radius:6px;padding:0 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background .16s,border-color .16s,color .16s}",
+  ".dpi-btn:hover:not(:disabled){border-color:var(--dsw-alias-border-l3,currentColor);background:var(--dsw-alias-interactive-bg-hover,transparent)}",
   ".dpi-btn:disabled{opacity:.55;cursor:not-allowed}",
   '.dpi-btn:disabled[data-state="loading"]{cursor:progress}',
   ".dpi-btn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,currentColor);outline-offset:1px}",
@@ -29,16 +30,12 @@ export const CARD_STYLES = [
   // 若带 overflow 裁剪或 transform 会新建层叠上下文——菜单可能被裁切，挂载侧不得把本
   // 组件放进这类容器。
   ".dpi-wrap{position:relative;display:inline-flex;isolation:isolate}",
-  ".dpi-menu{position:absolute;bottom:calc(100% + 6px);right:0;z-index:50;min-width:224px;max-height:340px;overflow-y:auto;background:var(--dsw-menu-surface-fill,transparent);backdrop-filter:var(--dsw-menu-backdrop-filter,none);border:0;border-radius:10px;padding:4px;display:flex;flex-direction:column;gap:2px;box-shadow:var(--dsw-elevation-panel,none)}",
-  ".dpi-item{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:12px;line-height:1.4;text-align:left;border-radius:6px;padding:8px 10px;cursor:pointer;white-space:nowrap}",
-  ".dpi-item:hover,.dpi-item:focus-visible{background:var(--dsw-alias-bg-layer-2,transparent)}",
-  ".dpi-item-empty{color:var(--dsw-alias-label-tertiary,inherit);cursor:default;font-size:12px;padding:8px 10px;white-space:nowrap}",
+  ".dpi-caretWrap{display:inline-flex}",
+  ".dpi-polish-menu{width:280px}",
   ".dpi-split{display:inline-flex;align-items:stretch}",
-  ".dpi-split .dpi-main{border-top-right-radius:0;border-bottom-right-radius:0;padding-right:8px}",
-  ".dpi-split .dpi-caret{border-left:none;border-top-left-radius:0;border-bottom-left-radius:0;padding-left:4px;padding-right:6px}",
-  ".dpi-split .dpi-caret svg{width:10px;height:10px}",
-  ".dpi-group{padding:2px 0}",
-  ".dpi-grouph{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary,inherit);padding:6px 10px 2px;letter-spacing:.02em}",
+  ".dpi-split .dpi-main{border-top-right-radius:0;border-bottom-right-radius:0;padding-right:10px}",
+  ".dpi-split .dpi-caret{width:32px;min-width:32px;padding:0;justify-content:center;border-left:0;border-top-left-radius:0;border-bottom-left-radius:0}",
+  ".dpi-split .dpi-caret svg{width:16px;height:16px;display:block;flex:none}",
   ".dpic-row{padding:10px 0;border-bottom:1px dashed var(--dsw-alias-border-l2,currentColor)}",
   // 控件外观由共享 .dsu-input / .dsu-btn 承担；这里只保留本行编辑器的尺寸与排布。
   // 行头三项写成复合选择器：共享 .dsu-input 的 width:100% 与本表单类选择器同权重，靠复合选择器稳压它。

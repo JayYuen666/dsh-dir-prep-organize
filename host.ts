@@ -625,16 +625,37 @@ function classifyRead(
   return { snippet: read.snippet, keptBytes: bytes, countTooLarge: false };
 }
 
-/** cwd 提取：sessions.get(id).header.cwd，非字符串视为缺。 */
+/** 官方工作目录服务的最小读取形状（`WorkingDirectoryService.get(session)` 同步、无 fs I/O）。 */
+interface WorkingDirectoryFace {
+  get?: (session: unknown) => unknown;
+}
+
+export function isWorkingDirectory(value: unknown): value is WorkingDirectoryFace {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value["get"] === "function";
+}
+
+/** 服务表里的 `workingDirectory` 只按形状收：缺席或形状不符都交回 undefined，由 header.cwd 回落。 */
+export function workingDirectoryOf(service: unknown): WorkingDirectoryFace | undefined {
+  return isWorkingDirectory(service) ? service : undefined;
+}
+
+/** cwd 提取：优先活目录 `workingDirectory.get(session)`，服务缺席或给不出非空串时回落
+ *  `sessions.get(id).header.cwd`（创建期快照）。会话 `cd` 之后只有前者跟着变，目录上下文、
+ *  越界判定与润色提示词都须按它解析。非字符串一律视为缺。 */
 function cwdOfSession(
   sessions: SessionsService | undefined,
+  workingDirectory: WorkingDirectoryFace | undefined,
   sessionId: string | null,
 ): string | undefined {
   // 单 return 满足 consistent-return；sessionId 空时 cwd 保持 undefined。
   let cwd: string | undefined;
   if (sessionId !== null && sessionId.length > 0) {
     const session = sessions?.get(sessionIdOf(sessionId));
-    const value = session?.header?.cwd;
+    const live: unknown = workingDirectory?.get?.(session);
+    const value = typeof live === "string" && live.length > 0 ? live : session?.header?.cwd;
     if (typeof value === "string" && value.length > 0) {
       cwd = value;
     }
@@ -1864,6 +1885,8 @@ export const inject = ["settings"];
  *  注册之后才就绪），测试可直接注入静态假服务。 */
 export interface RouteDeps {
   sessions?: () => SessionsService | undefined;
+  /** 会话活目录服务（宿主 `ctx.workingDirectory`）；缺席时 cwd 回落 `header.cwd`。 */
+  workingDirectory?: () => WorkingDirectoryFace | undefined;
   fs?: () => FsService | undefined;
   llm?: () => LlmService | undefined;
   agentDefaultModel?: () => AgentDefaultModel | undefined;
@@ -2010,7 +2033,7 @@ async function contextPayload(
   const messages = scope.messagesOf();
   try {
     const fs = scope.deps.fs?.();
-    const cwd = cwdOfSession(scope.deps.sessions?.(), sessionId);
+    const cwd = cwdOfSession(scope.deps.sessions?.(), scope.deps.workingDirectory?.(), sessionId);
     if (fs === undefined) {
       return { ok: false, error: messages.fsUnavailable };
     }
@@ -2105,7 +2128,7 @@ async function organizePayload(
     // 先取对话再判 cwd：否则 sessionId 非字符串的请求根本走不到该函数，
     // 其"无会话"分支永远测不到。
     const recentTurns = resolveRecentTurns(sessions, sessionIdText);
-    const cwd = cwdOfSession(sessions, sessionIdText);
+    const cwd = cwdOfSession(sessions, scope.deps.workingDirectory?.(), sessionIdText);
     if (cwd === undefined) {
       return { ok: false, error: messages.cwdUnknown };
     }
@@ -2153,7 +2176,11 @@ async function importPayload(
       return { status: request.status, body: { ok: false, error: request.error } };
     }
     const allowRoots = scope.deps.importAllowRoots?.() ?? [];
-    const cwd = cwdOfSession(scope.deps.sessions?.(), request.sessionId);
+    const cwd = cwdOfSession(
+      scope.deps.sessions?.(),
+      scope.deps.workingDirectory?.(),
+      request.sessionId,
+    );
     // 越界/非法段单独回 4xx（策略拒绝不是"导入过程失败"，让调用方与日志能按
     // 状态码区分；响应体仍是 {ok:false,error}，界面读得到同一句原因）。
     if (!request.isBuiltin) {
@@ -2393,6 +2420,7 @@ export function apply(ctx: Context, config: Config): void {
       const service = getService("sessions");
       return isSessionsService(service) ? service : undefined;
     },
+    workingDirectory: () => workingDirectoryOf(getService("workingDirectory")),
     fs: () => {
       const service = getService("fs");
       return isFsService(service) ? service : undefined;
@@ -2421,7 +2449,8 @@ export function apply(ctx: Context, config: Config): void {
     messagesOf: localeMessages,
     limitsOf: () => sanitizeLimits(limitsOfConfig()),
   };
-  ctx.inject([], (child) => {
-    installDirPrepRemote(child, scope);
-  });
+  // 直接在本插件上下文注册：alpha.2 的 `inject` 子 fiber 是异步激活的，
+  // `await ctx.plugin()` 返回时子作用域尚未提供该服务；网关在启动后查询会晚一拍，
+  // 但测试与「apply 返回即可用」的契约不能靠这一拍。构造即注册，卸载随本 fiber 撤。
+  installDirPrepRemote(ctx, scope);
 }

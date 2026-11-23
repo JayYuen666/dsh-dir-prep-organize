@@ -23,6 +23,9 @@ import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 export interface UiMessages {
   /** 角色库小节标题与说明（这份列表同时喂「模板」下拉与「润色」▾）。 */
   readonly rolesSection: string;
+  /** 角色库为 0 条时的块级空态。 */
+  readonly rolesEmptyTitle: string;
+  readonly rolesEmptyNote: string;
   /// 角色库小节的条数徽章（{count} 为当前模板条数）。
   readonly rolesCount: string;
   readonly rolesHint: string;
@@ -150,6 +153,8 @@ export interface UiMessages {
   readonly dockOrganizeEntry: string;
   /** dock 注册项 label：「模板」按钮。 */
   readonly dockTemplatesEntry: string;
+  /** 空输入框的占位提示（`conversation.input.placeholder`）。 */
+  readonly inputPlaceholder: string;
   /** 「润色」主键（空闲态）。 */
   readonly organizeIdle: string;
   /** 「润色」主键（请求中）。 */
@@ -179,6 +184,8 @@ export interface UiMessages {
   readonly organizeCaretTitle: string;
   /** 「润色」主键的 aria-label。 */
   readonly organizeMainAria: string;
+  /** 角色菜单分组标题（画板 F：菜单项上方的「角色」小标签）。 */
+  readonly organizeRoleGroup: string;
   /** 角色菜单首项：直接润色。 */
   readonly organizeDirectItem: string;
   /** 角色菜单空态（没有任何模板）。 */
@@ -248,6 +255,9 @@ export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
     rolesSection: "角色库",
+    rolesEmptyTitle: "角色库还是空的",
+    rolesEmptyNote:
+      "点「导入角色」拉取内置角色库，或用「+ 新增模板」手工写一条；空表时下拉会回落到内置精选角色集。",
     rolesCount: "{count} 条",
     rolesHint:
       "输入框「模板」下拉与「润色」▾ 角色菜单共用这一份列表，空表即回落到内置精选角色集（生成自插件 agents/ 角色库）。留空点「导入角色」可一键导入内置全部；填路径则按「会话 cwd + 内置角色库 + 下方导入允许目录」放行。编辑后点「保存」生效，重启不丢。",
@@ -322,7 +332,8 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "绝对路径默认拒绝：只有「当前会话 cwd」「插件内置角色库 agents/」与本列表登记的目录之内可导入。设置页没有会话上下文，卡上填的路径必须落在内置库或本列表内。改完点底部「保存」生效。",
     dockOrganizeEntry: "润色",
     dockTemplatesEntry: "模板",
-    organizeIdle: "润色",
+    inputPlaceholder: "输入消息，或描述要整理的目录；✦ 一键润色可整理输入框草稿。",
+    organizeIdle: "一键润色",
     organizeLoading: "润色中",
     organizeFailedShort: "失败",
     organizeIdleTitle: "结合当前目录润色输入框内容（主键直接润色；▾ 可选角色风格）",
@@ -336,6 +347,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeCaretAria: "选择润色的角色风格",
     organizeCaretTitle: "按某个角色的风格润色（角色来自下方模板库）",
     organizeMainAria: "润色输入框内容",
+    organizeRoleGroup: "角色",
     organizeDirectItem: "直接润色（默认，不带角色）",
     organizeNoTemplates: "无模板可选作角色风格",
     organizeRoleItem: "以「{name}」的风格润色",
@@ -354,6 +366,9 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   },
   en: {
     rolesSection: "Role library",
+    rolesEmptyTitle: "The role library is empty",
+    rolesEmptyNote:
+      'Press "Import roles" to pull in the built-in library, or use "+ Add template" to write one by hand; while the list is empty the dropdown falls back to the built-in curated role set.',
     rolesCount: "{count} items",
     rolesHint:
       'The input-box "Template" dropdown and the "Polish" ▾ role menu share this one list; an empty list falls back to the built-in curated role set (generated from this plugin\'s agents/ role library). Leave the path empty and press "Import roles" to import the whole built-in library; an explicit path is allowed within "session cwd + built-in role library + the import allowed directories below". Press "Save" after editing — it survives restarts.',
@@ -438,6 +453,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       'Absolute paths are refused by default: imports only succeed inside "the current session cwd", "the plugin\'s built-in role library agents/" and the directories registered below. The settings page has no session context, so a path typed here must fall inside the built-in library or this list. Press "Save" at the bottom to apply.',
     dockOrganizeEntry: "Polish",
     dockTemplatesEntry: "Templates",
+    inputPlaceholder: "Type a message or describe a directory; ✦ Polish can tidy the draft.",
     organizeIdle: "Polish",
     organizeLoading: "Polishing",
     organizeFailedShort: "Failed",
@@ -453,6 +469,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     organizeCaretAria: "Choose a role style to polish with",
     organizeCaretTitle: "Polish in a role's style (roles come from the template library below)",
     organizeMainAria: "Polish the input-box content",
+    organizeRoleGroup: "Roles",
     organizeDirectItem: "Polish directly (default, no role)",
     organizeNoTemplates: "No templates available as a role style",
     organizeRoleItem: 'Polish in the style of "{name}"',
